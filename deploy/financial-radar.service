@@ -1,0 +1,15 @@
+[Unit]
+Description=Financial Radar System Backend
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/financial-radar
+ExecStart=/opt/financial-radar/venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=/opt/financial-radar
+
+[Install]
+WantedBy=multi-user.target
