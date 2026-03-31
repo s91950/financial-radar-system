@@ -1,32 +1,33 @@
-"""Claude AI integration for analysis and web search."""
+"""Gemini AI integration using the google-genai SDK."""
 
 import json
 import logging
 
-import anthropic
+from google import genai
+from google.genai import types
 
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
 
-_PLACEHOLDER_KEYS = {"", "your_anthropic_api_key_here"}
+_PLACEHOLDER_KEYS = {"", "your_gemini_api_key_here"}
 
 
 def _is_api_key_valid() -> bool:
-    return settings.ANTHROPIC_API_KEY not in _PLACEHOLDER_KEYS
+    return settings.GEMINI_API_KEY not in _PLACEHOLDER_KEYS
 
 
-def _get_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+def _get_client() -> genai.Client:
+    return genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
 async def analyze_news(articles: list[dict], context: str = "") -> str:
-    """Use Claude to analyze a batch of news articles.
+    """Use Gemini to analyze a batch of news articles.
 
     Returns a structured analysis in Traditional Chinese.
     """
     if not _is_api_key_valid():
-        return "⚠️ 請在 .env 設定有效的 ANTHROPIC_API_KEY 以啟用 AI 分析"
+        return "⚠️ 請在 .env 設定有效的 GEMINI_API_KEY 以啟用 AI 分析"
 
     articles_text = "\n\n".join(
         f"【{a.get('source', 'Unknown')}】{a.get('title', '')}\n{a.get('content', '')[:500]}"
@@ -48,22 +49,31 @@ async def analyze_news(articles: list[dict], context: str = "") -> str:
 
     try:
         client = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
         )
-        return response.content[0].text
+        return response.text
     except Exception as e:
-        logger.error(f"Claude analysis error: {e}")
+        logger.error(f"Gemini analysis error: {e}")
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            return ""
         return ""
 
 
 async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) -> dict:
-    """Analyze news for push notification — returns structured dict with 4 sections."""
+    """Analyze news for push notification — returns structured dict with 4 sections.
+
+    Returns:
+        {
+            "event_summary": str,    # 發生什麼事（150字）
+            "exposure_analysis": str, # 部位暴險（AI評估）
+            "follow_up": str,        # 後續發展（200字）
+        }
+    """
     if not _is_api_key_valid():
         return {
-            "event_summary": "（需設定 ANTHROPIC_API_KEY 以啟用 AI 分析）",
+            "event_summary": "（需設定 GEMINI_API_KEY 以啟用 AI 分析）",
             "exposure_analysis": "",
             "follow_up": "",
         }
@@ -96,26 +106,22 @@ async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) ->
 }}"""
 
     try:
-        import json
         client = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        result = json.loads(text)
+        result = json.loads(response.text)
         return {
             "event_summary": result.get("event_summary", ""),
             "exposure_analysis": result.get("exposure_analysis", ""),
             "follow_up": result.get("follow_up", ""),
         }
     except Exception as e:
-        logger.error(f"Claude alert analysis error: {e}")
+        logger.error(f"Gemini alert analysis error: {e}")
         return {}
 
 
@@ -125,7 +131,7 @@ _CHINESE_NUMS = "一二三四五六七八九十"
 async def analyze_news_groups(groups: list[list[dict]], positions: list[dict]) -> str:
     """Analyze multiple topic groups separately. Returns formatted analysis text with 【】sections."""
     if not _is_api_key_valid():
-        return "（需設定 ANTHROPIC_API_KEY 以啟用 AI 分析）"
+        return "（需設定 GEMINI_API_KEY 以啟用 AI 分析）"
 
     if len(groups) == 1:
         result = await analyze_news_for_alert(groups[0], positions)
@@ -172,17 +178,12 @@ async def analyze_news_groups(groups: list[list[dict]], positions: list[dict]) -
 
     try:
         client = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
-        text = response.content[0].text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        result = json.loads(text)
+        result = json.loads(response.text)
         parts = []
         for i, g in enumerate(result.get("groups", []), 1):
             num = _CHINESE_NUMS[i - 1] if i <= len(_CHINESE_NUMS) else str(i)
@@ -193,18 +194,18 @@ async def analyze_news_groups(groups: list[list[dict]], positions: list[dict]) -
             )
         return "\n\n".join(parts)
     except Exception as e:
-        logger.error(f"Claude group analysis error: {e}")
+        logger.error(f"Gemini group analysis error: {e}")
         return ""
 
 
 async def search_and_analyze(query: str, context: str = "") -> dict:
-    """Use Claude with web search to find and analyze real-time information.
+    """Use Gemini with Google Search grounding to find and analyze real-time information.
 
     Returns structured analysis with source citations.
     """
     if not _is_api_key_valid():
         return {
-            "analysis": "⚠️ 請在 .env 設定有效的 ANTHROPIC_API_KEY 以啟用 AI 搜尋分析",
+            "analysis": "⚠️ 請在 .env 設定有效的 GEMINI_API_KEY 以啟用 AI 搜尋分析",
             "sources": [],
         }
 
@@ -224,29 +225,35 @@ async def search_and_analyze(query: str, context: str = "") -> dict:
 
     try:
         client = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305"}],
-            messages=[{"role": "user", "content": prompt}],
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
         )
 
-        analysis = ""
+        analysis = response.text
         sources = []
-        for block in response.content:
-            if block.type == "text":
-                analysis += block.text
-            elif block.type == "web_search_tool_result":
-                for search_result in getattr(block, "content", []):
-                    if hasattr(search_result, "url"):
-                        sources.append({
-                            "title": getattr(search_result, "title", ""),
-                            "url": search_result.url,
-                        })
+
+        # Extract grounding metadata if available
+        try:
+            for candidate in (response.candidates or []):
+                meta = getattr(candidate, "grounding_metadata", None)
+                if meta:
+                    for chunk in getattr(meta, "grounding_chunks", []):
+                        web = getattr(chunk, "web", None)
+                        if web:
+                            sources.append({
+                                "title": getattr(web, "title", ""),
+                                "url": getattr(web, "uri", ""),
+                            })
+        except Exception:
+            pass
 
         return {"analysis": analysis, "sources": sources}
     except Exception as e:
-        logger.error(f"Claude search error: {e}")
+        logger.error(f"Gemini search error: {e}")
         return {"analysis": f"AI 搜尋暫時無法使用：{e}", "sources": []}
 
 
@@ -259,7 +266,7 @@ async def analyze_market_signal(
 ) -> str:
     """Analyze a market signal that triggered an alert."""
     if not _is_api_key_valid():
-        return "⚠️ 請在 .env 設定有效的 ANTHROPIC_API_KEY 以啟用 AI 分析"
+        return "⚠️ 請在 .env 設定有效的 GEMINI_API_KEY 以啟用 AI 分析"
 
     prompt = f"""你是一位資深金融分析師。以下市場指標觸發了警報：
 
@@ -275,12 +282,11 @@ async def analyze_market_signal(
 
     try:
         client = _get_client()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL,
+            contents=prompt,
         )
-        return response.content[0].text
+        return response.text
     except Exception as e:
-        logger.error(f"Claude market analysis error: {e}")
+        logger.error(f"Gemini market analysis error: {e}")
         return f"分析暫時無法使用：{e}"

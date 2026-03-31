@@ -1,5 +1,6 @@
 """RSS feed parser for monitoring official sources."""
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -8,12 +9,45 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# URL patterns that are known redirect wrappers (not actual article pages)
+_REDIRECT_PATTERNS = (
+    "feeds.reuters.com",
+    "feeds.feedburner.com",
+    "rss.sina.com.cn",
+    "feeds.bloomberg.com",
+    "feeds.a.dj.com",
+    "feeds.marketwatch.com",
+)
+
+
+async def _resolve_redirect(url: str, client: httpx.AsyncClient) -> str:
+    """Follow HTTP redirects to get the final article URL.
+
+    Only resolves URLs that match known redirect-wrapper patterns to avoid
+    unnecessary requests. Falls back to original URL on any error.
+    Uses streaming GET (not HEAD) because some servers (e.g. Google News)
+    only redirect on GET requests.
+    """
+    if not url:
+        return url
+    if not any(p in url for p in _REDIRECT_PATTERNS):
+        return url
+    try:
+        async with client.stream("GET", url, follow_redirects=True, timeout=8) as resp:
+            final = str(resp.url)
+        # Sanity check: resolved URL should be http(s) and different from original
+        if final.startswith("http") and final != url:
+            return final
+    except Exception:
+        pass
+    return url
+
 
 async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
     """Fetch and parse an RSS feed, returning recent entries."""
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, follow_redirects=True)
+        async with httpx.AsyncClient(timeout=30, verify=False, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FinancialRadar/1.0)"})
             resp.raise_for_status()
             feed = feedparser.parse(resp.text)
 
@@ -33,6 +67,17 @@ async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
                 "published_at": published.isoformat() if published else None,
                 "category": "official",
             })
+
+        # Resolve redirect URLs concurrently (only for known redirect patterns)
+        if articles:
+            async with httpx.AsyncClient(timeout=10, verify=False, follow_redirects=True) as resolve_client:
+                resolved = await asyncio.gather(
+                    *[_resolve_redirect(a["source_url"], resolve_client) for a in articles],
+                    return_exceptions=True,
+                )
+            for i, r in enumerate(resolved):
+                if isinstance(r, str):
+                    articles[i]["source_url"] = r
 
         return articles
     except Exception as e:

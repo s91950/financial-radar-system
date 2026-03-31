@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -68,6 +68,7 @@ class ConditionUpdateRequest(BaseModel):
 async def get_alerts(
     limit: int = Query(50, ge=1, le=200),
     unread_only: bool = False,
+    saved_only: bool = False,
     severity: str | None = None,
     db: Session = Depends(get_db),
 ):
@@ -75,6 +76,8 @@ async def get_alerts(
     query = db.query(Alert).order_by(Alert.created_at.desc())
     if unread_only:
         query = query.filter(Alert.is_read == False)
+    if saved_only:
+        query = query.filter(Alert.is_saved == True)
     if severity:
         query = query.filter(Alert.severity == severity)
     alerts = query.limit(limit).all()
@@ -88,6 +91,17 @@ async def get_alert_stats(db: Session = Depends(get_db)):
     unread = db.query(Alert).filter(Alert.is_read == False).count()
     critical = db.query(Alert).filter(Alert.severity == "critical", Alert.is_read == False).count()
     return {"total": total, "unread": unread, "critical": critical}
+
+
+@router.put("/alerts/{alert_id}/save")
+async def toggle_alert_save(alert_id: int, db: Session = Depends(get_db)):
+    """Toggle the saved state of an alert."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        return {"error": "Alert not found"}
+    alert.is_saved = not alert.is_saved
+    db.commit()
+    return {"success": True, "is_saved": alert.is_saved}
 
 
 @router.put("/alerts/{alert_id}/read")
@@ -123,7 +137,7 @@ async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
 @router.post("/alerts/{alert_id}/analyze")
 async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
     """On-demand AI analysis for an alert (includes position exposure)."""
-    from backend.services import claude_ai
+    from backend.services.ai_factory import get_ai_service
     from backend.services.exposure import format_exposure_summary, match_positions_to_news
     from backend.services.google_sheets import get_positions
 
@@ -146,9 +160,13 @@ async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
     # Build context for AI
     exposure_context = f"\n\n可能影響的部位：\n{exposure_summary}" if exposure_summary else ""
 
-    analysis = await claude_ai.analyze_news(
+    ai_service = get_ai_service()
+    analysis = await ai_service.analyze_news(
         articles=[{"title": alert.title or "", "content": (alert.content or "") + exposure_context}],
     )
+
+    if not analysis:
+        return {"error": "AI 分析失敗（可能是 API 配額用完），請稍後再試"}
 
     alert.analysis = analysis
     db.commit()
@@ -191,7 +209,7 @@ async def get_market_data(db: Session = Depends(get_db)):
             "threshold_upper": item.threshold_upper,
             "threshold_lower": item.threshold_lower,
             "sort_order": item.sort_order,
-            "last_updated": item.last_updated.isoformat() if item.last_updated else None,
+            "last_updated": (item.last_updated.isoformat() + "Z") if item.last_updated else None,
         })
     db.commit()
     return dict(grouped)
@@ -366,6 +384,14 @@ def _condition_to_dict(cond: SignalCondition) -> dict:
     }
 
 
+@router.post("/scan")
+async def manual_scan(background_tasks: BackgroundTasks):
+    """Manually trigger a radar scan immediately (bypasses cross-process lock)."""
+    from backend.scheduler.jobs import radar_scan
+    background_tasks.add_task(radar_scan, True)
+    return {"message": "雷達掃描已啟動"}
+
+
 def _alert_to_dict(alert: Alert) -> dict:
     return {
         "id": alert.id,
@@ -378,6 +404,7 @@ def _alert_to_dict(alert: Alert) -> dict:
         "source_url": alert.source_url,
         "exposure_summary": alert.exposure_summary,
         "source_urls": json.loads(alert.source_urls) if alert.source_urls else [],
-        "created_at": alert.created_at.isoformat() if alert.created_at else None,
+        "created_at": (alert.created_at.isoformat() + "Z") if alert.created_at else None,
         "is_read": alert.is_read,
+        "is_saved": alert.is_saved or False,
     }

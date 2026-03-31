@@ -27,16 +27,36 @@ class SaveSelectedRequest(BaseModel):
     articles: list[dict]
 
 
+_CRITICAL_KWS = ['崩盤', '暴跌', '危機', 'crash', 'crisis', 'emergency',
+                 '戰爭', '制裁', '違約', '破產', '倒閉', '破產保護', '債務違約',
+                 '勒索軟體', '網路攻擊', '資料外洩']
+_HIGH_KWS = ['升息', '降息', '衰退', 'recession', 'inflation', '通膨',
+             '獨家', '重訊', '重大訊息', '盈餘警告', '虧損擴大', '淨損',
+             '信用評等', '調降', '縮編', '重組', '裁員', '出口禁令']
+
+
+def _kw_filter(kws: list[str]):
+    """Build OR filter: title or content contains any of the keywords."""
+    from sqlalchemy import or_
+    return or_(*[Article.title.ilike(f'%{kw}%') for kw in kws],
+               *[Article.content.ilike(f'%{kw}%') for kw in kws])
+
+
 @router.get("/articles")
 async def get_articles(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     saved_only: bool = False,
     category: str | None = None,
     search: str | None = None,
+    severity: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     db: Session = Depends(get_db),
 ):
     """Get articles from the news database."""
+    from datetime import datetime
+    from sqlalchemy import not_
     query = db.query(Article).order_by(Article.fetched_at.desc())
 
     if saved_only:
@@ -47,6 +67,28 @@ async def get_articles(
         query = query.filter(
             (Article.title.contains(search)) | (Article.content.contains(search))
         )
+    if severity == 'critical':
+        query = query.filter(_kw_filter(_CRITICAL_KWS))
+    elif severity == 'high':
+        query = query.filter(
+            _kw_filter(_HIGH_KWS) & not_(_kw_filter(_CRITICAL_KWS))
+        )
+    elif severity == 'low':
+        query = query.filter(
+            not_(_kw_filter(_CRITICAL_KWS)) & not_(_kw_filter(_HIGH_KWS))
+        )
+    if date_from:
+        try:
+            query = query.filter(Article.published_at >= datetime.fromisoformat(date_from))
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to)
+            from datetime import timedelta
+            query = query.filter(Article.published_at < dt_to + timedelta(days=1))
+        except ValueError:
+            pass
 
     total = query.count()
     articles = query.offset(offset).limit(limit).all()
@@ -166,7 +208,7 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
 @router.post("/save-selected")
 async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db)):
     """Save user-selected articles to SQLite + Google Sheets."""
-    from backend.services.google_sheets import append_news
+    from backend.services.google_sheets import append_news, append_news_via_gas
 
     saved_count = 0
     saved_articles = []
@@ -190,8 +232,14 @@ async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db))
 
     db.commit()
 
-    # Also append to Google Sheets news archive
-    sheets_count = await append_news(saved_articles)
+    # Also append to Google Sheets (try GAS first, fallback to Service Account)
+    sheets_count = 0
+    if saved_articles:
+        gas_ok = await append_news_via_gas(saved_articles)
+        if not gas_ok:
+            sheets_count = await append_news(saved_articles)
+        else:
+            sheets_count = len(saved_articles)
 
     return {
         "saved": saved_count,

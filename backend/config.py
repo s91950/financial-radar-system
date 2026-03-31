@@ -9,8 +9,21 @@ class Settings:
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
 
+    # Gemini AI
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    DEFAULT_AI_MODEL: str = os.getenv("DEFAULT_AI_MODEL", "gemini")
+
+    # Google Apps Script Web App (for Sheets write)
+    GOOGLE_APPS_SCRIPT_URL: str = os.getenv("GOOGLE_APPS_SCRIPT_URL", "")
+
     # Notification
     LINE_NOTIFY_TOKEN: str = os.getenv("LINE_NOTIFY_TOKEN", "")
+    LINE_CHANNEL_ACCESS_TOKEN: str = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    LINE_TARGET_ID: str = os.getenv("LINE_TARGET_ID", "")  # User ID / Group ID / Room ID
+    # Minimum severity to trigger LINE Messaging API push: critical | high | all
+    LINE_NOTIFY_MIN_SEVERITY: str = os.getenv("LINE_NOTIFY_MIN_SEVERITY", "critical")
+    LINE_CHANNEL_SECRET: str = os.getenv("LINE_CHANNEL_SECRET", "")
     EMAIL_SMTP_HOST: str = os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
     EMAIL_SMTP_PORT: int = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     EMAIL_SENDER: str = os.getenv("EMAIL_SENDER", "")

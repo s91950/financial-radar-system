@@ -1,11 +1,36 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { newsAPI } from '../services/api'
+import { newsAPI, resolveUrl } from '../services/api'
 
-const SENTIMENT_COLORS = {
-  positive: { bg: 'bg-green-500', text: 'text-green-400', label: '正面' },
-  neutral: { bg: 'bg-yellow-500', text: 'text-yellow-400', label: '中性' },
-  negative: { bg: 'bg-red-500', text: 'text-red-400', label: '偏負' },
+// Severity assessment — mirrors backend _assess_severity_single logic
+const CRITICAL_KWS = ['崩盤', '暴跌', '危機', 'crash', 'crisis', 'emergency',
+  '戰爭', '制裁', '違約', '破產', '倒閉', '破產保護', '債務違約',
+  '勒索軟體', '網路攻擊', '資料外洩']
+const HIGH_KWS = ['升息', '降息', '衰退', 'recession', 'inflation', '通膨',
+  '獨家', '重訊', '重大訊息', '盈餘警告', '虧損擴大', '淨損',
+  '信用評等', '調降', '縮編', '重組', '裁員', '出口禁令']
+
+function assessSeverity(title = '', content = '') {
+  const text = (title + ' ' + content).toLowerCase()
+  if (CRITICAL_KWS.some(kw => text.includes(kw))) return 'critical'
+  if (HIGH_KWS.some(kw => text.includes(kw))) return 'high'
+  return 'low'
+}
+
+const SEVERITY_CFG = {
+  critical: { label: '緊急', pill: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  high:     { label: '高',   pill: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  medium:   { label: '中',   pill: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
+  low:      { label: '低',   pill: 'bg-green-500/20 text-green-400 border-green-500/30' },
+}
+
+function SeverityBadge({ severity }) {
+  const cfg = SEVERITY_CFG[severity] || SEVERITY_CFG.low
+  return (
+    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border font-medium whitespace-nowrap ${cfg.pill}`}>
+      {cfg.label}
+    </span>
+  )
 }
 
 export default function NewsDBPage() {
@@ -18,19 +43,36 @@ export default function NewsDBPage() {
     saved_only: false,
     category: '',
     search: '',
+    date_from: '',
+    date_to: '',
   })
+  const [showDateFilter, setShowDateFilter] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [customQuery, setCustomQuery] = useState('')
   const [page, setPage] = useState(0)
-  const pageSize = 20
+  const [pageSize, setPageSize] = useState(20)
+
+  // Sort & category state
+  const [sortOrder, setSortOrder] = useState('newest')  // 'newest'|'oldest'|'source'
+  const [categories, setCategories] = useState([])
 
   // Preview state
   const [preview, setPreview] = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [saving, setSaving] = useState(false)
+  const [previewSeverityFilter, setPreviewSeverityFilter] = useState('all')
 
-  // Sentiment state
-  const [sentiment, setSentiment] = useState(null)
+  // DB article multi-select + severity filter state
+  const [selectedDbIds, setSelectedDbIds] = useState(new Set())
+  const [dbSeverityFilter, setDbSeverityFilter] = useState('all')
+
+  // Reset to page 0 when pageSize or severity filter changes
+  const handlePageSizeChange = (newSize) => { setPageSize(newSize); setPage(0) }
+  const handleSeverityFilter = (v) => { setDbSeverityFilter(v); setPage(0); setSelectedDbIds(new Set()) }
+
+  useEffect(() => {
+    newsAPI.getCategories().then(({ data }) => setCategories(data)).catch(() => {})
+  }, [])
 
   const loadArticles = useCallback(async () => {
     setLoading(true)
@@ -38,41 +80,42 @@ export default function NewsDBPage() {
       const { data } = await newsAPI.getArticles({
         limit: pageSize,
         offset: page * pageSize,
+        severity: dbSeverityFilter !== 'all' ? dbSeverityFilter : undefined,
         ...filters,
       })
       setArticles(data.articles)
       setTotal(data.total)
+      setSelectedDbIds(new Set())
     } catch (err) {
       console.error('Failed to load articles:', err)
     }
     setLoading(false)
-  }, [page, filters])
-
-  const loadSentiment = useCallback(async () => {
-    try {
-      const { data } = await newsAPI.getSentiment()
-      setSentiment(data)
-    } catch (err) {
-      console.error('Failed to load sentiment:', err)
-    }
-  }, [])
+  }, [page, pageSize, dbSeverityFilter, filters])
 
   useEffect(() => {
     loadArticles()
-    loadSentiment()
-  }, [loadArticles, loadSentiment])
+  }, [loadArticles])
+
+  // Client-side sort only (severity filter is server-side)
+  let sortedArticles = [...articles]
+  if (sortOrder === 'oldest') {
+    sortedArticles.sort((a, b) => new Date(a.published_at) - new Date(b.published_at))
+  } else if (sortOrder === 'source') {
+    sortedArticles.sort((a, b) => (a.source || '').localeCompare(b.source || ''))
+  } else {
+    sortedArticles.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))
+  }
 
   const handleManualFetch = async (query = null) => {
     setFetchLoading(true)
     setPreview(null)
+    setPreviewSeverityFilter('all')
     try {
       const { data } = await newsAPI.manualFetch({
         query: query || null,
         hours_back: 24,
       })
-      // Show preview instead of auto-saving
       setPreview(data.preview || [])
-      // Pre-select all new articles
       const newIds = new Set()
       ;(data.preview || []).forEach((a, i) => {
         if (!a.already_in_db) newIds.add(i)
@@ -106,14 +149,28 @@ export default function NewsDBPage() {
   const handleSelectAll = () => {
     if (!preview) return
     const allNew = new Set()
-    preview.forEach((a, i) => {
-      if (!a.already_in_db) allNew.add(i)
+    filteredPreview.forEach((_, i) => {
+      const origIdx = filteredPreviewIndices[i]
+      if (!preview[origIdx].already_in_db) allNew.add(origIdx)
     })
     setSelectedIds(allNew)
   }
 
   const handleDeselectAll = () => {
     setSelectedIds(new Set())
+  }
+
+  const handleCopySelected = async () => {
+    if (!preview || selectedIds.size === 0) return
+    const urls = preview
+      .filter((a, i) => selectedIds.has(i) && a.source_url)
+      .map(a => a.source_url)
+    if (urls.length === 0) return
+    const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
+    const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
+    navigator.clipboard.writeText(resolved.join('\n'))
+    toast.dismiss(toastId)
+    toast.success(`已複製 ${resolved.length} 個連結`)
   }
 
   const handleSaveSelected = async () => {
@@ -126,7 +183,6 @@ export default function NewsDBPage() {
       setPreview(null)
       setSelectedIds(new Set())
       loadArticles()
-      loadSentiment()
     } catch (err) {
       console.error('Save failed:', err)
       toast.error('儲存失敗')
@@ -177,106 +233,169 @@ export default function NewsDBPage() {
     setPage(0)
   }
 
+  const handleExport = () => {
+    const params = new URLSearchParams({ format: 'csv', saved_only: String(filters.saved_only) })
+    window.open(`/api/news/export?${params.toString()}`, '_blank')
+  }
+
+  const handleCopyUrl = async (url) => {
+    const finalUrl = await resolveUrl(url)
+    navigator.clipboard.writeText(finalUrl)
+    toast.success('已複製連結')
+  }
+
+  // DB article multi-select handlers
+  const handleToggleDbSelect = (e, id) => {
+    e.stopPropagation()
+    setSelectedDbIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const handleSelectAllDb = () => {
+    // Select all articles currently visible (after severity filter)
+    setSelectedDbIds(new Set(sortedArticles.map(a => a.id)))
+  }
+
+  const handleDeselectAllDb = () => {
+    setSelectedDbIds(new Set())
+  }
+
+  const handleCopySelectedDb = async () => {
+    if (!selectedDbIds.size) return
+    const urls = sortedArticles
+      .filter(a => selectedDbIds.has(a.id) && a.source_url)
+      .map(a => a.source_url)
+    if (!urls.length) { toast.error('選取的文章無來源連結'); return }
+    const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
+    const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
+    await navigator.clipboard.writeText(resolved.filter(Boolean).join('\n'))
+    toast.dismiss(toastId)
+    toast.success(`已複製 ${resolved.length} 個連結`)
+  }
+
+  // Preview filtered by severity
+  const filteredPreviewIndices = preview
+    ? preview
+        .map((a, i) => i)
+        .filter(i => previewSeverityFilter === 'all' || assessSeverity(preview[i].title, preview[i].content) === previewSeverityFilter)
+    : []
+  const filteredPreview = filteredPreviewIndices.map(i => preview[i])
+
   const newCount = preview ? preview.filter((_, i) => selectedIds.has(i)).length : 0
+
+  const PREVIEW_SEVERITY_PILLS = [
+    { v: 'all', label: '全部' },
+    { v: 'critical', label: '緊急' },
+    { v: 'high', label: '高風險' },
+    { v: 'low', label: '低風險' },
+  ]
 
   return (
     <div className="space-y-6">
-      {/* Sentiment Dashboard */}
-      {sentiment && sentiment.categories && sentiment.categories.length > 0 && (
-        <div className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold flex items-center gap-2">
-              <svg className="w-5 h-5 text-primary-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-              </svg>
-              今日市場熱度
-              <span className="text-xs text-dark-400 font-normal">{sentiment.date} ({sentiment.total_articles} 則)</span>
-            </h3>
-            <button onClick={loadSentiment} className="text-xs text-dark-400 hover:text-primary-400">
-              重新整理
-            </button>
-          </div>
-          <div className="space-y-3">
-            {sentiment.categories.map((cat) => {
-              const colors = SENTIMENT_COLORS[cat.sentiment_label] || SENTIMENT_COLORS.neutral
-              return (
-                <div key={cat.category} className="flex items-center gap-3">
-                  <span className="text-sm w-16 text-dark-300">{cat.label}</span>
-                  <div className="flex-1 h-5 bg-dark-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full ${colors.bg} rounded-full transition-all duration-500`}
-                      style={{ width: `${Math.max(cat.heat, 3)}%` }}
-                    />
-                  </div>
-                  <span className="text-xs w-8 text-right text-dark-400">{cat.heat}</span>
-                  <span className={`text-xs w-10 text-center ${colors.text}`}>{colors.label}</span>
-                  <span className="text-xs text-dark-500 w-12 text-right">({cat.article_count}則)</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Preview Panel (shown after fetch) */}
+      {/* Preview Panel */}
       {preview && (
         <div className="card border-primary-500/20">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-3">
             <h3 className="font-semibold">
               搜尋結果預覽
               <span className="text-sm text-dark-400 font-normal ml-2">({preview.length} 則)</span>
             </h3>
             <div className="flex items-center gap-2">
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={handleCopySelected}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-full border bg-primary-600/20 text-primary-400 border-primary-500/30 hover:bg-primary-600/30 transition-colors"
+                >
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  複製 {selectedIds.size} 個連結
+                </button>
+              )}
               <button onClick={handleSelectAll} className="text-xs text-primary-400 hover:underline">全選</button>
               <button onClick={handleDeselectAll} className="text-xs text-dark-400 hover:underline">取消全選</button>
             </div>
           </div>
+
+          {/* Severity filter pills for preview */}
+          <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+            {PREVIEW_SEVERITY_PILLS.map(({ v, label }) => {
+              const cfg = SEVERITY_CFG[v]
+              return (
+                <button
+                  key={v}
+                  onClick={() => setPreviewSeverityFilter(v)}
+                  className={`text-xs px-2.5 py-0.5 rounded-full border transition-colors ${
+                    previewSeverityFilter === v
+                      ? (cfg ? cfg.pill + ' font-medium' : 'bg-primary-600/30 text-primary-400 border-primary-500/40')
+                      : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+                  }`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
           <div className="space-y-1 max-h-80 overflow-y-auto">
-            {preview.map((article, idx) => (
-              <label
-                key={idx}
-                className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors ${
-                  article.already_in_db
-                    ? 'opacity-50'
-                    : selectedIds.has(idx)
-                    ? 'bg-primary-600/10'
-                    : 'hover:bg-dark-800'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(idx)}
-                  disabled={article.already_in_db}
-                  onChange={() => handleTogglePreviewItem(idx)}
-                  className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500"
-                />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm text-gray-200 line-clamp-1">{article.title}</span>
-                  <span className="text-xs text-dark-500 ml-2">[{article.source}]</span>
-                </div>
-                {article.already_in_db && (
-                  <span className="text-xs text-dark-500 whitespace-nowrap">已存在</span>
-                )}
-                {article.source_url && (
-                  <a
-                    href={article.source_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-dark-400 hover:text-primary-400"
-                    onClick={(e) => e.stopPropagation()}
+            {filteredPreview.length === 0 ? (
+              <p className="text-sm text-dark-500 text-center py-4">此風險等級無符合項目</p>
+            ) : (
+              filteredPreview.map((article, _i) => {
+                const origIdx = filteredPreviewIndices[_i]
+                const sev = assessSeverity(article.title, article.content)
+                return (
+                  <label
+                    key={origIdx}
+                    className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors ${
+                      article.already_in_db
+                        ? 'opacity-50'
+                        : selectedIds.has(origIdx)
+                        ? 'bg-primary-600/10'
+                        : 'hover:bg-dark-800'
+                    }`}
                   >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                    </svg>
-                  </a>
-                )}
-              </label>
-            ))}
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(origIdx)}
+                      disabled={article.already_in_db}
+                      onChange={() => handleTogglePreviewItem(origIdx)}
+                      className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500"
+                    />
+                    <SeverityBadge severity={sev} />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm text-gray-200 line-clamp-1">{article.title}</span>
+                      <span className="text-xs text-dark-500 ml-2">[{article.source}]</span>
+                    </div>
+                    {article.already_in_db && (
+                      <span className="text-xs text-dark-500 whitespace-nowrap">已存在</span>
+                    )}
+                    {article.source_url && (
+                      <a
+                        href={article.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-dark-400 hover:text-primary-400"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                        </svg>
+                      </a>
+                    )}
+                  </label>
+                )
+              })
+            )}
           </div>
           <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t border-dark-700">
-            <button onClick={() => { setPreview(null); setSelectedIds(new Set()) }}
+            <button onClick={() => { setPreview(null); setSelectedIds(new Set()); setPreviewSeverityFilter('all') }}
               className="btn-secondary text-sm">取消</button>
             <button
               onClick={handleSaveSelected}
@@ -336,25 +455,170 @@ export default function NewsDBPage() {
           已收藏
         </button>
 
+        {/* Export CSV */}
+        <button onClick={handleExport} className="btn-secondary flex items-center gap-1.5">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          匯出 CSV
+        </button>
+
         <span className="text-sm text-dark-400">{total} 篇文章</span>
       </div>
 
       {/* Filter / Search */}
-      <div className="flex gap-3">
-        <form onSubmit={handleSearch} className="flex gap-2 flex-1">
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="搜尋資料庫中的文章..."
-            className="input"
-          />
-          <button type="submit" className="btn-secondary">篩選</button>
-          {filters.search && (
-            <button type="button" onClick={() => { setSearchInput(''); setFilters(prev => ({ ...prev, search: '' })); }}
-              className="btn-secondary text-red-400">清除</button>
+      <div className="space-y-2">
+        {/* Severity filter pills for DB list */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {[
+            { v: 'all', label: '全部' },
+            { v: 'critical', label: '緊急' },
+            { v: 'high', label: '高' },
+            { v: 'low', label: '低' },
+          ].map(({ v, label }) => {
+            const cfg = SEVERITY_CFG[v]
+            return (
+              <button
+                key={v}
+                onClick={() => handleSeverityFilter(v)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  dbSeverityFilter === v
+                    ? (cfg ? cfg.pill + ' font-medium' : 'bg-primary-600/30 text-primary-400 border-primary-500/40')
+                    : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+                }`}
+              >
+                {label}
+              </button>
+            )
+          })}
+          <span className="text-xs text-dark-500">
+            顯示 {total} 篇
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-3 items-center">
+          <form onSubmit={handleSearch} className="flex gap-2 items-center">
+            <input
+              type="text"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="搜尋資料庫中的文章..."
+              className="input w-44"
+            />
+            {/* 全選 / 取消全選 */}
+            {selectedDbIds.size > 0 ? (
+              <button
+                type="button"
+                onClick={handleDeselectAllDb}
+                className="btn-secondary text-sm text-primary-400"
+              >
+                取消全選 ({selectedDbIds.size})
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSelectAllDb}
+                className="btn-secondary text-sm"
+                title="全選目前頁面文章"
+              >
+                全選
+              </button>
+            )}
+            {/* 複製選取連結 */}
+            <button
+              type="button"
+              onClick={handleCopySelectedDb}
+              disabled={!selectedDbIds.size}
+              className={`flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+                selectedDbIds.size
+                  ? 'bg-primary-600/20 text-primary-400 border-primary-500/30 hover:bg-primary-600/30'
+                  : 'btn-secondary opacity-40 cursor-not-allowed'
+              }`}
+              title={selectedDbIds.size ? `複製 ${selectedDbIds.size} 篇文章連結` : '尚未選取'}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              複製{selectedDbIds.size > 0 ? ` (${selectedDbIds.size})` : ''}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowDateFilter(v => !v)}
+              className={`btn-secondary flex items-center gap-1.5 shrink-0 ${
+                showDateFilter || filters.date_from || filters.date_to
+                  ? 'bg-primary-600/20 text-primary-400 border-primary-500/30'
+                  : ''
+              }`}
+              title="日期範圍篩選"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
+              </svg>
+              日期
+              {(filters.date_from || filters.date_to) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-primary-400" />
+              )}
+            </button>
+            <button type="submit" className="btn-secondary">篩選</button>
+            {(filters.search || filters.date_from || filters.date_to) && (
+              <button type="button" onClick={() => {
+                setSearchInput('')
+                setFilters(prev => ({ ...prev, search: '', date_from: '', date_to: '' }))
+                setPage(0)
+              }} className="btn-secondary text-red-400">清除</button>
+            )}
+          </form>
+
+          {/* Sort */}
+          <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="input text-sm w-32">
+            <option value="newest">最新優先</option>
+            <option value="oldest">最舊優先</option>
+            <option value="source">來源 A-Z</option>
+          </select>
+
+          {/* Category filter */}
+          {categories.length > 0 && (
+            <select
+              value={filters.category}
+              onChange={(e) => { setFilters(prev => ({ ...prev, category: e.target.value })); setPage(0) }}
+              className="input text-sm w-32"
+            >
+              <option value="">全部類別</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           )}
-        </form>
+        </div>
+
+        {/* Date range panel */}
+        {showDateFilter && (
+          <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-dark-800/60 border border-dark-700">
+            <span className="text-xs text-dark-400 shrink-0">發布日期</span>
+            <input
+              type="date"
+              value={filters.date_from}
+              onChange={(e) => { setFilters(prev => ({ ...prev, date_from: e.target.value })); setPage(0) }}
+              className="input text-sm py-1.5 w-36"
+            />
+            <span className="text-xs text-dark-500">至</span>
+            <input
+              type="date"
+              value={filters.date_to}
+              onChange={(e) => { setFilters(prev => ({ ...prev, date_to: e.target.value })); setPage(0) }}
+              className="input text-sm py-1.5 w-36"
+            />
+            {(filters.date_from || filters.date_to) && (
+              <button
+                onClick={() => { setFilters(prev => ({ ...prev, date_from: '', date_to: '' })); setPage(0) }}
+                className="text-xs text-dark-500 hover:text-red-400 transition-colors"
+              >
+                × 清除日期
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Articles List */}
@@ -368,55 +632,68 @@ export default function NewsDBPage() {
                 <div className="h-4 bg-dark-700 rounded w-full" />
               </div>
             ))
-          ) : articles.length === 0 ? (
+          ) : sortedArticles.length === 0 ? (
             <div className="card text-center py-12 text-dark-400">
               <p>沒有找到文章</p>
               <p className="text-sm mt-1">試試點擊「抓取新聞」來收集新聞</p>
             </div>
           ) : (
-            articles.map(article => (
-              <div
-                key={article.id}
-                onClick={() => setSelectedArticle(article)}
-                className={`card-hover cursor-pointer ${
-                  selectedArticle?.id === article.id ? 'border-primary-500/50 bg-primary-500/5' : ''
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      {article.is_saved && (
-                        <svg className="w-4 h-4 text-yellow-500 shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                        </svg>
-                      )}
-                      <span className="text-xs text-dark-500">{article.source}</span>
-                      {article.category && (
-                        <span className="badge bg-dark-700 text-dark-300">{article.category}</span>
+            sortedArticles.map(article => {
+              const sev = assessSeverity(article.title, article.content)
+              const isSelected = selectedDbIds.has(article.id)
+              return (
+                <div
+                  key={article.id}
+                  onClick={() => setSelectedArticle(article)}
+                  className={`card-hover cursor-pointer ${
+                    selectedArticle?.id === article.id ? 'border-primary-500/50 bg-primary-500/5' : ''
+                  } ${isSelected ? 'ring-1 ring-primary-500/30' : ''}`}
+                >
+                  <div className="flex items-start gap-3">
+                    {/* Checkbox for multi-select */}
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={(e) => handleToggleDbSelect(e, article.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-1 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 shrink-0"
+                    />
+                    <SeverityBadge severity={sev} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        {article.is_saved && (
+                          <svg className="w-4 h-4 text-yellow-500 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+                          </svg>
+                        )}
+                        <span className="text-xs text-dark-500">{article.source}</span>
+                        {article.category && (
+                          <span className="badge bg-dark-700 text-dark-300">{article.category}</span>
+                        )}
+                      </div>
+                      <h4 className="font-medium text-sm text-gray-200 line-clamp-2">{article.title}</h4>
+                      {article.tags && article.tags.length > 0 && (
+                        <div className="flex gap-1 mt-1.5">
+                          {article.tags.map(tag => (
+                            <span key={tag} className="text-xs px-1.5 py-0.5 rounded bg-primary-600/10 text-primary-400">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
-                    <h4 className="font-medium text-sm text-gray-200 line-clamp-2">{article.title}</h4>
-                    {article.tags && article.tags.length > 0 && (
-                      <div className="flex gap-1 mt-1.5">
-                        {article.tags.map(tag => (
-                          <span key={tag} className="text-xs px-1.5 py-0.5 rounded bg-primary-600/10 text-primary-400">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <span className="text-xs text-dark-500 whitespace-nowrap">
+                      {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
+                    </span>
                   </div>
-                  <span className="text-xs text-dark-500 whitespace-nowrap">
-                    {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
-                  </span>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
 
           {/* Pagination */}
-          {total > pageSize && (
-            <div className="flex items-center justify-center gap-2 pt-4">
+          {total > 0 && (
+            <div className="flex items-center justify-center gap-3 pt-4 flex-wrap">
               <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
                 className="btn-secondary text-sm">上一頁</button>
               <span className="text-sm text-dark-400">
@@ -425,6 +702,15 @@ export default function NewsDBPage() {
               <button onClick={() => setPage(p => p + 1)}
                 disabled={(page + 1) * pageSize >= total}
                 className="btn-secondary text-sm">下一頁</button>
+              <select
+                value={pageSize}
+                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                className="input text-xs py-1 w-28"
+              >
+                {[10, 20, 50, 100, 200].map(n => (
+                  <option key={n} value={n}>每頁 {n} 篇</option>
+                ))}
+              </select>
             </div>
           )}
         </div>
@@ -453,7 +739,7 @@ export default function NewsDBPage() {
             </div>
 
             {/* Actions */}
-            <div className="flex gap-2 mb-4 pb-4 border-b border-dark-700">
+            <div className="flex flex-wrap gap-2 mb-4 pb-4 border-b border-dark-700">
               <button onClick={() => handleToggleSave(selectedArticle)}
                 className={`btn-secondary text-sm flex items-center gap-1.5 ${
                   selectedArticle.is_saved ? 'text-yellow-500' : ''
@@ -465,16 +751,30 @@ export default function NewsDBPage() {
                 </svg>
                 {selectedArticle.is_saved ? '已收藏' : '收藏'}
               </button>
+
               {selectedArticle.source_url && (
-                <a href={selectedArticle.source_url} target="_blank" rel="noopener noreferrer"
-                  className="btn-secondary text-sm flex items-center gap-1.5">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                  </svg>
-                  原始來源
-                </a>
+                <div className="flex items-center gap-1">
+                  <a href={selectedArticle.source_url} target="_blank" rel="noopener noreferrer"
+                    className="btn-secondary text-sm flex items-center gap-1.5">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                    </svg>
+                    原始來源
+                  </a>
+                  <button
+                    onClick={() => handleCopyUrl(selectedArticle.source_url)}
+                    className="btn-secondary text-sm p-2"
+                    title="複製連結"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                </div>
               )}
+
               <button onClick={() => handleDelete(selectedArticle.id)}
                 className="btn-danger text-sm ml-auto">
                 刪除

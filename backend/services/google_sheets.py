@@ -4,6 +4,8 @@ import logging
 import os
 from datetime import datetime
 
+import httpx
+
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
@@ -153,6 +155,44 @@ async def get_saved_news(limit: int = 100) -> list[dict]:
     except Exception as e:
         logger.error(f"Google Sheets news read error: {e}")
         return []
+
+
+# --- GAS Web App (no Service Account needed) ---
+
+async def append_news_via_gas(articles: list[dict]) -> bool:
+    """Write articles to Google Sheets via GAS Web App endpoint.
+
+    GAS doPost(e) should accept JSON: {action: "appendNews", rows: [...]}
+    Each row: {資料日期, 標題, 分類, 網址, 內容}
+    """
+    if not settings.GOOGLE_APPS_SCRIPT_URL or not articles:
+        return False
+
+    rows = []
+    for a in articles:
+        pub = a.get("published_at") or datetime.utcnow().strftime("%Y-%m-%d")
+        if hasattr(pub, "strftime"):
+            pub = pub.strftime("%Y-%m-%d")
+        rows.append({
+            "資料日期": str(pub)[:10],
+            "標題": a.get("title", ""),
+            "分類": a.get("category", ""),
+            "網址": a.get("source_url", ""),
+            "內容": (a.get("content", "") or "")[:2000],
+        })
+
+    payload = {"action": "appendNews", "rows": rows}
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.post(settings.GOOGLE_APPS_SCRIPT_URL, json=payload)
+            if resp.status_code == 200:
+                logger.info(f"GAS: appended {len(rows)} rows to Sheets")
+                return True
+            logger.warning(f"GAS returned status {resp.status_code}: {resp.text[:200]}")
+            return False
+    except Exception as e:
+        logger.error(f"GAS append error: {e}")
+        return False
 
 
 # --- Connection Test ---

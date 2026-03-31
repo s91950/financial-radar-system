@@ -27,7 +27,9 @@ export const radarAPI = {
   deleteCondition: (condId) => api.delete(`/radar/market/conditions/${condId}`),
   // Alert actions
   deleteAlert: (id) => api.delete(`/radar/alerts/${id}`),
+  toggleSaveAlert: (id) => api.put(`/radar/alerts/${id}/save`),
   analyzeAlert: (id) => api.post(`/radar/alerts/${id}/analyze`),
+  triggerScan: () => api.post('/radar/scan'),
 }
 
 // --- Search APIs ---
@@ -60,8 +62,69 @@ export const settingsAPI = {
   getNotificationSettings: () => api.get('/settings/notifications'),
   updateNotification: (channel, data) => api.put(`/settings/notifications/${channel}`, data),
   testNotification: (channel) => api.post(`/settings/notifications/test/${channel}`),
+  getLineStatus: () => api.get('/settings/line-status'),
   getGoogleSheetsStatus: () => api.get('/settings/google-sheets'),
   testGoogleSheets: () => api.post('/settings/google-sheets/test'),
+  getAIModel: () => api.get('/settings/ai-model'),
+  updateAIModel: (model) => api.put('/settings/ai-model', { model }),
+  getRadarTopics: () => api.get('/settings/radar-topics'),
+  updateRadarTopics: (topics, hours_back = 24, interval_minutes = null) => api.put('/settings/radar-topics', { topics, hours_back, interval_minutes }),
+  getSeverityKeywords: () => api.get('/settings/severity-keywords'),
+  updateSeverityKeywords: (data) => api.put('/settings/severity-keywords', data),
+}
+
+// --- Topic Tracking APIs ---
+export const topicsAPI = {
+  getTopics: () => api.get('/topics/'),
+  createTopic: (data) => api.post('/topics/', data),
+  updateTopic: (id, data) => api.put(`/topics/${id}`, data),
+  deleteTopic: (id) => api.delete(`/topics/${id}`),
+  getArticles: (id, params) => api.get(`/topics/${id}/articles`, { params }),
+  searchAndImport: (id, data) => api.post(`/topics/${id}/search`, data),
+  deleteArticle: (topicId, articleId) => api.delete(`/topics/${topicId}/articles/${articleId}`),
+}
+
+// --- Research Reports APIs ---
+export const reportsAPI = {
+  getReports: (params) => api.get('/research/reports', { params }),
+  updateReport: (id, data) => api.put(`/research/${id}`, data),
+  deleteReport: (id) => api.delete(`/research/${id}`),
+  manualFetch: (data) => api.post('/research/fetch', data),
+  saveSelected: (data) => api.post('/research/save-selected', data),
+  getInstitutions: () => api.get('/research/institutions'),
+}
+
+// --- YouTube Channel Monitor APIs ---
+export const youtubeAPI = {
+  getChannels: () => api.get('/youtube/channels'),
+  addChannel: (data) => api.post('/youtube/channels', data),
+  updateChannel: (id, data) => api.put(`/youtube/channels/${id}`, data),
+  deleteChannel: (id) => api.delete(`/youtube/channels/${id}`),
+  checkChannel: (id) => api.post(`/youtube/channels/${id}/check`),
+  checkAll: () => api.post('/youtube/check-all'),
+  getVideos: (params) => api.get('/youtube/videos', { params }),
+  getNewCount: () => api.get('/youtube/new-count'),
+  markSeen: (id) => api.put(`/youtube/videos/${id}/seen`),
+  markAllSeen: (channelId) => api.put('/youtube/videos/mark-all-seen', null, {
+    params: channelId ? { channel_id: channelId } : {},
+  }),
+}
+
+// --- Utility ---
+
+/**
+ * Resolve a URL to its final destination (follow HTTP redirects).
+ * Useful for converting RSS feed redirect URLs into actual article URLs
+ * that AI tools like Gemini can read directly.
+ */
+export async function resolveUrl(url) {
+  if (!url) return url
+  try {
+    const { data } = await api.get('/utils/resolve-url', { params: { url }, timeout: 10000 })
+    return data.url
+  } catch {
+    return url
+  }
 }
 
 export default api

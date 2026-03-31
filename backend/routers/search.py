@@ -16,7 +16,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.database import Article, MonitorSource, get_db
-from backend.services import claude_ai, rss_feed
+from backend.services import rss_feed
+from backend.services.ai_factory import get_ai_service
 from backend.services.exposure import format_exposure_summary, match_positions_to_news
 from backend.services.google_news import search_google_news
 from backend.services.google_sheets import get_positions
@@ -159,12 +160,13 @@ async def search_topic(req: SearchRequest, db: Session = Depends(get_db)):
 
     # Optional: include AI analysis in same request
     if req.include_ai_analysis:
-        claude_results = await claude_ai.search_and_analyze(
+        ai_service = get_ai_service()
+        ai_results = await ai_service.search_and_analyze(
             query=req.query,
             context=req.context,
         )
-        result["ai_analysis"] = claude_results.get("analysis", "")
-        result["ai_sources"] = claude_results.get("sources", [])
+        result["ai_analysis"] = ai_results.get("analysis", "")
+        result["ai_sources"] = ai_results.get("sources", [])
 
     return result
 
@@ -183,14 +185,15 @@ async def analyze_topic(req: AnalyzeRequest):
         )
         extra_context += f"\n\n相關新聞標題：\n{headlines}"
 
-    claude_results = await claude_ai.search_and_analyze(
+    ai_service = get_ai_service()
+    ai_results = await ai_service.search_and_analyze(
         query=req.query,
         context=extra_context,
     )
 
     return {
-        "ai_analysis": claude_results.get("analysis", ""),
-        "ai_sources": claude_results.get("sources", []),
+        "ai_analysis": ai_results.get("analysis", ""),
+        "ai_sources": ai_results.get("sources", []),
     }
 
 
