@@ -8,6 +8,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Language:** All UI text and comments are in Traditional Chinese (繁體中文). AI analysis output should also be in Traditional Chinese.
 
+## Deployment (Production)
+
+The system runs on **Google Cloud e2-micro VM** (us-east1-d, always free). Production stack:
+
+```
+Internet → nginx (:80) → React static (frontend/dist/)
+                       → FastAPI (:8000, via proxy)
+                       → WebSocket (/ws)
+
+LINE Webhook → Cloudflare Tunnel (HTTPS) → nginx → /api/line/webhook
+```
+
+- **Backend service**: `systemd` unit `financial-radar.service`, auto-starts on boot
+- **Cloudflare Tunnel**: `systemd` unit `cloudflared.service`, provides HTTPS for LINE webhook (trycloudflare.com URL changes on VM reboot)
+- **Deploy scripts**: `deploy/` — `setup.sh`, `deploy.sh`, `financial-radar.service`, `nginx.conf`
+- **DB path on VM**: must use absolute path `sqlite:////opt/financial-radar/data/financial_radar.db` in `.env` (relative path fails under systemd)
+- **Service user**: VM username is `s9195000409898` (not `ubuntu`) — service file `User=` must match
+
+### Update Production After Code Changes
+```bash
+# Local
+git add . && git commit -m "..." && git push
+
+# On VM (SSH)
+cd /opt/financial-radar && git pull
+sudo systemctl restart financial-radar
+# Frontend changes also require:
+cd frontend && npm run build && sudo systemctl restart financial-radar
+```
+
 ## Commands
 
 ### Backend (FastAPI + Python 3.10+)
@@ -58,7 +88,8 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 3. **新聞資料庫 (News DB)** `/news` — Fetch returns a **preview** (not auto-saved). User selects which articles to save to SQLite + Google Sheets. Includes sentiment/heat dashboard.
 4. **研究報告 (Research)** `/reports` — Daily auto-fetch from IMF, BIS, Fed, ECB, BOJ, BOE, NBER. Dual-mode: RSS for working feeds, **RePEc/IDEAS HTML scraping** for institutions with broken RSS (IMF, ECB, NBER). Same preview → select → save flow.
 5. **市場儀表板 (Dashboard)** `/dashboard` — Market indicators, sentiment charts, heat map.
-6. **系統設定 (Settings)** `/settings` — Sources, notifications, Google Sheets, AI model, radar topics.
+6. **YouTube 監控** `/youtube` — Monitors YouTube channels for new videos, stores in `YoutubeVideo` table with `is_new` flag.
+7. **系統設定 (Settings)** `/settings` — Sources, notifications, Google Sheets, AI model, radar topics.
 
 ### Backend Layer Structure
 - **`routers/`** — FastAPI endpoints. Each router has a `/api/{prefix}` path.
@@ -122,10 +153,28 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `severity_critical_keywords` | User-overridable critical keyword list (JSON) |
 | `severity_high_keywords` | User-overridable high keyword list (JSON) |
 | `radar_scan_lock` | ISO timestamp — cross-process dedup guard |
+| `line_last_reply_at` | ISO timestamp — last time LINE news query was answered (unread baseline) |
+| `line_last_yt_reply_at` | ISO timestamp — last time LINE YouTube query was answered (unread baseline) |
+
+### LINE Webhook Command System (`routers/line_webhook.py`)
+
+Bot only responds to specific commands — all other messages are silently ignored:
+
+| Input pattern | Response |
+|---------------|----------|
+| `通知` | Unread critical news alerts since last query (updates `line_last_reply_at`) |
+| `通知1天` / `通知今日` / `通知3小時` | Critical news from that time range |
+| `yt` / `YT` / `yt通知` | Unread YouTube videos since last query (updates `line_last_yt_reply_at`) |
+| `yt1天` / `yt今日` / `yt3小時` | YouTube videos from that time range |
+| anything else | no reply |
+
+Detection: `is_yt = user_text[:2].lower() == "yt"`, `is_news = not is_yt and "通知" in user_text`.
 
 ### Database (SQLite)
 
-Ten models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `ResearchReport`, `SystemConfig`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
+Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `ResearchReport`, `SystemConfig`, `YoutubeChannel`, `YoutubeVideo`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
+
+`YoutubeVideo.is_new` — `True` until user marks as seen. Used by LINE webhook for unread YT queries.
 
 `MonitorSource.type` field values: `rss`, `website`, `social`, `newsapi`, `research`, `person`. Research sources use `type="research"` and are fetched separately from news RSS sources.
 
@@ -147,7 +196,8 @@ Copy `.env.example` to `.env`. Key variables:
 - `DEFAULT_AI_MODEL=gemini` — Switch to `claude` to use Anthropic instead
 - `ANTHROPIC_API_KEY` — Required only if using Claude as AI engine
 - `NEWS_API_KEY` — For NewsAPI headline fetching
-- `LINE_NOTIFY_TOKEN` — Optional, for LINE push notifications
+- `LINE_CHANNEL_ACCESS_TOKEN` + `LINE_CHANNEL_SECRET` — LINE Bot webhook (passive reply, free). `LINE_TARGET_ID` left empty disables active push while keeping passive reply active.
+- `LINE_NOTIFY_TOKEN` — Legacy LINE Notify (deprecated, use Messaging API instead)
 - `GOOGLE_APPS_SCRIPT_URL` — Preferred method for Google Sheets write (GAS Web App)
 - `GOOGLE_SHEETS_CREDENTIALS_FILE` + `GOOGLE_SHEETS_SPREADSHEET_ID` — Legacy method (Service Account JSON)
 - `RADAR_INTERVAL_MINUTES`, `MARKET_CHECK_INTERVAL_MINUTES` — Scheduler timing (fixed-interval, not post-completion)
@@ -161,6 +211,8 @@ Copy `.env.example` to `.env`. Key variables:
 | `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment |
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
+| `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
+| `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
 | `/api/settings` | `routers/settings.py` | Monitor sources, notifications, Google Sheets, AI model config |
 | `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
 | `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |
