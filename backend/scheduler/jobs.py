@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import traceback
 from datetime import datetime
 
@@ -190,13 +191,30 @@ async def _radar_scan_inner(force: bool = False):
 
     try:
         # Load user-configured severity keywords (falls back to defaults)
-        from backend.routers.settings import get_severity_keywords as _load_sev_kw
+        from backend.routers.settings import get_severity_keywords as _load_sev_kw, get_severity_rules as _load_sev_rules
         _sev_crit, _sev_high = _load_sev_kw(db)
+        _sev_rules = _load_sev_rules(db)
 
-        # 1. Fetch from active RSS sources
+        # Load hours_back early — shared by RSS (step 1) and Google News (step 2)
+        hours_config = db.query(SystemConfig).filter(SystemConfig.key == "radar_hours_back").first()
+        gn_hours_back = int(hours_config.value) if hours_config else 24
+
+        # Load radar topics early to build global keyword fallback for RSS sources
+        # (also reused by Google News step 2 to avoid a second DB query)
+        _tw_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics").first()
+        _all_tw_topics = json.loads(_tw_cfg.value) if _tw_cfg else ["金融", "股市", "經濟"]
+        _us_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics_us").first()
+        _all_us_topics = json.loads(_us_cfg.value) if _us_cfg else []
+        # Combined topic list passed to RSS filter as global fallback (boolean semantics preserved)
+        _global_topics = _all_tw_topics + _all_us_topics
+        # RSS-only mode: skip all Google News fetching
+        _rss_only_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_rss_only").first()
+        _rss_only = (_rss_only_cfg.value == "true") if _rss_only_cfg else False
+
+        # 1. Fetch from active RSS sources (includes social type = Nitter/RSS mirrors)
         sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
-            MonitorSource.type == "rss",
+            MonitorSource.type.in_(["rss", "social"]),
         ).all()
 
         feeds = [
@@ -212,7 +230,9 @@ async def _radar_scan_inner(force: bool = False):
         seen_urls = set()
         seen_titles = set()
         if feeds:
-            rss_results = await rss_feed.fetch_multiple_feeds(feeds, hours_back=2)
+            rss_results = await rss_feed.fetch_multiple_feeds(
+                feeds, hours_back=gn_hours_back, global_topics=_global_topics
+            )
             for article_data in rss_results:
                 url = article_data.get("source_url", "")
                 title = article_data.get("title", "").strip()
@@ -223,40 +243,82 @@ async def _radar_scan_inner(force: bool = False):
                         seen_titles.add(title)
                         new_articles.append(article_data)
 
-        # 2. Fetch latest headlines via Google News RSS — all topics in parallel
-        topics_config = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics").first()
-        topics = json.loads(topics_config.value) if topics_config else ["金融", "股市", "經濟"]
-        hours_config = db.query(SystemConfig).filter(SystemConfig.key == "radar_hours_back").first()
-        gn_hours_back = int(hours_config.value) if hours_config else 24
-        # force 掃描使用較短回溯時窗（2h）以顯示近期新聞；自動掃描使用使用者設定值
-        gn_hours = min(2, gn_hours_back) if force else gn_hours_back
+        # 1b. Fetch MOPS 公開資訊觀測站重大訊息（type="mops" 來源啟用時）
+        mops_source = db.query(MonitorSource).filter(
+            MonitorSource.is_active == True,
+            MonitorSource.type == "mops",
+        ).first()
+        if mops_source:
+            try:
+                from backend.services.mops_scraper import fetch_mops_material_news
+                from backend.services.rss_feed import _filter_by_keywords as _kw_filter
+                mops_articles = await fetch_mops_material_news(hours_back=gn_hours_back)
+                # Apply source-specific keywords if configured (no global fallback for MOPS —
+                # material disclosures are inherently relevant, global topics would over-filter)
+                mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
+                if mops_kws:
+                    mops_articles = _kw_filter(mops_articles, mops_kws)
+                for article_data in mops_articles:
+                    url = article_data.get("source_url", "")
+                    title = article_data.get("title", "").strip()
+                    if url and title and url not in seen_urls and title not in seen_titles:
+                        if force or (not db.query(Article).filter(Article.title == title).first()):
+                            seen_urls.add(url)
+                            seen_titles.add(title)
+                            new_articles.append(article_data)
+            except Exception as mops_err:
+                logger.warning(f"MOPS fetch error (non-fatal): {mops_err}")
 
-        _b_semaphore = asyncio.Semaphore(_RADAR_CONCURRENCY)
+        # 2. Fetch latest headlines via Google News RSS — TW + US topics in parallel
+        # Skipped when RSS-only mode is enabled
+        if not _rss_only:
+            topics = _all_tw_topics
+            us_topics = _all_us_topics
+            # gn_hours_back already loaded above (shared with RSS step)
+            # force 掃描使用較短回溯時窗（2h）以顯示近期新聞；自動掃描使用使用者設定值
+            gn_hours = min(2, gn_hours_back) if force else gn_hours_back
 
-        async def _fetch_radar_topic(topic: str) -> tuple[str, list[dict]]:
-            async with _b_semaphore:
-                try:
-                    if '(' in topic:
-                        results = await _multi_search_topic([topic], hours_back=gn_hours)
-                    else:
-                        results = await search_google_news(query=topic, hours_back=gn_hours, max_results=20)
-                    return topic, results
-                except Exception:
-                    return topic, []
+            _b_semaphore = asyncio.Semaphore(_RADAR_CONCURRENCY)
 
-        topic_batches = await asyncio.gather(*[_fetch_radar_topic(t) for t in topics])
+            async def _fetch_radar_topic(topic: str, lang: str = "zh-TW", country: str = "TW") -> tuple[str, list[dict]]:
+                # 兼容舊版 [en-US] suffix（新版改用 us_topics 區塊，此處僅作向後相容）
+                clean_topic = topic
+                _m = re.search(r'\[([a-z]{2})-([A-Z]{2})\]\s*$', topic)
+                if _m:
+                    lang = _m.group(1)
+                    country = _m.group(2)
+                    clean_topic = topic[:_m.start()].strip()
 
-        for topic, headlines in topic_batches:
-            for article_data in headlines:
-                url = article_data.get("source_url", "")
-                title = article_data.get("title", "").strip()
-                if url and title and url not in seen_urls and title not in seen_titles:
-                    if force or (not db.query(Article).filter(Article.source_url == url).first() and \
-                       not db.query(Article).filter(Article.title == title).first()):
-                        seen_urls.add(url)
-                        seen_titles.add(title)
-                        article_data['matched_keyword'] = _extract_matched_terms(topic, title)
-                        new_articles.append(article_data)
+                async with _b_semaphore:
+                    try:
+                        if '(' in clean_topic:
+                            results = await _multi_search_topic([clean_topic], hours_back=gn_hours)
+                        else:
+                            results = await search_google_news(
+                                query=clean_topic, hours_back=gn_hours, max_results=20,
+                                language=lang, country=country,
+                            )
+                        return topic, results
+                    except Exception:
+                        return topic, []
+
+            # 台灣區（中文）+ 英文美國區 — 全部並行
+            topic_batches = await asyncio.gather(
+                *[_fetch_radar_topic(t, "zh-TW", "TW") for t in topics],
+                *[_fetch_radar_topic(t, "en", "US") for t in us_topics],
+            )
+
+            for topic, headlines in topic_batches:
+                for article_data in headlines:
+                    url = article_data.get("source_url", "")
+                    title = article_data.get("title", "").strip()
+                    if url and title and url not in seen_urls and title not in seen_titles:
+                        if force or (not db.query(Article).filter(Article.source_url == url).first() and \
+                           not db.query(Article).filter(Article.title == title).first()):
+                            seen_urls.add(url)
+                            seen_titles.add(title)
+                            article_data['matched_keyword'] = _extract_matched_terms(topic, title)
+                            new_articles.append(article_data)
 
         # 3b. Topic-specific searches — results feed BOTH radar alerts and TopicArticle.
         # Two passes per topic:
@@ -295,6 +357,9 @@ async def _radar_scan_inner(force: bool = False):
                     logger.debug(f"Topic '{topic.name}' ← RSS/GN: {a.get('title','')[:60]}")
 
             # Pass B: dedicated Google News search for this topic
+            # Skipped when RSS-only mode is enabled
+            if _rss_only:
+                continue
             # force 掃描用 2h（顯示近期），自動掃描用 3h（避免 1h 間隔遺漏文章）
             try:
                 topic_results = await _multi_search_topic(kws, hours_back=2 if force else 6)
@@ -323,7 +388,7 @@ async def _radar_scan_inner(force: bool = False):
                         seen_urls.add(url)
                         seen_titles.add(title)
                         a_copy = dict(a)
-                        a_copy['matched_keyword'] = topic.name
+                        a_copy['matched_keyword'] = _extract_matched_terms(" ".join(kws), title) or topic.name
                         new_articles.append(a_copy)
                         logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
 
@@ -408,7 +473,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # AI analysis is on-demand only (user triggers via UI)
         def _fmt_article_line(a: dict) -> str:
-            sev = _assess_severity_single(a, _sev_crit, _sev_high)
+            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules)
             kw = a.get('matched_keyword', '')
             base = f"[{a.get('source', '')}] {a.get('title', '')}"
             line = f"{base} (關鍵字：{kw})" if kw else base
@@ -416,7 +481,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # Store source_urls with severity prefix so frontend can filter them
         source_urls = [
-            f"{{{_assess_severity_single(a, _sev_crit, _sev_high)}}}{a.get('source_url', '')}"
+            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules)}}}{a.get('source_url', '')}"
             for a in new_articles if a.get("source_url")
         ]
 
@@ -425,7 +490,7 @@ async def _radar_scan_inner(force: bool = False):
             title=alert_title,
             content="\n".join(_fmt_article_line(a) for a in new_articles),
             analysis=None,
-            severity=_assess_severity(new_articles, _sev_crit, _sev_high),
+            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules),
             source="Radar Scan",
             exposure_summary=exposure_summary or None,
             source_urls=json.dumps(source_urls) if source_urls else None,
@@ -485,6 +550,30 @@ async def _radar_scan_inner(force: bool = False):
         except Exception as notif_err:
             _flog(f"[SCAN] Notification ERROR: {notif_err}\n{traceback.format_exc()}")
             logger.error(f"Notification dispatch error: {notif_err}")
+
+        # 自動將高/緊急文章寫入 Google Sheet（非阻塞，失敗不影響掃描）
+        try:
+            from backend.config import settings as _cfg
+            if _cfg.GOOGLE_APPS_SCRIPT_URL:
+                _urgent_rows = []
+                for _a in new_articles:
+                    _sev = _assess_severity_single(_a, _sev_crit, _sev_high, _sev_rules)
+                    if _sev in ("critical", "high"):
+                        _urgent_rows.append({
+                            "date":    datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                            "title":   _a.get("title", ""),
+                            "keyword": _a.get("matched_keyword", ""),
+                            "url":     _a.get("source_url", ""),
+                        })
+                if _urgent_rows:
+                    import httpx as _httpx
+                    async with _httpx.AsyncClient(timeout=10) as _c:
+                        await _c.post(_cfg.GOOGLE_APPS_SCRIPT_URL,
+                                      json={"articles": _urgent_rows},
+                                      follow_redirects=True)
+                    _flog(f"[SCAN] Wrote {len(_urgent_rows)} urgent articles to Google Sheet")
+        except Exception as _gs_err:
+            _flog(f"[SCAN] Google Sheet write failed (non-fatal): {_gs_err}")
 
         logger.info(f"Radar scan complete: {len(new_articles)} articles, {len(article_groups)} groups → 1 alert")
         return 1
@@ -991,17 +1080,31 @@ _HIGH_KEYWORDS = [
 ]
 
 
-def _assess_severity_single(article: dict, critical_kws=None, high_kws=None) -> str:
-    """Assess severity for a single article, also considering its matched keyword.
+def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None) -> str:
+    """Assess severity for a single article.
 
-    Pass critical_kws / high_kws to use user-configured lists; falls back to module defaults.
+    Evaluation order (first match wins):
+    1. Boolean rules (user-configured, e.g. "暴跌 AND 台股" → critical)
+    2. Keyword lists (critical_kws / high_kws)
     """
-    c = critical_kws if critical_kws is not None else _CRITICAL_KEYWORDS
-    h = high_kws if high_kws is not None else _HIGH_KEYWORDS
     text = (article.get("title", "") + " " + article.get("content", "")[:200]).lower()
     matched_kw = (article.get("matched_keyword", "") or "").lower()
     full_text = text + " " + matched_kw
 
+    # 1. Boolean rules — 第一條符合即返回
+    if rules:
+        for rule in rules:
+            cond = rule.get("condition", "")
+            sev  = rule.get("severity", "low")
+            if not cond:
+                continue
+            groups = _parse_keyword_groups(cond.split())
+            if _match_keyword_groups(full_text, groups):
+                return sev
+
+    # 2. Keyword lists fallback
+    c = critical_kws if critical_kws is not None else _CRITICAL_KEYWORDS
+    h = high_kws if high_kws is not None else _HIGH_KEYWORDS
     if any(kw in full_text for kw in c):
         return "critical"
     if any(kw in full_text for kw in h):
@@ -1021,16 +1124,41 @@ def _extract_matched_terms(query: str, title: str) -> str:
     matched = [t for t in (quoted + bare) if t.lower() in title_lower]
     if matched:
         return " / ".join(dict.fromkeys(matched[:3]))  # dedup, max 3
-    # Fallback: first quoted phrase or truncated query
-    return (quoted[0] if quoted else bare[0] if bare else query)[:20]
+    # 無命中 → 不顯示 badge（避免顯示原始查詢字串）
+    return ""
 
 
-def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None) -> str:
+def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rules=None) -> str:
     """Overall severity = max of all per-article severities."""
     if not articles:
         return "low"
-    severities = [_assess_severity_single(a, critical_kws, high_kws) for a in articles]
+    severities = [_assess_severity_single(a, critical_kws, high_kws, rules) for a in articles]
     return max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 0))
+
+
+def _flatten_topics_to_keywords(topics: list[str]) -> list[str]:
+    """Flatten radar topic strings (including boolean groups) into individual keyword terms.
+
+    Used to build a global keyword fallback for RSS sources that have no source-specific keywords.
+    Example:
+      ["台股", '("Fed" OR "FOMC") 升息'] → ["台股", "Fed", "FOMC", "升息"]
+    """
+    import re as _re
+    keywords: set[str] = set()
+    for topic in topics:
+        # Extract double-quoted terms
+        for q in _re.findall(r'"([^"]+)"', topic):
+            kw = q.strip()
+            if kw:
+                keywords.add(kw)
+        # Strip quoted segments, parens, and OR/AND operators; keep remaining words
+        remainder = _re.sub(r'"[^"]*"', '', topic)
+        remainder = _re.sub(r'\b(?:OR|AND)\b', ' ', remainder, flags=_re.IGNORECASE)
+        for word in _re.split(r'[\s()]+', remainder):
+            word = word.strip()
+            if word and len(word) > 1:
+                keywords.add(word)
+    return list(keywords)
 
 
 def _parse_keyword_groups(keywords: list[str]) -> list[list[str]]:

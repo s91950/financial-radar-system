@@ -21,6 +21,45 @@ function serializeGroups(groups) {
   return groups.filter(g => g.length > 0).map(g => `(${g.map(t => `"${t}"`).join(' OR ')})`).join(' ')
 }
 
+// Parse a severity rule condition string into [[term,...], [term,...]] groups
+// Handles "(A OR B) word" and plain space-separated words
+function parseCondition(condStr) {
+  if (!condStr) return [['']]
+  const parts = []
+  const regex = /\(([^)]+)\)|(\S+)/g
+  let match
+  while ((match = regex.exec(condStr)) !== null) {
+    if (match[1] !== undefined) {
+      const terms = match[1].split(/\bOR\b/i).map(t => t.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+      if (terms.length > 0) parts.push(terms)
+    } else {
+      const word = match[2].replace(/^["']|["']$/g, '')
+      if (word) parts.push([word])
+    }
+  }
+  return parts.length > 0 ? parts : [['']]
+}
+
+// Serialize groups to condition string — single-term groups are bare words, multi-term groups use (A OR B)
+function serializeCondition(groups) {
+  return groups
+    .map(g => g.filter(Boolean))
+    .filter(g => g.length > 0)
+    .map(g => g.length === 1 ? g[0] : `(${g.join(' OR ')})`)
+    .join(' ')
+}
+
+// Returns true if a topic string contains no CJK/Japanese characters (i.e. is purely English/ASCII)
+function isEnglishTopic(topic) {
+  const hasCJK = (s) => /[\u4e00-\u9fff\u3040-\u30ff\uff00-\uffef]/.test(s)
+  if (topic.includes('(')) {
+    const groups = parseGroupedKeyword(topic)
+    if (!groups) return !hasCJK(topic)
+    return groups.every(g => g.every(t => !hasCJK(t)))
+  }
+  return !hasCJK(topic)
+}
+
 // Shared inner editing layout used by both the card and the builder
 function GroupEditor({ draft, newTerms, setNewTerms, addTerm, removeTerm, addGroup, removeGroup }) {
   return (
@@ -212,6 +251,145 @@ function NewGroupedBuilder({ onAdd, onClose }) {
   )
 }
 
+function SeverityRuleCard({ rule, onSave, onRemove, canMoveUp, canMoveDown, onMoveUp, onMoveDown }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(() => parseCondition(rule.condition))
+  const [newTerms, setNewTerms] = useState(() => parseCondition(rule.condition).map(() => ''))
+  const [draftSeverity, setDraftSeverity] = useState(rule.severity)
+  const [draftNote, setDraftNote] = useState(rule.note || '')
+
+  const startEdit = () => {
+    const g = parseCondition(rule.condition)
+    setDraft(g); setNewTerms(g.map(() => ''))
+    setDraftSeverity(rule.severity); setDraftNote(rule.note || '')
+    setEditing(true)
+  }
+  const addTerm = (gi) => {
+    const t = (newTerms[gi] || '').trim(); if (!t) return
+    setDraft(p => p.map((g, i) => i === gi ? [...g.filter(Boolean), t] : g))
+    setNewTerms(p => p.map((v, i) => i === gi ? '' : v))
+  }
+  const removeTerm = (gi, ti) => setDraft(p => p.map((g, i) => i === gi ? g.filter((_, j) => j !== ti) : g))
+  const addGroup = () => { setDraft(p => [...p, ['']]); setNewTerms(p => [...p, '']) }
+  const removeGroup = (gi) => { setDraft(p => p.filter((_, i) => i !== gi)); setNewTerms(p => p.filter((_, i) => i !== gi)) }
+  const handleSave = () => {
+    const condition = serializeCondition(draft)
+    if (!condition) return
+    onSave({ condition, severity: draftSeverity, note: draftNote })
+    setEditing(false)
+  }
+
+  const groups = parseCondition(rule.condition)
+  const sevCls = rule.severity === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+    rule.severity === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
+    'bg-gray-500/20 text-gray-400 border-gray-500/30'
+  const sevLabel = rule.severity === 'critical' ? '緊急' : rule.severity === 'high' ? '高' : '低'
+
+  return (
+    <div className="rounded-lg bg-dark-800 border border-dark-600 overflow-hidden">
+      <div className="flex items-center gap-2 p-2.5">
+        {/* Move buttons */}
+        <div className="flex flex-col gap-0.5 shrink-0">
+          <button onClick={onMoveUp} disabled={!canMoveUp}
+            className={`text-[10px] px-1 leading-none ${canMoveUp ? 'text-dark-500 hover:text-dark-300' : 'text-dark-700 cursor-default'}`}>▲</button>
+          <button onClick={onMoveDown} disabled={!canMoveDown}
+            className={`text-[10px] px-1 leading-none ${canMoveDown ? 'text-dark-500 hover:text-dark-300' : 'text-dark-700 cursor-default'}`}>▼</button>
+        </div>
+        {/* Severity badge */}
+        <span className={`text-xs px-2 py-0.5 rounded border font-medium shrink-0 ${sevCls}`}>{sevLabel}</span>
+        {/* Visual condition blocks (click to edit) */}
+        <div
+          className="flex items-center flex-wrap gap-1.5 flex-1 min-w-0 cursor-pointer group/rule"
+          onClick={!editing ? startEdit : undefined}
+        >
+          {groups.map((terms, gi) => (
+            <div key={gi} className="flex items-stretch">
+              {gi > 0 && (
+                <div className="flex items-center px-1.5 border-x border-dark-600">
+                  <span className="text-[10px] font-bold text-dark-500 select-none">AND</span>
+                </div>
+              )}
+              <div className="bg-dark-700 rounded px-2 py-1 flex items-center gap-1 flex-wrap">
+                {terms.filter(Boolean).map((t, ti) => (
+                  <span key={ti} className="flex items-center gap-0.5">
+                    {ti > 0 && <span className="text-[9px] text-dark-400 select-none font-bold">OR</span>}
+                    <span className="text-xs text-primary-300">{t}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {rule.note && <span className="text-xs text-dark-500 truncate ml-1">— {rule.note}</span>}
+          {!editing && (
+            <span className="text-[10px] text-dark-700 group-hover/rule:text-dark-500 transition-colors select-none ml-0.5">✎</span>
+          )}
+        </div>
+        {/* Delete */}
+        <button onClick={onRemove} className="text-dark-600 hover:text-red-400 text-base px-1 shrink-0 leading-none ml-1">×</button>
+      </div>
+      {/* Edit panel */}
+      {editing && (
+        <div className="px-3 pb-3 border-t border-dark-600 pt-3 space-y-3 bg-dark-900/40">
+          <GroupEditor draft={draft} newTerms={newTerms} setNewTerms={setNewTerms}
+            addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
+          <div className="flex flex-wrap gap-2 items-center">
+            <select value={draftSeverity} onChange={e => setDraftSeverity(e.target.value)} className="input text-xs py-1 w-20 shrink-0">
+              <option value="critical">緊急</option>
+              <option value="high">高</option>
+              <option value="low">低</option>
+            </select>
+            <input value={draftNote} onChange={e => setDraftNote(e.target.value)} placeholder="備註（選填）"
+              className="input text-xs py-1 flex-1 min-w-0" />
+            <button onClick={handleSave} className="btn-primary text-xs px-3 py-1">確認</button>
+            <button onClick={() => setEditing(false)} className="btn-secondary text-xs px-3 py-1">取消</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NewRuleBuilder({ onAdd, onClose }) {
+  const [groups, setGroups] = useState([[]])
+  const [newTerms, setNewTerms] = useState([''])
+  const [severity, setSeverity] = useState('critical')
+  const [note, setNote] = useState('')
+
+  const addTerm = (gi) => {
+    const t = (newTerms[gi] || '').trim(); if (!t) return
+    setGroups(p => p.map((g, i) => i === gi ? [...g.filter(Boolean), t] : g))
+    setNewTerms(p => p.map((v, i) => i === gi ? '' : v))
+  }
+  const removeTerm = (gi, ti) => setGroups(p => p.map((g, i) => i === gi ? g.filter((_, j) => j !== ti) : g))
+  const addGroup = () => { setGroups(p => [...p, []]); setNewTerms(p => [...p, '']) }
+  const removeGroup = (gi) => { setGroups(p => p.filter((_, i) => i !== gi)); setNewTerms(p => p.filter((_, i) => i !== gi)) }
+
+  const handleAdd = () => {
+    const condition = serializeCondition(groups)
+    if (!condition) return
+    onAdd({ condition, severity, note: note.trim() })
+  }
+
+  return (
+    <div className="p-3 rounded-lg border border-dashed border-primary-500/40 bg-dark-900/40 space-y-3">
+      <div className="text-xs text-dark-400 font-medium">新增布林規則</div>
+      <GroupEditor draft={groups} newTerms={newTerms} setNewTerms={setNewTerms}
+        addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
+      <div className="flex flex-wrap gap-2 items-center">
+        <select value={severity} onChange={e => setSeverity(e.target.value)} className="input text-xs py-1 w-20 shrink-0">
+          <option value="critical">緊急</option>
+          <option value="high">高</option>
+          <option value="low">低</option>
+        </select>
+        <input value={note} onChange={e => setNote(e.target.value)} placeholder="備註（選填）"
+          className="input text-xs py-1 flex-1 min-w-0" />
+        <button onClick={handleAdd} className="btn-primary text-xs px-3 py-1">加入</button>
+        <button onClick={onClose} className="btn-secondary text-xs px-3 py-1">取消</button>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const [sources, setSources] = useState([])
   const [notifications, setNotifications] = useState([])
@@ -227,7 +405,11 @@ export default function SettingsPage() {
   const [radarTopics, setRadarTopics] = useState([])
   const [radarHoursBack, setRadarHoursBack] = useState(24)
   const [radarIntervalMinutes, setRadarIntervalMinutes] = useState(5)
+  const [radarRssOnly, setRadarRssOnly] = useState(false)
   const [newTopic, setNewTopic] = useState('')
+  const [newTopicUs, setNewTopicUs] = useState('')
+  const [radarTopicsUs, setRadarTopicsUs] = useState([])
+  const [showGroupBuilderUs, setShowGroupBuilderUs] = useState(false)
   const [savingTopics, setSavingTopics] = useState(false)
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const [expandedSources, setExpandedSources] = useState(new Set())
@@ -239,6 +421,25 @@ export default function SettingsPage() {
   const [activeTopicPicker, setActiveTopicPicker] = useState(null)
   const [discordWebhookInput, setDiscordWebhookInput] = useState('')
   const [savingDiscord, setSavingDiscord] = useState(false)
+  const [rssTestStates, setRssTestStates] = useState({})
+  // 來源內嵌編輯
+  const [editingKwSources, setEditingKwSources] = useState(new Set())
+  const [draftKws, setDraftKws] = useState({})         // { [id]: string[] }
+  const [newKwInput, setNewKwInput] = useState({})      // { [id]: string }
+  const [editingUrlSources, setEditingUrlSources] = useState(new Set())
+  const [draftUrl, setDraftUrl] = useState({})          // { [id]: string }
+  // 關鍵字分類：{ 分類名稱: [關鍵字...] }
+  const [topicCategories, setTopicCategories] = useState({})
+  const [newCatName, setNewCatName] = useState('')
+  const [newCatKws, setNewCatKws] = useState({})   // { 分類名稱: 輸入框值 }
+  const [savingCats, setSavingCats] = useState(false)
+  const [showCatManager, setShowCatManager] = useState(false)
+  // 布林嚴重度規則
+  const [severityRules, setSeverityRules] = useState([])
+  const [showRuleBuilder, setShowRuleBuilder] = useState(false)
+  const [savingRules, setSavingRules] = useState(false)
+  // 嚴重度設定 tab
+  const [severityTab, setSeverityTab] = useState('keywords')
 
   const toggleSourceExpand = (id) => {
     setExpandedSources(prev => {
@@ -251,7 +452,7 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes] = await Promise.all([
+      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes, catsRes, rulesRes] = await Promise.all([
         settingsAPI.getSources(),
         settingsAPI.getNotificationSettings(),
         settingsAPI.getGoogleSheetsStatus(),
@@ -259,6 +460,8 @@ export default function SettingsPage() {
         settingsAPI.getRadarTopics(),
         settingsAPI.getSeverityKeywords(),
         settingsAPI.getLineStatus(),
+        settingsAPI.getTopicCategories(),
+        settingsAPI.getSeverityRules(),
       ])
       setSources(srcRes.data)
       setNotifications(notifRes.data)
@@ -267,10 +470,20 @@ export default function SettingsPage() {
       const discordNotif = notifRes.data.find(n => n.channel === 'discord')
       if (discordNotif) setDiscordWebhookInput(discordNotif.config?.webhook_url || '')
       setAiModel(aiRes.data)
-      setRadarTopics(topicsRes.data.topics || [])
+      // Auto-migrate purely-English topics from TW region to US region (one-time, state-level only)
+      const allTwTopics = topicsRes.data.topics || []
+      const allUsTopics = topicsRes.data.topics_us || []
+      const englishFromTw = allTwTopics.filter(isEnglishTopic)
+      const twOnly = allTwTopics.filter(t => !isEnglishTopic(t))
+      const mergedUs = [...allUsTopics, ...englishFromTw.filter(t => !allUsTopics.includes(t))]
+      setRadarTopics(twOnly)
+      setRadarTopicsUs(mergedUs)
       setRadarHoursBack(topicsRes.data.hours_back ?? 24)
       setRadarIntervalMinutes(topicsRes.data.interval_minutes ?? 5)
+      setRadarRssOnly(topicsRes.data.rss_only ?? false)
       setSeverityKws(sevRes.data)
+      setTopicCategories(catsRes.data.categories || {})
+      setSeverityRules(rulesRes.data.rules || [])
     } catch (err) {
       console.error('Failed to load settings:', err)
     }
@@ -366,6 +579,74 @@ export default function SettingsPage() {
     }
   }
 
+  const handleSaveRules = async () => {
+    setSavingRules(true)
+    try {
+      await settingsAPI.updateSeverityRules(severityRules)
+      toast.success('布林規則已儲存，下次掃描生效')
+    } catch {
+      toast.error('儲存失敗')
+    }
+    setSavingRules(false)
+  }
+
+  const handleSaveCategories = async () => {
+    setSavingCats(true)
+    try {
+      await settingsAPI.updateTopicCategories(topicCategories)
+      toast.success('分類標籤已儲存')
+    } catch {
+      toast.error('儲存失敗')
+    }
+    setSavingCats(false)
+  }
+
+  const handleTestRss = async (sourceId) => {
+    setRssTestStates(prev => ({ ...prev, [sourceId]: { loading: true, result: null } }))
+    try {
+      const { data } = await settingsAPI.testRssSource(sourceId)
+      setRssTestStates(prev => ({ ...prev, [sourceId]: { loading: false, result: data } }))
+    } catch {
+      setRssTestStates(prev => ({ ...prev, [sourceId]: { loading: false, result: { success: false, error: '測試請求失敗' } } }))
+    }
+  }
+
+  const handleStartEditKws = (source) => {
+    setEditingKwSources(prev => new Set([...prev, source.id]))
+    setDraftKws(prev => ({ ...prev, [source.id]: [...(source.keywords || [])] }))
+    setNewKwInput(prev => ({ ...prev, [source.id]: '' }))
+  }
+  const handleCancelEditKws = (id) => {
+    setEditingKwSources(prev => { const n = new Set(prev); n.delete(id); return n })
+  }
+  const handleSaveSourceKws = async (id) => {
+    try {
+      await settingsAPI.updateSource(id, { keywords: draftKws[id] || [] })
+      setSources(prev => prev.map(s => s.id === id ? { ...s, keywords: draftKws[id] || [] } : s))
+      handleCancelEditKws(id)
+      toast.success('關鍵字已更新')
+    } catch {
+      toast.error('更新失敗')
+    }
+  }
+  const handleStartEditUrl = (source) => {
+    setEditingUrlSources(prev => new Set([...prev, source.id]))
+    setDraftUrl(prev => ({ ...prev, [source.id]: source.url }))
+  }
+  const handleCancelEditUrl = (id) => {
+    setEditingUrlSources(prev => { const n = new Set(prev); n.delete(id); return n })
+  }
+  const handleSaveSourceUrl = async (id) => {
+    try {
+      await settingsAPI.updateSource(id, { url: draftUrl[id] })
+      setSources(prev => prev.map(s => s.id === id ? { ...s, url: draftUrl[id] } : s))
+      handleCancelEditUrl(id)
+      toast.success('URL 已更新')
+    } catch {
+      toast.error('更新失敗')
+    }
+  }
+
   const handleSaveDiscordWebhook = async () => {
     setSavingDiscord(true)
     try {
@@ -392,10 +673,21 @@ export default function SettingsPage() {
     setRadarTopics(prev => prev.filter(t => t !== topic))
   }
 
+  const handleAddTopicUs = () => {
+    const t = newTopicUs.trim()
+    if (!t || radarTopicsUs.includes(t)) return
+    setRadarTopicsUs(prev => [...prev, t])
+    setNewTopicUs('')
+  }
+
+  const handleRemoveTopicUs = (topic) => {
+    setRadarTopicsUs(prev => prev.filter(t => t !== topic))
+  }
+
   const handleSaveTopics = async () => {
     setSavingTopics(true)
     try {
-      await settingsAPI.updateRadarTopics(radarTopics, radarHoursBack, radarIntervalMinutes)
+      await settingsAPI.updateRadarTopics(radarTopics, radarHoursBack, radarIntervalMinutes, radarTopicsUs, radarRssOnly)
       toast.success('設定已儲存，掃描頻率立即生效')
     } catch {
       toast.error('儲存失敗')
@@ -564,9 +856,12 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-sm">{source.name}</span>
                       <span className="badge bg-dark-700 text-dark-300">{typeLabels[source.type] || source.type}</span>
-                      {source.keywords && source.keywords.length > 0 && (
-                        <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
-                      )}
+                      {source.keywords && source.keywords.length > 0
+                        ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
+                        : source.type !== 'mops' && (
+                          <span className="text-xs text-yellow-600/70" title="未設定關鍵字，將以雷達主題關鍵字篩選">使用雷達主題篩選</span>
+                        )
+                      }
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -590,22 +885,118 @@ export default function SettingsPage() {
 
                 {/* Expanded detail */}
                 {isExpanded && (
-                  <div className="px-4 pb-3 border-t border-dark-700/50 pt-3 space-y-2">
-                    <div>
-                      <span className="text-xs text-dark-500 mr-2">URL</span>
-                      <a
-                        href={source.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-xs text-primary-400 hover:underline break-all"
-                      >{source.url}</a>
-                    </div>
-                    {source.keywords && source.keywords.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {source.keywords.map(kw => (
-                          <span key={kw} className="text-xs px-1.5 py-0.5 rounded bg-dark-700 text-dark-300">{kw}</span>
-                        ))}
+                  <div className="px-4 pb-3 border-t border-dark-700/50 pt-3 space-y-2" onClick={e => e.stopPropagation()}>
+                    {/* URL row */}
+                    {editingUrlSources.has(source.id) ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-dark-500 shrink-0">URL</span>
+                        <input
+                          value={draftUrl[source.id] || ''}
+                          onChange={e => setDraftUrl(prev => ({ ...prev, [source.id]: e.target.value }))}
+                          onKeyDown={e => e.key === 'Enter' && handleSaveSourceUrl(source.id)}
+                          className="input text-xs py-0.5 flex-1 min-w-0"
+                        />
+                        <button onClick={() => handleSaveSourceUrl(source.id)} className="btn-primary text-xs px-2 py-0.5 shrink-0">儲存</button>
+                        <button onClick={() => handleCancelEditUrl(source.id)} className="btn-secondary text-xs px-2 py-0.5 shrink-0">取消</button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-dark-500 shrink-0">URL</span>
+                        <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary-400 hover:underline break-all flex-1 min-w-0">{source.url}</a>
+                        <button onClick={() => handleStartEditUrl(source)} className="text-dark-600 hover:text-primary-400 text-xs px-1 transition-colors shrink-0" title="編輯 URL">✎</button>
+                      </div>
+                    )}
+                    {/* Keywords row */}
+                    {editingKwSources.has(source.id) ? (
+                      <div className="space-y-1.5">
+                        <div className="flex flex-wrap gap-1 min-h-6">
+                          {(draftKws[source.id] || []).map((kw, i) => (
+                            <span key={i} className="flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded bg-dark-700 text-dark-300">
+                              {kw}
+                              <button onClick={() => setDraftKws(prev => ({ ...prev, [source.id]: prev[source.id].filter((_, j) => j !== i) }))} className="hover:text-red-400 ml-0.5 leading-none">×</button>
+                            </span>
+                          ))}
+                          {(draftKws[source.id] || []).length === 0 && <span className="text-xs text-dark-600">尚無關鍵字（將以雷達主題篩選）</span>}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <input
+                            value={newKwInput[source.id] || ''}
+                            onChange={e => setNewKwInput(prev => ({ ...prev, [source.id]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                const kw = (newKwInput[source.id] || '').trim()
+                                if (!kw) return
+                                setDraftKws(prev => ({ ...prev, [source.id]: [...(prev[source.id] || []), kw] }))
+                                setNewKwInput(prev => ({ ...prev, [source.id]: '' }))
+                              }
+                            }}
+                            placeholder="輸入後 Enter 新增"
+                            className="input text-xs py-0.5 flex-1"
+                          />
+                          <button
+                            onClick={() => {
+                              const kw = (newKwInput[source.id] || '').trim()
+                              if (!kw) return
+                              setDraftKws(prev => ({ ...prev, [source.id]: [...(prev[source.id] || []), kw] }))
+                              setNewKwInput(prev => ({ ...prev, [source.id]: '' }))
+                            }}
+                            className="text-dark-400 hover:text-primary-400 text-sm px-1.5"
+                          >+</button>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <button onClick={() => handleSaveSourceKws(source.id)} className="btn-primary text-xs px-3 py-1">儲存</button>
+                          <button onClick={() => handleCancelEditKws(source.id)} className="btn-secondary text-xs px-3 py-1">取消</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-2">
+                        <div className="flex flex-wrap gap-1 flex-1 min-w-0">
+                          {source.keywords && source.keywords.length > 0
+                            ? source.keywords.map(kw => (
+                                <span key={kw} className="text-xs px-1.5 py-0.5 rounded bg-dark-700 text-dark-300">{kw}</span>
+                              ))
+                            : <span className="text-xs text-dark-600">尚無關鍵字（將以雷達主題篩選）</span>
+                          }
+                        </div>
+                        <button onClick={() => handleStartEditKws(source)} className="text-dark-600 hover:text-primary-400 text-xs px-1 transition-colors shrink-0 whitespace-nowrap" title="編輯關鍵字">✎ 關鍵字</button>
+                      </div>
+                    )}
+                    {/* RSS test button */}
+                    {(source.type === 'rss' || source.type === 'social') && (
+                      <div>
+                        <button
+                          onClick={() => handleTestRss(source.id)}
+                          disabled={rssTestStates[source.id]?.loading}
+                          className="text-xs px-2.5 py-1 rounded border border-dark-600 text-dark-400 hover:text-primary-400 hover:border-primary-500/50 transition-colors disabled:opacity-50"
+                        >
+                          {rssTestStates[source.id]?.loading ? '測試中...' : '測試 RSS 連線'}
+                        </button>
+                        {rssTestStates[source.id]?.result && (
+                          <div className={`mt-2 p-2 rounded text-xs border ${
+                            rssTestStates[source.id].result.success
+                              ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                              : 'bg-red-500/10 text-red-400 border-red-500/20'
+                          }`}>
+                            {rssTestStates[source.id].result.success ? (
+                              <>
+                                <div>✓ 成功：共 {rssTestStates[source.id].result.count} 則文章
+                                  {rssTestStates[source.id].result.feed_title && (
+                                    <span className="text-dark-400 ml-1">（{rssTestStates[source.id].result.feed_title}）</span>
+                                  )}
+                                </div>
+                                {rssTestStates[source.id].result.sample_titles?.length > 0 && (
+                                  <ul className="mt-1 space-y-0.5 text-dark-400">
+                                    {rssTestStates[source.id].result.sample_titles.map((t, i) => (
+                                      <li key={i} className="truncate">・{t}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                              </>
+                            ) : (
+                              <div>✗ {rssTestStates[source.id].result.error}</div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -619,154 +1010,272 @@ export default function SettingsPage() {
       </section>
 
       {/* Radar Search Topics */}
-      <section className="card">
-        <div className="flex items-center justify-between mb-4">
+      <section className="card space-y-5">
+        <div className="flex items-center justify-between">
           <div>
             <h3 className="text-lg font-bold">Google News 搜尋關鍵字</h3>
-            <p className="text-sm text-dark-400">雷達每 {radarIntervalMinutes} 分鐘以這些關鍵字搜尋 Google News</p>
+            <p className="text-sm text-dark-400">雷達每 {radarIntervalMinutes} 分鐘同時搜尋台灣版與美國版 Google News</p>
           </div>
-          <button
-            onClick={handleSaveTopics}
-            disabled={savingTopics}
-            className="btn-primary text-sm flex items-center gap-1.5"
-          >
+          <button onClick={handleSaveTopics} disabled={savingTopics} className="btn-primary text-sm flex items-center gap-1.5">
             {savingTopics && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />}
             儲存
           </button>
         </div>
 
-        {/* Topic Tags — split simple vs boolean */}
-        {(() => {
+        {/* RSS-only toggle */}
+        <div className="flex items-center justify-between p-3 rounded-lg border border-dark-700 bg-dark-900/40">
+          <div>
+            <p className="text-sm font-medium">僅使用 RSS 來源</p>
+            <p className="text-xs text-dark-400 mt-0.5">停用 Google News 搜尋，雷達只抓訂閱的 RSS 來源（雜訊更少）</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRadarRssOnly(v => !v)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${radarRssOnly ? 'bg-primary-600' : 'bg-dark-600'}`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${radarRssOnly ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+
+        {/* TW Region */}
+        {!radarRssOnly && (() => {
           const simpleTopics = radarTopics.filter(t => !t.includes('('))
           const groupedTopics = radarTopics.filter(t => t.includes('('))
           return (
-            <div className="mb-3 space-y-3">
-              {/* Simple keywords */}
-              {simpleTopics.length > 0 && (
-                <div>
-                  <div className="text-xs text-dark-500 mb-1.5">單一關鍵字</div>
-                  <div className="flex flex-wrap gap-2">
-                    {simpleTopics.map(topic => {
-                      const isCrit = severityKws.critical.includes(topic)
-                      const isHigh = severityKws.high.includes(topic)
-                      const pickerOpen = activeTopicPicker === topic
-                      return (
-                        <div key={topic} className="relative">
-                          {pickerOpen && (
-                            <div
-                              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex items-center gap-1"
-                              onClick={e => e.stopPropagation()}
-                            >
-                              <span className="text-[9px] text-dark-500 pr-1 border-r border-dark-600 mr-0.5 whitespace-nowrap">風險標記</span>
-                              <button
-                                onClick={() => handleAddToSeverity('critical', topic)}
-                                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                  isCrit
-                                    ? 'bg-red-500/30 text-red-300 border-red-400/50'
-                                    : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
-                                }`}
-                              >緊急</button>
-                              <button
-                                onClick={() => handleAddToSeverity('high', topic)}
-                                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                  isHigh
-                                    ? 'bg-orange-500/30 text-orange-300 border-orange-400/50'
-                                    : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
-                                }`}
-                              >高</button>
-                            </div>
-                          )}
-                          <span
-                            onClick={e => { e.stopPropagation(); setActiveTopicPicker(pickerOpen ? null : topic) }}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-600/20 text-primary-400 border border-primary-500/30 text-sm cursor-pointer select-none hover:bg-primary-600/30 transition-colors"
-                          >
-                            {isCrit && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
-                            {!isCrit && isHigh && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
-                            {topic}
-                            <button
-                              onClick={e => { e.stopPropagation(); handleRemoveTopic(topic) }}
-                              className="ml-0.5 text-primary-500 hover:text-red-400 transition-colors leading-none"
-                            >×</button>
-                          </span>
-                        </div>
-                      )
-                    })}
+            <div className="space-y-3 p-3 rounded-lg border border-dark-700 bg-dark-900/40">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded">🇹🇼 台灣 / 中文區</span>
+                <span className="text-xs text-dark-500">使用 Google News 台灣版（hl=zh-TW&gl=TW）</span>
+              </div>
+              <div className="space-y-2">
+                {simpleTopics.length > 0 && (
+                  <div>
+                    <div className="text-xs text-dark-500 mb-1.5">單一關鍵字</div>
+                    <div className="flex flex-wrap gap-2">
+                      {simpleTopics.map(topic => {
+                        const isCrit = severityKws.critical.includes(topic)
+                        const isHigh = severityKws.high.includes(topic)
+                        const pickerOpen = activeTopicPicker === topic
+                        return (
+                          <div key={topic} className="relative">
+                            {pickerOpen && (
+                              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                                <span className="text-[9px] text-dark-500 pr-1 border-r border-dark-600 mr-0.5 whitespace-nowrap">風險標記</span>
+                                <button onClick={() => handleAddToSeverity('critical', topic)} className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'}`}>緊急</button>
+                                <button onClick={() => handleAddToSeverity('high', topic)} className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'}`}>高</button>
+                              </div>
+                            )}
+                            <span onClick={e => { e.stopPropagation(); setActiveTopicPicker(pickerOpen ? null : topic) }} className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-600/20 text-primary-400 border border-primary-500/30 text-sm cursor-pointer select-none hover:bg-primary-600/30 transition-colors">
+                              {isCrit && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
+                              {!isCrit && isHigh && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
+                              {topic}
+                              <button onClick={e => { e.stopPropagation(); handleRemoveTopic(topic) }} className="ml-0.5 text-primary-500 hover:text-red-400 transition-colors leading-none">×</button>
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
-              {/* Boolean groups */}
-              {groupedTopics.length > 0 && (
-                <div>
-                  <div className="text-xs text-dark-500 mb-1.5">布林組合</div>
-                  <div className="flex flex-col gap-2">
-                    {groupedTopics.map(topic => {
-                      const groups = parseGroupedKeyword(topic)
-                      if (!groups) return null
-                      return (
-                        <GroupedKeywordCard
-                          key={topic}
-                          groups={groups}
-                          onSave={(newGroups) => {
-                            const newStr = serializeGroups(newGroups)
-                            setRadarTopics(prev => prev.map(t => t === topic ? newStr : t))
-                          }}
-                          onRemove={() => handleRemoveTopic(topic)}
-                          onSplit={(terms) => setRadarTopics(prev => {
-                            const without = prev.filter(t => t !== topic)
-                            const toAdd = terms.filter(t => !without.includes(t))
-                            return [...without, ...toAdd]
-                          })}
-                          severityKws={severityKws}
-                          onAddToSeverity={handleAddToSeverity}
-                        />
-                      )
-                    })}
+                )}
+                {groupedTopics.length > 0 && (
+                  <div>
+                    <div className="text-xs text-dark-500 mb-1.5">布林組合</div>
+                    <div className="flex flex-col gap-2">
+                      {groupedTopics.map(topic => {
+                        const groups = parseGroupedKeyword(topic)
+                        if (!groups) return null
+                        return (
+                          <GroupedKeywordCard key={topic} groups={groups}
+                            onSave={ng => setRadarTopics(prev => prev.map(t => t === topic ? serializeGroups(ng) : t))}
+                            onRemove={() => handleRemoveTopic(topic)}
+                            onSplit={terms => setRadarTopics(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
+                            severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
+                          />
+                        )
+                      })}
+                    </div>
                   </div>
-                </div>
+                )}
+                {radarTopics.length === 0 && <span className="text-sm text-dark-500">尚無關鍵字</span>}
+              </div>
+              <div className="flex gap-2">
+                <input type="text" value={newTopic} onChange={e => setNewTopic(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddTopic()} placeholder="中文關鍵字，按 Enter 新增" className="input text-sm flex-1" />
+                <button onClick={handleAddTopic} className="btn-secondary text-sm px-3">新增</button>
+                <button type="button" onClick={() => setShowGroupBuilder(v => !v)} className="btn-secondary text-sm px-3 whitespace-nowrap">{showGroupBuilder ? '取消' : '+ 布林'}</button>
+              </div>
+              {showGroupBuilder && (
+                <NewGroupedBuilder onAdd={groups => { const str = serializeGroups(groups); if (!radarTopics.includes(str)) setRadarTopics(prev => [...prev, str]); setShowGroupBuilder(false) }} onClose={() => setShowGroupBuilder(false)} />
               )}
-              {radarTopics.length === 0 && <span className="text-sm text-dark-500">尚無關鍵字</span>}
             </div>
           )
         })()}
 
-        {/* Add Topic Input */}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={newTopic}
-            onChange={(e) => setNewTopic(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddTopic()}
-            placeholder="輸入單一關鍵字後按 Enter 或點新增"
-            className="input text-sm flex-1"
-          />
-          <button onClick={handleAddTopic} className="btn-secondary text-sm px-4">新增</button>
+        {/* US/EN Region */}
+        {!radarRssOnly && (() => {
+          const simpleTopics = radarTopicsUs.filter(t => !t.includes('('))
+          const groupedTopics = radarTopicsUs.filter(t => t.includes('('))
+          return (
+            <div className="space-y-3 p-3 rounded-lg border border-dark-700 bg-dark-900/40">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">🇺🇸 英文 / 美國區</span>
+                <span className="text-xs text-dark-500">使用 Google News 美國版（hl=en&gl=US），適合英文關鍵字</span>
+              </div>
+              <div className="space-y-2">
+                {simpleTopics.length > 0 && (
+                  <div>
+                    <div className="text-xs text-dark-500 mb-1.5">單一關鍵字</div>
+                    <div className="flex flex-wrap gap-2">
+                      {simpleTopics.map(topic => (
+                        <span key={topic} className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-600/15 text-amber-400 border border-amber-500/25 text-sm">
+                          {topic}
+                          <button onClick={() => handleRemoveTopicUs(topic)} className="ml-0.5 text-amber-500 hover:text-red-400 transition-colors leading-none">×</button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {groupedTopics.length > 0 && (
+                  <div>
+                    <div className="text-xs text-dark-500 mb-1.5">布林組合</div>
+                    <div className="flex flex-col gap-2">
+                      {groupedTopics.map(topic => {
+                        const groups = parseGroupedKeyword(topic)
+                        if (!groups) return null
+                        return (
+                          <GroupedKeywordCard key={topic} groups={groups}
+                            onSave={ng => setRadarTopicsUs(prev => prev.map(t => t === topic ? serializeGroups(ng) : t))}
+                            onRemove={() => handleRemoveTopicUs(topic)}
+                            onSplit={terms => setRadarTopicsUs(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
+                            severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                {radarTopicsUs.length === 0 && <span className="text-sm text-dark-500">尚無英文關鍵字</span>}
+              </div>
+              <div className="flex gap-2">
+                <input type="text" value={newTopicUs} onChange={e => setNewTopicUs(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddTopicUs()} placeholder="英文關鍵字，例：Trump tariff" className="input text-sm flex-1" />
+                <button onClick={handleAddTopicUs} className="btn-secondary text-sm px-3">新增</button>
+                <button type="button" onClick={() => setShowGroupBuilderUs(v => !v)} className="btn-secondary text-sm px-3 whitespace-nowrap">{showGroupBuilderUs ? '取消' : '+ 布林'}</button>
+              </div>
+              {showGroupBuilderUs && (
+                <NewGroupedBuilder onAdd={groups => { const str = serializeGroups(groups); if (!radarTopicsUs.includes(str)) setRadarTopicsUs(prev => [...prev, str]); setShowGroupBuilderUs(false) }} onClose={() => setShowGroupBuilderUs(false)} />
+              )}
+            </div>
+          )
+        })()}
+
+        {/* Topic Category Manager */}
+        <div className="border-t border-dark-700 pt-3">
           <button
             type="button"
-            onClick={() => setShowGroupBuilder(v => !v)}
-            className="btn-secondary text-sm px-3 whitespace-nowrap"
+            onClick={() => setShowCatManager(v => !v)}
+            className="flex items-center gap-1.5 text-sm text-dark-400 hover:text-white transition-colors"
           >
-            {showGroupBuilder ? '取消' : '+ 布林組合'}
+            <svg className={`w-3.5 h-3.5 transition-transform ${showCatManager ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            主題分類標籤
+            <span className="text-xs text-dark-600">（選用，僅作整理用途）</span>
+            {Object.keys(topicCategories).length > 0 && (
+              <span className="text-xs bg-dark-700 text-dark-400 px-1.5 rounded-full">{Object.keys(topicCategories).length} 組</span>
+            )}
           </button>
+
+          {showCatManager && (
+            <div className="mt-3 space-y-3">
+              {/* Existing categories */}
+              {Object.entries(topicCategories).map(([catName, keywords]) => (
+                <div key={catName} className="p-3 rounded-lg bg-dark-900 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-dark-200">{catName}</span>
+                    <button
+                      onClick={() => setTopicCategories(p => { const n = { ...p }; delete n[catName]; return n })}
+                      className="text-dark-600 hover:text-red-400 text-sm px-1"
+                    >刪除分類</button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 min-h-6">
+                    {keywords.map(kw => (
+                      <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-dark-700 text-dark-300 border border-dark-600">
+                        {kw}
+                        <button
+                          onClick={() => setTopicCategories(p => ({ ...p, [catName]: p[catName].filter(k => k !== kw) }))}
+                          className="hover:text-red-400 ml-0.5 text-dark-500">×</button>
+                      </span>
+                    ))}
+                    {keywords.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newCatKws[catName] || ''}
+                      onChange={e => setNewCatKws(p => ({ ...p, [catName]: e.target.value }))}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newCatKws[catName]?.trim()) {
+                          const kw = newCatKws[catName].trim()
+                          setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
+                          setNewCatKws(p => ({ ...p, [catName]: '' }))
+                        }
+                      }}
+                      placeholder="新增關鍵字後按 Enter"
+                      className="input text-xs py-1 flex-1"
+                    />
+                    <button
+                      onClick={() => {
+                        const kw = (newCatKws[catName] || '').trim()
+                        if (!kw) return
+                        setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
+                        setNewCatKws(p => ({ ...p, [catName]: '' }))
+                      }}
+                      className="btn-secondary text-xs px-3 py-1"
+                    >新增</button>
+                  </div>
+                </div>
+              ))}
+
+              {/* Add new category */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newCatName}
+                  onChange={e => setNewCatName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && newCatName.trim() && !topicCategories[newCatName.trim()]) {
+                      setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
+                      setNewCatName('')
+                    }
+                  }}
+                  placeholder="新增分類名稱（例：央行政策）"
+                  className="input text-sm flex-1"
+                />
+                <button
+                  onClick={() => {
+                    if (newCatName.trim() && !topicCategories[newCatName.trim()]) {
+                      setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
+                      setNewCatName('')
+                    }
+                  }}
+                  className="btn-secondary text-sm px-3"
+                >新增分類</button>
+              </div>
+
+              <div className="flex items-center gap-3 pt-1">
+                <button onClick={handleSaveCategories} disabled={savingCats} className="btn-primary text-sm">
+                  {savingCats ? '儲存中...' : '儲存分類'}
+                </button>
+                <span className="text-xs text-dark-500">分類不影響雷達搜尋，僅作整理標記用</span>
+              </div>
+            </div>
+          )}
         </div>
-        {showGroupBuilder && (
-          <NewGroupedBuilder
-            onAdd={(groups) => {
-              const str = serializeGroups(groups)
-              if (!radarTopics.includes(str)) setRadarTopics(prev => [...prev, str])
-              setShowGroupBuilder(false)
-            }}
-            onClose={() => setShowGroupBuilder(false)}
-          />
-        )}
+
         {/* Hours Back + Interval Settings */}
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 mt-4 pt-4 border-t border-dark-700">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pt-3 border-t border-dark-700">
           <div className="flex items-center gap-3">
             <span className="text-sm text-dark-400 whitespace-nowrap">掃描時間範圍</span>
-            <select
-              value={radarHoursBack}
-              onChange={(e) => setRadarHoursBack(Number(e.target.value))}
-              className="input text-sm w-40"
-            >
+            <select value={radarHoursBack} onChange={e => setRadarHoursBack(Number(e.target.value))} className="input text-sm w-40">
               <option value={1}>最近 1 小時</option>
               <option value={3}>最近 3 小時</option>
               <option value={6}>最近 6 小時</option>
@@ -778,11 +1287,7 @@ export default function SettingsPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-sm text-dark-400 whitespace-nowrap">自動掃描頻率</span>
-            <select
-              value={radarIntervalMinutes}
-              onChange={(e) => setRadarIntervalMinutes(Number(e.target.value))}
-              className="input text-sm w-36"
-            >
+            <select value={radarIntervalMinutes} onChange={e => setRadarIntervalMinutes(Number(e.target.value))} className="input text-sm w-36">
               <option value={1}>每 1 分鐘</option>
               <option value={3}>每 3 分鐘</option>
               <option value={5}>每 5 分鐘</option>
@@ -794,84 +1299,134 @@ export default function SettingsPage() {
             <span className="text-xs text-dark-500">儲存後立即生效，無需重啟</span>
           </div>
         </div>
-        <p className="text-xs text-dark-500 mt-2">
-          每個標籤直接作為 Google News 搜尋字串送出，支援 Google 搜尋語法：<br />
-          <span className="text-dark-400">
-            <code className="bg-dark-700 px-1 rounded">OR</code> 聯集 ·{' '}
-            <code className="bg-dark-700 px-1 rounded">"精確詞"</code> 完全比對 ·{' '}
-            <code className="bg-dark-700 px-1 rounded">-排除詞</code> 排除 ·{' '}
-            <code className="bg-dark-700 px-1 rounded">AND</code> 交集（預設空格即為 AND）<br />
-            例：<code className="bg-dark-700 px-1 rounded">("元大銀" OR "元大金控") ("重訊" OR "獨家") -廣告</code>
-          </span>
+        <p className="text-xs text-dark-500">
+          支援 Google 搜尋語法：<code className="bg-dark-700 px-1 rounded">OR</code> 聯集 · <code className="bg-dark-700 px-1 rounded">"精確詞"</code> 完全比對 · <code className="bg-dark-700 px-1 rounded">AND</code> 交集（空格即 AND）
         </p>
       </section>
 
-      {/* Severity Keywords */}
-      <section className="card space-y-5">
-        <div>
-          <h3 className="text-lg font-bold">風險程度關鍵字</h3>
-          <p className="text-sm text-dark-400 mt-1">
-            文章標題或內文包含對應關鍵字時，自動標記風險等級。判斷順序：緊急 → 高 → 低（預設）。
-          </p>
-        </div>
-
-        {/* Critical */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs px-2 py-0.5 rounded border bg-red-500/20 text-red-400 border-red-500/30 font-medium">緊急</span>
-            <span className="text-xs text-dark-500">符合任一關鍵字即標記為緊急</span>
+      {/* Severity Settings (Keywords + Boolean Rules merged) */}
+      <section className="card">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-bold">風險程度設定</h3>
+            <p className="text-sm text-dark-400 mt-0.5">判斷順序：布林規則（優先）→ 關鍵字列表 → 低（預設）</p>
           </div>
-          <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
-            {severityKws.critical.map(kw => (
-              <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
-                {kw}
-                <button onClick={() => setSeverityKws(p => ({ ...p, critical: p.critical.filter(k => k !== kw) }))}
-                  className="hover:text-red-300 ml-0.5 text-red-500">×</button>
-              </span>
-            ))}
-            {severityKws.critical.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
-          </div>
-          <div className="flex gap-2">
-            <input type="text" value={newCritKw} onChange={e => setNewCritKw(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && newCritKw.trim()) { setSeverityKws(p => ({ ...p, critical: [...p.critical, newCritKw.trim()] })); setNewCritKw('') }}}
-              placeholder="新增關鍵字後按 Enter" className="input text-sm flex-1" />
-            <button onClick={() => { if (newCritKw.trim()) { setSeverityKws(p => ({ ...p, critical: [...p.critical, newCritKw.trim()] })); setNewCritKw('') }}}
-              className="btn-secondary text-sm px-3">新增</button>
+          <div className="flex rounded-lg overflow-hidden border border-dark-600 shrink-0">
+            <button
+              onClick={() => setSeverityTab('keywords')}
+              className={`text-sm px-4 py-1.5 transition-colors ${severityTab === 'keywords' ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-400 hover:text-white'}`}
+            >關鍵字</button>
+            <button
+              onClick={() => setSeverityTab('rules')}
+              className={`text-sm px-4 py-1.5 transition-colors border-l border-dark-600 ${severityTab === 'rules' ? 'bg-primary-600 text-white' : 'bg-dark-800 text-dark-400 hover:text-white'}`}
+            >布林規則 {severityRules.length > 0 && <span className="ml-1 text-xs bg-primary-500/30 text-primary-300 px-1.5 rounded-full">{severityRules.length}</span>}</button>
           </div>
         </div>
 
-        {/* High */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs px-2 py-0.5 rounded border bg-orange-500/20 text-orange-400 border-orange-500/30 font-medium">高</span>
-            <span className="text-xs text-dark-500">符合任一關鍵字即標記為高（未命中緊急時）</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
-            {severityKws.high.map(kw => (
-              <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">
-                {kw}
-                <button onClick={() => setSeverityKws(p => ({ ...p, high: p.high.filter(k => k !== kw) }))}
-                  className="hover:text-orange-300 ml-0.5 text-orange-500">×</button>
-              </span>
-            ))}
-            {severityKws.high.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
-          </div>
-          <div className="flex gap-2">
-            <input type="text" value={newHighKw} onChange={e => setNewHighKw(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && newHighKw.trim()) { setSeverityKws(p => ({ ...p, high: [...p.high, newHighKw.trim()] })); setNewHighKw('') }}}
-              placeholder="新增關鍵字後按 Enter" className="input text-sm flex-1" />
-            <button onClick={() => { if (newHighKw.trim()) { setSeverityKws(p => ({ ...p, high: [...p.high, newHighKw.trim()] })); setNewHighKw('') }}}
-              className="btn-secondary text-sm px-3">新增</button>
-          </div>
-        </div>
+        {severityTab === 'keywords' && (
+          <div className="space-y-5">
+            {/* Critical */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs px-2 py-0.5 rounded border bg-red-500/20 text-red-400 border-red-500/30 font-medium">緊急</span>
+                <span className="text-xs text-dark-500">符合任一關鍵字即標記為緊急</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
+                {severityKws.critical.map(kw => (
+                  <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
+                    {kw}
+                    <button onClick={() => setSeverityKws(p => ({ ...p, critical: p.critical.filter(k => k !== kw) }))}
+                      className="hover:text-red-300 ml-0.5 text-red-500">×</button>
+                  </span>
+                ))}
+                {severityKws.critical.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
+              </div>
+              <div className="flex gap-2">
+                <input type="text" value={newCritKw} onChange={e => setNewCritKw(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && newCritKw.trim()) { setSeverityKws(p => ({ ...p, critical: [...p.critical, newCritKw.trim()] })); setNewCritKw('') }}}
+                  placeholder="新增關鍵字後按 Enter" className="input text-sm flex-1" />
+                <button onClick={() => { if (newCritKw.trim()) { setSeverityKws(p => ({ ...p, critical: [...p.critical, newCritKw.trim()] })); setNewCritKw('') }}}
+                  className="btn-secondary text-sm px-3">新增</button>
+              </div>
+            </div>
 
-        <div className="flex items-center gap-3 pt-2 border-t border-dark-700">
-          <button onClick={handleSaveSeverityKws} disabled={savingSeverity} className="btn-primary text-sm">
-            {savingSeverity ? '儲存中...' : '儲存設定'}
-          </button>
-          <button onClick={handleResetSeverityKws} className="btn-secondary text-sm">還原預設值</button>
-          <span className="text-xs text-dark-500">修改後下次雷達掃描及文章載入即生效</span>
-        </div>
+            {/* High */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs px-2 py-0.5 rounded border bg-orange-500/20 text-orange-400 border-orange-500/30 font-medium">高</span>
+                <span className="text-xs text-dark-500">符合任一關鍵字即標記為高（未命中緊急時）</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
+                {severityKws.high.map(kw => (
+                  <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                    {kw}
+                    <button onClick={() => setSeverityKws(p => ({ ...p, high: p.high.filter(k => k !== kw) }))}
+                      className="hover:text-orange-300 ml-0.5 text-orange-500">×</button>
+                  </span>
+                ))}
+                {severityKws.high.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
+              </div>
+              <div className="flex gap-2">
+                <input type="text" value={newHighKw} onChange={e => setNewHighKw(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && newHighKw.trim()) { setSeverityKws(p => ({ ...p, high: [...p.high, newHighKw.trim()] })); setNewHighKw('') }}}
+                  placeholder="新增關鍵字後按 Enter" className="input text-sm flex-1" />
+                <button onClick={() => { if (newHighKw.trim()) { setSeverityKws(p => ({ ...p, high: [...p.high, newHighKw.trim()] })); setNewHighKw('') }}}
+                  className="btn-secondary text-sm px-3">新增</button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2 border-t border-dark-700">
+              <button onClick={handleSaveSeverityKws} disabled={savingSeverity} className="btn-primary text-sm">
+                {savingSeverity ? '儲存中...' : '儲存設定'}
+              </button>
+              <button onClick={handleResetSeverityKws} className="btn-secondary text-sm">還原預設值</button>
+              <span className="text-xs text-dark-500">修改後下次雷達掃描及文章載入即生效</span>
+            </div>
+          </div>
+        )}
+
+        {severityTab === 'rules' && (
+          <div className="space-y-3">
+            <p className="text-xs text-dark-500">優先於關鍵字列表評估；第一條命中的規則決定嚴重度。每個方塊為 AND 條件，同方塊內多詞為 OR 選一。</p>
+
+            <div className="space-y-2">
+              {severityRules.length === 0 && !showRuleBuilder && (
+                <div className="text-xs text-dark-500 py-1">尚無規則，目前僅使用關鍵字列表</div>
+              )}
+              {severityRules.map((rule, idx) => (
+                <SeverityRuleCard
+                  key={idx}
+                  rule={rule}
+                  onSave={updated => setSeverityRules(r => r.map((x, i) => i === idx ? updated : x))}
+                  onRemove={() => setSeverityRules(r => r.filter((_, i) => i !== idx))}
+                  canMoveUp={idx > 0}
+                  canMoveDown={idx < severityRules.length - 1}
+                  onMoveUp={() => setSeverityRules(r => { const a = [...r]; [a[idx-1], a[idx]] = [a[idx], a[idx-1]]; return a })}
+                  onMoveDown={() => setSeverityRules(r => { const a = [...r]; [a[idx], a[idx+1]] = [a[idx+1], a[idx]]; return a })}
+                />
+              ))}
+            </div>
+
+            {showRuleBuilder
+              ? <NewRuleBuilder
+                  onAdd={rule => { setSeverityRules(r => [...r, rule]); setShowRuleBuilder(false) }}
+                  onClose={() => setShowRuleBuilder(false)}
+                />
+              : <button
+                  type="button"
+                  onClick={() => setShowRuleBuilder(true)}
+                  className="text-sm px-3 py-1.5 rounded border border-dashed border-dark-600 text-dark-500 hover:text-primary-400 hover:border-primary-500/50 transition-colors"
+                >+ 新增規則</button>
+            }
+
+            <div className="flex items-center gap-3 pt-2 border-t border-dark-700">
+              <button onClick={handleSaveRules} disabled={savingRules} className="btn-primary text-sm">
+                {savingRules ? '儲存中...' : '儲存規則'}
+              </button>
+              <span className="text-xs text-dark-500">規則按順序評估，第一條命中即採用，後續略過</span>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Notification Settings */}

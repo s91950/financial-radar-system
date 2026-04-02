@@ -88,40 +88,106 @@ async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
 async def fetch_multiple_feeds(
     feeds: list[dict],
     hours_back: int = 24,
+    global_topics: list[str] | None = None,
 ) -> list[dict]:
     """Fetch multiple RSS feeds and combine results.
 
     feeds: list of {"name": str, "url": str, "keywords": list[str]}
+    global_topics: fallback radar topic strings used when a feed has no source-specific keywords.
+                   Each topic may use boolean AND/OR syntax: "(A OR B) C" means A-or-B AND C.
+                   An article passes the fallback filter if it matches ANY topic.
     """
     all_articles = []
     for feed_info in feeds:
         articles = await fetch_rss_feed(feed_info["url"], hours_back)
-        # Filter by keywords if provided
-        keywords = feed_info.get("keywords", [])
-        if keywords:
-            articles = _filter_by_keywords(articles, keywords)
+        source_kws = feed_info.get("keywords", [])
+        if source_kws:
+            # Source-specific keywords: simple OR matching (user enters plain keyword list)
+            articles = _filter_by_keywords(articles, source_kws)
+        elif global_topics:
+            # No source keywords — filter against radar topics with proper boolean semantics
+            articles = _filter_by_topic_strings(articles, global_topics)
+        else:
+            # 無任何過濾條件 → 不納入，避免無關文章進入雷達
+            articles = []
         all_articles.extend(articles)
     return all_articles
 
 
-def _filter_by_keywords(articles: list[dict], keywords: list[str]) -> list[dict]:
-    """Filter articles that contain any of the specified keywords."""
+def _filter_by_topic_strings(articles: list[dict], topics: list[str]) -> list[dict]:
+    """Filter articles against radar topic strings, preserving boolean AND/OR semantics.
+
+    Each topic may be:
+      - A plain keyword: "台股"  →  matches if "台股" appears in the text
+      - A boolean group: "(Fed OR FOMC) 升息"  →  matches if (Fed or FOMC) AND 升息 appear
+
+    An article passes if it matches ANY topic in the list.
+    """
+    import re as _re
+
+    def _parse_topic_groups(topic: str) -> list[list[str]]:
+        """Parse a topic string into AND-groups of OR-terms."""
+        raw_groups = _re.findall(r'\(([^)]+)\)', topic)
+        if raw_groups:
+            groups: list[list[str]] = []
+            for raw in raw_groups:
+                terms = [t.strip().strip("\"'") for t in _re.split(r'\bOR\b', raw, flags=_re.IGNORECASE)]
+                terms = [t for t in terms if t]
+                if terms:
+                    groups.append(terms)
+            # Bare words outside parentheses are also AND conditions
+            bare = _re.sub(r'\([^)]+\)', '', topic)
+            bare = _re.sub(r'\b(?:OR|AND)\b', ' ', bare, flags=_re.IGNORECASE)
+            for word in bare.split():
+                word = word.strip().strip("\"'")
+                if word:
+                    groups.append([word])
+            return groups if groups else [[topic]]
+        # Simple topic: single term
+        return [[topic]]
+
+    def _matches_topic(text: str, topic: str) -> bool:
+        groups = _parse_topic_groups(topic)
+        tl = text.lower()
+        return all(any(term.lower() in tl for term in group) for group in groups)
+
     filtered = []
     for article in articles:
         text = f"{article.get('title', '')} {article.get('content', '')}".lower()
-        if any(kw.lower() in text for kw in keywords):
-            filtered.append(article)
+        for topic in topics:
+            if _matches_topic(text, topic):
+                filtered.append({**article, "matched_keyword": topic})
+                break
+    return filtered
+
+
+def _filter_by_keywords(articles: list[dict], keywords: list[str]) -> list[dict]:
+    """Filter articles that contain any of the specified keywords.
+    Sets matched_keyword on each passing article for downstream severity assessment.
+    """
+    filtered = []
+    for article in articles:
+        text = f"{article.get('title', '')} {article.get('content', '')}".lower()
+        for kw in keywords:
+            if kw.lower() in text:
+                filtered.append({**article, "matched_keyword": kw})
+                break
     return filtered
 
 
 def _parse_date(entry) -> datetime | None:
-    """Parse published date from RSS entry."""
+    """Parse published date from RSS entry.
+
+    feedparser returns published_parsed as UTC struct_time.
+    calendar.timegm() treats input as UTC (unlike mktime which assumes local time),
+    so the result is comparable with datetime.utcnow().
+    """
+    import calendar
     for attr in ("published_parsed", "updated_parsed"):
         parsed = getattr(entry, attr, None)
         if parsed:
             try:
-                from time import mktime
-                return datetime.fromtimestamp(mktime(parsed))
+                return datetime.utcfromtimestamp(calendar.timegm(parsed))
             except Exception:
                 continue
     return None

@@ -605,6 +605,93 @@ def _migrate_db():
             is_new BOOLEAN DEFAULT 1)"""))
         conn.commit()
 
+        # 新增 MOPS 公開資訊觀測站來源（type="mops"，idempotent）
+        mops_exists = conn.execute(
+            text("SELECT id FROM monitor_sources WHERE type = 'mops' LIMIT 1")
+        ).fetchone()
+        if not mops_exists:
+            conn.execute(text(
+                "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                "VALUES ('公開資訊觀測站重大訊息', 'mops', 'https://mops.twse.com.tw/mops/web/t05sr01', "
+                "'[\"重大訊息\",\"重訊\",\"法說\",\"盈餘\"]', 1)"
+            ))
+        conn.commit()
+
+        # 修正金管會 RSS URL（原來是 HTML 頁面非 RSS）
+        conn.execute(text(
+            "UPDATE monitor_sources SET "
+            "url='https://www.fsc.gov.tw/rss/rss_news.xml', "
+            "name='金管會新聞稿 (FSC)' "
+            "WHERE name IN ('台灣金管會','金管會新聞稿 (FSC)') AND type='rss' "
+            "AND url LIKE '%fsc.gov.tw%'"
+        ))
+        conn.commit()
+
+        # 修正常見台灣媒體來源的錯誤 RSS URL（依名稱比對，idempotent）
+        # 使用者常把網站首頁 URL 填入，這裡自動更正為正確的 RSS Feed URL
+        _rss_url_fixes = [
+            ("鏡新聞",   "https://www.mirrormedia.mg/rss/rss.xml"),
+            ("Mirror Media", "https://www.mirrormedia.mg/rss/rss.xml"),
+            ("財訊",     "https://www.wealth.com.tw/rss"),
+            ("WEALTH",   "https://www.wealth.com.tw/rss"),
+            ("商周",     "http://cmsapi.businessweekly.com.tw/?CategoryId=24612ec9-2ac5-4e1f-ab04-310879f89b33&TemplateId=8E19CF43-50E5-4093-B72D-70A912962D55"),
+            ("Business Weekly", "http://cmsapi.businessweekly.com.tw/?CategoryId=24612ec9-2ac5-4e1f-ab04-310879f89b33&TemplateId=8E19CF43-50E5-4093-B72D-70A912962D55"),
+            ("經濟學人", "https://www.economist.com/finance-and-economics/rss.xml"),
+            ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
+            ("politico", "https://rss.politico.com/economy.xml"),
+            ("Politico",  "https://rss.politico.com/economy.xml"),
+            ("自由時報", "https://news.ltn.com.tw/rss/business.xml"),
+        ]
+        for src_name, correct_url in _rss_url_fixes:
+            # 只更新：名稱包含關鍵字 且 type=rss 且 URL 不是正確的 RSS URL
+            conn.execute(text(
+                "UPDATE monitor_sources SET url = :u "
+                "WHERE type = 'rss' AND name LIKE :n AND url != :u "
+                "AND url NOT LIKE '%.xml' AND url NOT LIKE '%.aspx' "
+                "AND url NOT LIKE '%/rss%' AND url NOT LIKE '%/feed%'"
+            ), {"u": correct_url, "n": f"%{src_name}%"})
+
+        # 公開觀測站 / MOPS：若使用者以 RSS 類型加入卻填了 mops.twse.com.tw，改為 mops 類型
+        conn.execute(text(
+            "UPDATE monitor_sources SET type = 'mops', "
+            "url = 'https://mops.twse.com.tw/mops/web/t05sr01' "
+            "WHERE type = 'rss' AND ("
+            "  name LIKE '%公開%觀測%' OR name LIKE '%MOPS%' OR name LIKE '%重大訊息%'"
+            "  OR url LIKE '%mops.twse.com.tw%'"
+            ")"
+        ))
+        conn.commit()
+
+        # 新增 / 更新 Trump Truth Social 來源
+        trump_row = conn.execute(text(
+            "SELECT id, url FROM monitor_sources WHERE name LIKE '%realDonaldTrump%' OR name LIKE '%Trump%/@%' LIMIT 1"
+        )).fetchone()
+        if trump_row:
+            # 若舊 URL 是 Nitter，更新為 Truth Social
+            if trump_row[1] and "nitter" in trump_row[1]:
+                conn.execute(text(
+                    "UPDATE monitor_sources SET name='Trump / @realDonaldTrump (Truth Social)', "
+                    "url='https://truthsocial.com/@realDonaldTrump.rss' WHERE id=:id"
+                ), {"id": trump_row[0]})
+        else:
+            conn.execute(text(
+                "INSERT INTO monitor_sources (name, type, url, keywords, is_active) VALUES "
+                "('Trump / @realDonaldTrump (Truth Social)', 'social', "
+                "'https://truthsocial.com/@realDonaldTrump.rss', "
+                "'[\"Trump\",\"tariff\",\"trade war\",\"Fed\",\"China\",\"Taiwan\",\"關稅\",\"貿易戰\"]', 0)"
+            ))
+        # 新增 White House 新聞稿（若不存在）
+        wh_exists = conn.execute(text(
+            "SELECT id FROM monitor_sources WHERE url LIKE '%whitehouse.gov%' LIMIT 1"
+        )).fetchone()
+        if not wh_exists:
+            conn.execute(text(
+                "INSERT INTO monitor_sources (name, type, url, keywords, is_active) VALUES "
+                "('White House 新聞稿', 'rss', 'https://www.whitehouse.gov/feed/', "
+                "'[\"tariff\",\"trade\",\"China\",\"Taiwan\",\"Fed\",\"economy\",\"sanction\",\"關稅\",\"貿易\"]', 0)"
+            ))
+        conn.commit()
+
         # Backfill min_severity into existing LINE notification setting if missing
         import json as _json
         row = conn.execute(text(
@@ -749,10 +836,23 @@ def _seed_defaults():
                     keywords='["market","stocks","bonds","Fed","economy"]',
                 ),
                 MonitorSource(
-                    name="台灣金管會",
+                    name="金管會新聞稿 (FSC)",
                     type="rss",
-                    url="https://www.fsc.gov.tw/ch/home.jsp?id=125&parentpath=0,5",
-                    keywords='["金管會","銀行","保險","證券","監理"]',
+                    url="https://www.fsc.gov.tw/rss/rss_news.xml",
+                    keywords='["金管會","銀行","保險","證券","監理","FSC"]',
+                ),
+                MonitorSource(
+                    name="中央社財經",
+                    type="rss",
+                    url="https://www.cna.com.tw/rss/financemarket.aspx",
+                    keywords='["台股","外資","法人","央行","利率","匯率"]',
+                ),
+                MonitorSource(
+                    name="公開資訊觀測站重大訊息",
+                    type="mops",
+                    url="https://mops.twse.com.tw/mops/web/t05sr01",
+                    keywords='["重大訊息","重訊","法說","盈餘"]',
+                    is_active=True,
                 ),
                 MonitorSource(
                     name="Reuters Business",
@@ -834,7 +934,23 @@ def _seed_defaults():
                     url="https://www.investing.com/rss/news.rss",
                     keywords='["market","commodity","currency","rate","Fed"]',
                 ),
-                # ── 特定人物 / 央行演講（RSS 鏡像，無需 Twitter API）──
+                # ── 特定人物 / 社群帳號 ──
+                # Trump / Truth Social：Mastodon ActivityPub 標準 RSS 端點
+                # 備用方案：White House → https://www.whitehouse.gov/feed/
+                MonitorSource(
+                    name="Trump / @realDonaldTrump (Truth Social)",
+                    type="social",
+                    url="https://truthsocial.com/@realDonaldTrump.rss",
+                    keywords='["Trump","tariff","trade war","Fed","China","Taiwan","關稅","貿易戰"]',
+                    is_active=False,  # 預設停用，請先測試 RSS 後再啟用
+                ),
+                MonitorSource(
+                    name="White House 新聞稿",
+                    type="rss",
+                    url="https://www.whitehouse.gov/feed/",
+                    keywords='["tariff","trade","China","Taiwan","Fed","economy","sanction","關稅","貿易"]',
+                    is_active=False,
+                ),
                 MonitorSource(
                     name="Fed 官員演講（Powell 等）",
                     type="person",

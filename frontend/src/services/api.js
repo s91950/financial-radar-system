@@ -68,9 +68,14 @@ export const settingsAPI = {
   getAIModel: () => api.get('/settings/ai-model'),
   updateAIModel: (model) => api.put('/settings/ai-model', { model }),
   getRadarTopics: () => api.get('/settings/radar-topics'),
-  updateRadarTopics: (topics, hours_back = 24, interval_minutes = null) => api.put('/settings/radar-topics', { topics, hours_back, interval_minutes }),
+  updateRadarTopics: (topics, hours_back = 24, interval_minutes = null, topics_us = [], rss_only = false) => api.put('/settings/radar-topics', { topics, hours_back, interval_minutes, topics_us, rss_only }),
   getSeverityKeywords: () => api.get('/settings/severity-keywords'),
   updateSeverityKeywords: (data) => api.put('/settings/severity-keywords', data),
+  testRssSource: (id) => api.post(`/settings/sources/${id}/test-rss`),
+  getTopicCategories: () => api.get('/settings/radar-topic-categories'),
+  updateTopicCategories: (categories) => api.put('/settings/radar-topic-categories', { categories }),
+  getSeverityRules: () => api.get('/settings/severity-rules'),
+  updateSeverityRules: (rules) => api.put('/settings/severity-rules', { rules }),
 }
 
 // --- Topic Tracking APIs ---

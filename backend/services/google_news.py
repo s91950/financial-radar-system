@@ -225,8 +225,8 @@ async def search_google_news(
                 if resolved:
                     source_url = resolved
                 elif entry_data["gn_art_id"]:
-                    # fallback: Google News 可點擊連結
-                    source_url = entry_data["raw_link"].replace("/rss/articles/", "/articles/")
+                    # fallback: 保留原始 /rss/articles/ 連結（/articles/ 版本可能顯示錯誤頁面）
+                    source_url = entry_data["raw_link"]
                 else:
                     source_url = entry_data["raw_link"]
 

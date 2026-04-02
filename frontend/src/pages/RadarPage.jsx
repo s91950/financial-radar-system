@@ -61,6 +61,20 @@ export default function RadarPage({ wsSubscribe }) {
     return { severity: null, url: rawUrl, raw: rawUrl }
   }
 
+  const extractMatchedKw = (kw, title) => {
+    if (!kw) return null
+    const titleLower = title.toLowerCase()
+    const quoted = [...kw.matchAll(/"([^"]+)"/g)].map(m => m[1])
+    const bare = kw.replace(/"[^"]*"/g, '').split(/[\s()]+/)
+      .filter(t => t && !['OR', 'AND', 'NOT'].includes(t) && t.length > 1)
+    const allTerms = [...quoted, ...bare]
+    const matched = [...new Set(allTerms.filter(t => titleLower.includes(t.toLowerCase())))]
+    if (matched.length > 0) return matched.slice(0, 3).join(' / ')
+    // 無命中（如由內文匹配）：顯示第一個無括號的短詞或不顯示
+    const first = quoted[0] || bare[0] || null
+    return first && first.length <= 20 ? first : null
+  }
+
   const splitArticleLines = (content) => {
     if (!content) return []
     return content.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
@@ -68,11 +82,12 @@ export default function RadarPage({ wsSubscribe }) {
       const cleanLine = sevMatch ? sevMatch[2].trim() : line
       const kwMatch = cleanLine.match(/\(關鍵字：(.+?)\)$/)
       const displayLine = kwMatch ? cleanLine.slice(0, cleanLine.lastIndexOf(' (關鍵字：')) : cleanLine
+      const rawKw = kwMatch?.[1] || null
       return {
         raw: line,
         severity: sevMatch ? sevMatch[1] : null,
         displayLine,
-        kw: kwMatch?.[1] || null,
+        kw: extractMatchedKw(rawKw, displayLine),
       }
     })
   }
@@ -552,11 +567,8 @@ export default function RadarPage({ wsSubscribe }) {
                                     <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
                                     <span className={`min-w-0 flex-1 ${selectedAlert?.id === alert.id ? '' : 'truncate'}`}>{line.displayLine}</span>
                                     {line.kw && (
-                                      <span
-                                        className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap max-w-[12rem] truncate cursor-default"
-                                        title={line.kw}
-                                      >
-                                        {line.kw.length > 20 ? line.kw.slice(0, 20) + '…' : line.kw}
+                                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
+                                        {line.kw}
                                       </span>
                                     )}
                                   </p>

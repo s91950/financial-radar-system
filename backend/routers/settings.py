@@ -313,19 +313,25 @@ async def get_radar_topics(db: Session = Depends(get_db)):
     """Get Google News search topics and scan config for radar scan."""
     from backend.config import settings as cfg
     topics_raw = _get_config(db, "radar_topics", json.dumps(_DEFAULT_RADAR_TOPICS))
+    topics_us_raw = _get_config(db, "radar_topics_us", "[]")
     hours_raw = _get_config(db, "radar_hours_back", "24")
     interval_raw = _get_config(db, "radar_interval_minutes", str(cfg.RADAR_INTERVAL_MINUTES))
+    rss_only_raw = _get_config(db, "radar_rss_only", "false")
     return {
         "topics": json.loads(topics_raw),
+        "topics_us": json.loads(topics_us_raw),
         "hours_back": int(hours_raw),
         "interval_minutes": int(interval_raw),
+        "rss_only": rss_only_raw == "true",
     }
 
 
 class RadarTopicsUpdate(BaseModel):
     topics: list[str]
+    topics_us: list[str] = []
     hours_back: int = 24
     interval_minutes: int | None = None
+    rss_only: bool = False
 
 
 @router.put("/radar-topics")
@@ -333,6 +339,7 @@ async def update_radar_topics(req: RadarTopicsUpdate, db: Session = Depends(get_
     """Update Google News search topics, scan hours, and interval for radar scan."""
     from backend.config import settings as cfg
     _set_config(db, "radar_topics", json.dumps(req.topics, ensure_ascii=False))
+    _set_config(db, "radar_topics_us", json.dumps(req.topics_us, ensure_ascii=False))
     _set_config(db, "radar_hours_back", str(max(1, req.hours_back)))
     current_interval = int(_get_config(db, "radar_interval_minutes", str(cfg.RADAR_INTERVAL_MINUTES)))
     interval = req.interval_minutes
@@ -360,8 +367,34 @@ async def update_radar_topics(req: RadarTopicsUpdate, db: Session = Depends(get_
             _flog(f"[SETTINGS] interval unchanged ({interval}), skip reschedule")
     else:
         interval = current_interval
+    _set_config(db, "radar_rss_only", "true" if req.rss_only else "false")
     db.commit()
-    return {"topics": req.topics, "hours_back": req.hours_back, "interval_minutes": interval}
+    return {"topics": req.topics, "hours_back": req.hours_back, "interval_minutes": interval, "rss_only": req.rss_only}
+
+
+# --- Radar Topic Categories ---
+
+@router.get("/radar-topic-categories")
+async def get_topic_categories(db: Session = Depends(get_db)):
+    """取得關鍵字分類設定。格式：{分類名稱: [關鍵字...]}"""
+    raw = _get_config(db, "radar_topic_categories", "{}")
+    try:
+        cats = json.loads(raw)
+    except Exception:
+        cats = {}
+    return {"categories": cats}
+
+
+class TopicCategoriesUpdate(BaseModel):
+    categories: dict  # {分類名稱: [關鍵字...]}
+
+
+@router.put("/radar-topic-categories")
+async def update_topic_categories(req: TopicCategoriesUpdate, db: Session = Depends(get_db)):
+    """更新關鍵字分類設定（不影響 radar_topics 本身）。"""
+    _set_config(db, "radar_topic_categories", json.dumps(req.categories, ensure_ascii=False))
+    db.commit()
+    return {"categories": req.categories}
 
 
 # --- Severity Keywords ---
@@ -409,6 +442,47 @@ async def update_severity_keywords_api(req: SeverityKeywordsRequest, db: Session
     return {"critical": req.critical, "high": req.high}
 
 
+# --- Severity Boolean Rules ---
+# 格式：[{"condition": "暴跌 AND 台股", "severity": "critical", "note": ""}]
+# condition 使用與 Topic 相同的布林語法：空格=AND，括號=OR，AND/OR 關鍵字
+
+_DEFAULT_SEVERITY_RULES: list[dict] = []
+
+
+def get_severity_rules(db: Session) -> list[dict]:
+    """Load severity boolean rules from DB. Importable by other modules."""
+    try:
+        return json.loads(_get_config(db, "severity_rules", "[]"))
+    except Exception:
+        return []
+
+
+@router.get("/severity-rules")
+async def get_severity_rules_api(db: Session = Depends(get_db)):
+    return {"rules": get_severity_rules(db)}
+
+
+class SeverityRulesRequest(BaseModel):
+    rules: list[dict]  # [{"condition": str, "severity": str, "note": str}]
+
+
+@router.put("/severity-rules")
+async def update_severity_rules_api(req: SeverityRulesRequest, db: Session = Depends(get_db)):
+    """更新布林嚴重度規則。規則優先於關鍵字列表，第一條符合即返回。"""
+    # 基本驗證
+    valid = []
+    for r in req.rules:
+        if not isinstance(r, dict):
+            continue
+        cond = str(r.get("condition", "")).strip()
+        sev = str(r.get("severity", "")).strip()
+        if cond and sev in ("critical", "high", "low"):
+            valid.append({"condition": cond, "severity": sev, "note": str(r.get("note", ""))})
+    _set_config(db, "severity_rules", json.dumps(valid, ensure_ascii=False))
+    db.commit()
+    return {"rules": valid}
+
+
 # --- AI Model Settings ---
 
 class AIModelRequest(BaseModel):
@@ -438,3 +512,78 @@ async def update_ai_model(req: AIModelRequest):
         return {"error": "model must be 'gemini' or 'claude'"}
     settings.DEFAULT_AI_MODEL = req.model
     return {"model": settings.DEFAULT_AI_MODEL, "message": f"已切換至 {req.model}"}
+
+
+# --- RSS Source Test ---
+
+@router.post("/sources/{source_id}/test-rss")
+async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
+    """測試 RSS 來源是否能正常抓取文章。回傳 feed 中的條目數與標題預覽。"""
+    import feedparser
+    import httpx
+
+    source = db.query(MonitorSource).filter(MonitorSource.id == source_id).first()
+    if not source:
+        return {"success": False, "error": "來源不存在", "count": 0, "sample_titles": []}
+    if source.type == "mops":
+        return {"success": True, "count": -1, "feed_title": "公開資訊觀測站",
+                "sample_titles": ["此來源使用專屬爬蟲，不走 RSS。雷達掃描時自動抓取重大訊息。"],
+                "error": None}
+    if source.type not in ("rss", "social"):
+        return {"success": False, "error": f"類型「{source.type}」不是 RSS，不支援此測試", "count": 0, "sample_titles": []}
+    # 提早偵測 MOPS URL（使用者可能填錯類型）
+    if "mops.twse.com.tw" in source.url:
+        return {"success": False,
+                "error": "此 URL 屬於公開資訊觀測站，非 RSS。請將來源類型改為「MOPS」，或刪除此來源改用系統內建的「公開資訊觀測站重大訊息」。",
+                "count": 0, "sample_titles": []}
+
+    try:
+        async with httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as client:
+            resp = await client.get(
+                source.url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; FinancialRadar/1.0)"},
+            )
+            resp.raise_for_status()
+
+        feed = feedparser.parse(resp.text)
+        total = len(feed.entries)
+
+        if total == 0:
+            feed_title = feed.feed.get("title", "")
+            if feed_title:
+                return {
+                    "success": False,
+                    "error": f'RSS 解析正常（{feed_title}），但目前無條目',
+                    "count": 0,
+                    "sample_titles": [],
+                }
+            return {
+                "success": False,
+                "error": "此 URL 不是有效的 RSS Feed（可能輸入了網站首頁 URL，請改用 RSS 訂閱網址）",
+                "count": 0,
+                "sample_titles": [],
+            }
+
+        sample_titles = [e.get("title", "（無標題）") for e in feed.entries[:5]]
+        return {
+            "success": True,
+            "count": total,
+            "feed_title": feed.feed.get("title", ""),
+            "sample_titles": sample_titles,
+            "error": None,
+        }
+
+    except httpx.HTTPStatusError as e:
+        return {
+            "success": False,
+            "error": f"HTTP {e.response.status_code} 錯誤，請確認 URL 是否正確",
+            "count": 0,
+            "sample_titles": [],
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"連線失敗：{str(e)[:150]}",
+            "count": 0,
+            "sample_titles": [],
+        }
