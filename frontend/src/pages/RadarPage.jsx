@@ -310,6 +310,27 @@ export default function RadarPage({ wsSubscribe }) {
     return sections.length ? sections : null
   }
 
+  // 解析結構化分析（新格式：JSON object 或 JSON string）
+  const parseStructuredAnalysis = (analysis) => {
+    if (!analysis) return null
+    try {
+      const obj = typeof analysis === 'string' ? JSON.parse(analysis) : analysis
+      if (obj && typeof obj === 'object' && (obj.event_type || obj.event_summary)) return obj
+    } catch {}
+    return null
+  }
+
+  const URGENCY_STYLES = {
+    '立即': 'bg-red-500/20 text-red-400 border border-red-500/40',
+    '24h':  'bg-orange-500/20 text-orange-400 border border-orange-500/40',
+    '本週': 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/40',
+  }
+  const ACTION_STYLES = {
+    '告警': 'bg-red-500/20 text-red-400 border border-red-500/40',
+    '評估': 'bg-orange-500/20 text-orange-400 border border-orange-500/40',
+    '觀察': 'bg-blue-500/20 text-blue-400 border border-blue-500/40',
+  }
+
   const sectionStyle = (title) => {
     if (title.includes('摘要') || title.includes('發生')) {
       return { box: 'bg-blue-500/10 border border-blue-500/20', heading: 'text-blue-400' }
@@ -698,7 +719,74 @@ export default function RadarPage({ wsSubscribe }) {
                         <div>
                           <h5 className="text-sm font-semibold text-primary-400 mb-2">AI 分析</h5>
                           {(() => {
-                            const sections = parseAnalysisSections(alert.analysis)
+                            const structured = parseStructuredAnalysis(alert.analysis)
+                            if (structured) {
+                              return (
+                                <div className="space-y-2">
+                                  {/* 標籤列：事件類型 / 緊急程度 / 建議行動 */}
+                                  {(structured.event_type || structured.urgency || structured.recommended_action) && (
+                                    <div className="flex flex-wrap gap-1.5 mb-1">
+                                      {structured.event_type && (
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-600/40 text-gray-300 border border-gray-500/30">
+                                          {structured.event_type}
+                                        </span>
+                                      )}
+                                      {structured.urgency && (
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${URGENCY_STYLES[structured.urgency] || 'bg-gray-600/40 text-gray-300'}`}>
+                                          ⏱ {structured.urgency}
+                                        </span>
+                                      )}
+                                      {structured.recommended_action && (
+                                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${ACTION_STYLES[structured.recommended_action] || 'bg-gray-600/40 text-gray-300'}`}>
+                                          ▶ {structured.recommended_action}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {/* 事件摘要 */}
+                                  {structured.event_summary && (
+                                    <div className="rounded-lg p-3 bg-blue-500/10 border border-blue-500/20">
+                                      <h6 className="text-xs font-bold mb-1.5 text-blue-400">【事件摘要】</h6>
+                                      <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{structured.event_summary}</p>
+                                    </div>
+                                  )}
+                                  {/* 影響實體 + 傳導路徑 */}
+                                  {(structured.affected_entities?.length > 0 || structured.transmission_path) && (
+                                    <div className="rounded-lg p-3 bg-orange-500/10 border border-orange-500/20">
+                                      <h6 className="text-xs font-bold mb-1.5 text-orange-400">【影響路徑】</h6>
+                                      {structured.affected_entities?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mb-1.5">
+                                          {structured.affected_entities.map(e => (
+                                            <span key={e} className="text-[11px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-300">{e}</span>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {structured.transmission_path && (
+                                        <p className="text-sm text-gray-400 italic">{structured.transmission_path}</p>
+                                      )}
+                                    </div>
+                                  )}
+                                  {/* 部位暴險 */}
+                                  {structured.exposure_analysis && (
+                                    <div className="rounded-lg p-3 bg-yellow-500/10 border border-yellow-500/20">
+                                      <h6 className="text-xs font-bold mb-1.5 text-yellow-400">【部位暴險】</h6>
+                                      <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{structured.exposure_analysis}</p>
+                                    </div>
+                                  )}
+                                  {/* 後續發展 */}
+                                  {structured.follow_up && (
+                                    <div className="rounded-lg p-3 bg-purple-500/10 border border-purple-500/20">
+                                      <h6 className="text-xs font-bold mb-1.5 text-purple-400">【後續發展】</h6>
+                                      {renderFollowUp(structured.follow_up)}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            }
+                            // Fallback: old 【section】 text format
+                            const sections = parseAnalysisSections(
+                              typeof alert.analysis === 'string' ? alert.analysis : JSON.stringify(alert.analysis)
+                            )
                             if (sections) {
                               return (
                                 <div className="space-y-2">
@@ -716,7 +804,7 @@ export default function RadarPage({ wsSubscribe }) {
                                 </div>
                               )
                             }
-                            return <p className="text-sm text-gray-300 whitespace-pre-wrap">{alert.analysis}</p>
+                            return <p className="text-sm text-gray-300 whitespace-pre-wrap">{typeof alert.analysis === 'string' ? alert.analysis : JSON.stringify(alert.analysis, null, 2)}</p>
                           })()}
                         </div>
                       ) : (

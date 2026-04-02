@@ -195,6 +195,10 @@ async def _radar_scan_inner(force: bool = False):
         _sev_crit, _sev_high = _load_sev_kw(db)
         _sev_rules = _load_sev_rules(db)
 
+        # 時間衰減閾值（小時）
+        _decay_cfg = db.query(SystemConfig).filter(SystemConfig.key == "severity_decay_hours").first()
+        _decay_hours = int(_decay_cfg.value) if _decay_cfg else 6
+
         # Load hours_back early — shared by RSS (step 1) and Google News (step 2)
         hours_config = db.query(SystemConfig).filter(SystemConfig.key == "radar_hours_back").first()
         gn_hours_back = int(hours_config.value) if hours_config else 24
@@ -440,6 +444,19 @@ async def _radar_scan_inner(force: bool = False):
         matched = match_positions_to_news(positions, new_articles) if positions else []
         exposure_summary = format_exposure_summary(matched) if matched else ""
 
+        # NER：抽取實體，補充到 exposure_summary（若持倉匹配結果為空時）
+        from backend.services.simple_ner import extract_entities, format_entities_summary
+        all_text = " ".join(
+            (a.get("title", "") + " " + a.get("content", "")[:200])
+            for a in new_articles
+        )
+        ner_entities = extract_entities(all_text, positions or [])
+        ner_summary = format_entities_summary(ner_entities)
+        if ner_summary and not exposure_summary:
+            exposure_summary = f"[NER] {ner_summary}"
+        elif ner_summary and exposure_summary:
+            exposure_summary = f"{exposure_summary}\n[NER] {ner_summary}"
+
         # Build title
         first_title = new_articles[0].get("title", "").strip()
         if len(new_articles) == 1:
@@ -461,6 +478,20 @@ async def _radar_scan_inner(force: bool = False):
             hour_str = now.strftime('%Y%m%d%H')
             dedup_key = f"scan:{hour_str}:{hashlib.md5(first_title.encode()).hexdigest()[:16]}"
 
+        # 預先建立 article line formatter 與 source_urls（供去重合併與建立告警共用）
+        def _fmt_article_line(a: dict) -> str:
+            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours)
+            kw = a.get('matched_keyword', '')
+            base = f"[{a.get('source', '')}] {a.get('title', '')}"
+            line = f"{base} (關鍵字：{kw})" if kw else base
+            return f"{{{sev}}}{line}"
+
+        # Store source_urls with severity prefix so frontend can filter them
+        source_urls = [
+            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours)}}}{a.get('source_url', '')}"
+            for a in new_articles if a.get("source_url")
+        ]
+
         # Prevent duplicate alerts:
         # 1. Soft check: query by dedup_key (catches different-count variants of same story)
         recent_dupe = db.query(Alert).filter(Alert.dedup_key == dedup_key).first()
@@ -469,28 +500,34 @@ async def _radar_scan_inner(force: bool = False):
             logger.warning(f"Duplicate alert prevented (same story this hour): {first_title}")
             return 0
 
+        # 2. 語意去重：若 30 分鐘內有相似標題告警，合併新文章進去而非建立新告警
+        if not force:
+            similar_alert = _find_similar_recent_alert(db, alert_title, window_minutes=30)
+            if similar_alert:
+                _flog(f"[SCAN] Semantic merge → alert id={similar_alert.id} sim≥0.4 with '{alert_title[:40]}'")
+                logger.info(f"Semantic dedup: merging into existing alert id={similar_alert.id}")
+                extra_lines = "\n".join(_fmt_article_line(a) for a in new_articles)
+                similar_alert.content = (similar_alert.content or "") + "\n" + extra_lines
+                new_sev = _assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours)
+                if _SEVERITY_ORDER.get(new_sev, 0) > _SEVERITY_ORDER.get(similar_alert.severity, 0):
+                    similar_alert.severity = new_sev
+                if source_urls:
+                    existing_urls = json.loads(similar_alert.source_urls or "[]")
+                    merged_urls = list(dict.fromkeys(existing_urls + source_urls))
+                    similar_alert.source_urls = json.dumps(merged_urls)
+                if exposure_summary:
+                    similar_alert.exposure_summary = exposure_summary
+                db.commit()
+                return len(new_articles)
+
         _flog(f"[SCAN] Creating alert: {len(new_articles)} articles, sev will be computed")
-
-        # AI analysis is on-demand only (user triggers via UI)
-        def _fmt_article_line(a: dict) -> str:
-            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules)
-            kw = a.get('matched_keyword', '')
-            base = f"[{a.get('source', '')}] {a.get('title', '')}"
-            line = f"{base} (關鍵字：{kw})" if kw else base
-            return f"{{{sev}}}{line}"
-
-        # Store source_urls with severity prefix so frontend can filter them
-        source_urls = [
-            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules)}}}{a.get('source_url', '')}"
-            for a in new_articles if a.get("source_url")
-        ]
 
         alert = Alert(
             type="news",
             title=alert_title,
             content="\n".join(_fmt_article_line(a) for a in new_articles),
             analysis=None,
-            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules),
+            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours),
             source="Radar Scan",
             exposure_summary=exposure_summary or None,
             source_urls=json.dumps(source_urls) if source_urls else None,
@@ -1080,12 +1117,33 @@ _HIGH_KEYWORDS = [
 ]
 
 
-def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None) -> str:
+def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: int = 6) -> str:
+    """根據文章發布時間衰減嚴重度。
+    超過 decay_hours 小時的文章降一級（critical→high, high→low）。
+    """
+    if not published_at_str or severity == "low":
+        return severity
+    try:
+        pub = datetime.fromisoformat(published_at_str.replace("Z", "+00:00"))
+        # 統一轉為 naive UTC
+        if pub.tzinfo is not None:
+            from datetime import timezone
+            pub = pub.astimezone(timezone.utc).replace(tzinfo=None)
+        age_hours = (datetime.utcnow() - pub).total_seconds() / 3600
+        if age_hours >= decay_hours:
+            return "high" if severity == "critical" else "low"
+    except Exception:
+        pass
+    return severity
+
+
+def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6) -> str:
     """Assess severity for a single article.
 
     Evaluation order (first match wins):
     1. Boolean rules (user-configured, e.g. "暴跌 AND 台股" → critical)
     2. Keyword lists (critical_kws / high_kws)
+    3. Time decay: articles older than decay_hours are downgraded one level
     """
     text = (article.get("title", "") + " " + article.get("content", "")[:200]).lower()
     matched_kw = (article.get("matched_keyword", "") or "").lower()
@@ -1100,16 +1158,19 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
                 continue
             groups = _parse_keyword_groups(cond.split())
             if _match_keyword_groups(full_text, groups):
-                return sev
+                return _apply_time_decay(sev, article.get("published_at"), decay_hours)
 
     # 2. Keyword lists fallback
     c = critical_kws if critical_kws is not None else _CRITICAL_KEYWORDS
     h = high_kws if high_kws is not None else _HIGH_KEYWORDS
     if any(kw in full_text for kw in c):
-        return "critical"
-    if any(kw in full_text for kw in h):
-        return "high"
-    return "low"
+        base_sev = "critical"
+    elif any(kw in full_text for kw in h):
+        base_sev = "high"
+    else:
+        base_sev = "low"
+
+    return _apply_time_decay(base_sev, article.get("published_at"), decay_hours)
 
 
 def _extract_matched_terms(query: str, title: str) -> str:
@@ -1128,12 +1189,56 @@ def _extract_matched_terms(query: str, title: str) -> str:
     return ""
 
 
-def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rules=None) -> str:
+def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6) -> str:
     """Overall severity = max of all per-article severities."""
     if not articles:
         return "low"
-    severities = [_assess_severity_single(a, critical_kws, high_kws, rules) for a in articles]
+    severities = [_assess_severity_single(a, critical_kws, high_kws, rules, decay_hours) for a in articles]
     return max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 0))
+
+
+def _extract_title_keywords(title: str) -> set:
+    """從標題抽取有意義的關鍵詞（過濾短詞與停用詞）供語意比對用。"""
+    _STOPWORDS = {"的", "了", "是", "在", "和", "與", "及", "或", "也", "都",
+                  "有", "將", "為", "被", "對", "中", "以", "但", "而", "等",
+                  "a", "an", "the", "of", "in", "is", "to", "for", "on", "at"}
+    # 中文詞：取 2 字以上連續中文字元片段
+    zh_words = re.findall(r'[\u4e00-\u9fff]{2,}', title)
+    # 英文詞：取 2 字以上英文單詞
+    en_words = re.findall(r'[A-Za-z]{2,}', title)
+    words = set(zh_words + [w.lower() for w in en_words])
+    return words - _STOPWORDS
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """計算兩個標題的 Jaccard 相似度（基於關鍵詞集合）。"""
+    kw_a = _extract_title_keywords(a)
+    kw_b = _extract_title_keywords(b)
+    if not kw_a or not kw_b:
+        return 0.0
+    intersection = len(kw_a & kw_b)
+    union = len(kw_a | kw_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _find_similar_recent_alert(db, new_title: str, window_minutes: int = 30):
+    """在最近 window_minutes 分鐘內尋找語意相似的告警。
+    相似度 >= 0.4 視為同一事件，回傳該告警；否則回傳 None。
+    """
+    from datetime import timedelta
+    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
+    recent_alerts = (
+        db.query(Alert)
+        .filter(Alert.created_at >= cutoff, Alert.type == "news")
+        .order_by(Alert.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    for alert in recent_alerts:
+        sim = _title_similarity(new_title, alert.title)
+        if sim >= 0.4:
+            return alert
+    return None
 
 
 def _flatten_topics_to_keywords(topics: list[str]) -> list[str]:
