@@ -136,8 +136,7 @@ async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
 
 @router.post("/alerts/{alert_id}/analyze")
 async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
-    """On-demand AI analysis for an alert — returns structured JSON with event_type, urgency, etc."""
-    import json as _json
+    """On-demand AI analysis for an alert (includes position exposure)."""
     from backend.services.ai_factory import get_ai_service
     from backend.services.exposure import format_exposure_summary, match_positions_to_news
     from backend.services.google_sheets import get_positions
@@ -146,31 +145,32 @@ async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
     if not alert:
         return {"error": "Alert not found"}
 
-    # Return cached analysis if available
     if alert.analysis:
-        try:
-            cached = _json.loads(alert.analysis)
-            return {"analysis": cached}
-        except Exception:
-            return {"analysis": alert.analysis}
+        return {"analysis": alert.analysis}
 
-    # Build article dicts from alert content lines
+    # Build article-like dicts from alert content for exposure matching
     content_lines = (alert.content or "").split("\n")
     articles = [{"title": line, "content": ""} for line in content_lines if line.strip()]
 
-    # Match positions for exposure context
+    # Match positions
     positions = await get_positions()
     matched = match_positions_to_news(positions, articles) if positions else []
+    exposure_summary = format_exposure_summary(matched) if matched else ""
+
+    # Build context for AI
+    exposure_context = f"\n\n可能影響的部位：\n{exposure_summary}" if exposure_summary else ""
 
     ai_service = get_ai_service()
-    result = await ai_service.analyze_news_for_alert(articles, positions or [])
+    analysis = await ai_service.analyze_news(
+        articles=[{"title": alert.title or "", "content": (alert.content or "") + exposure_context}],
+    )
 
-    if not result or not result.get("event_summary"):
+    if not analysis:
         return {"error": "AI 分析失敗（可能是 API 配額用完），請稍後再試"}
 
-    alert.analysis = _json.dumps(result, ensure_ascii=False)
+    alert.analysis = analysis
     db.commit()
-    return {"analysis": result}
+    return {"analysis": analysis}
 
 
 @router.get("/market")

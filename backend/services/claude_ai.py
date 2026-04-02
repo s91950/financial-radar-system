@@ -60,32 +60,13 @@ async def analyze_news(articles: list[dict], context: str = "") -> str:
 
 
 async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) -> dict:
-    """Analyze news for push notification — returns structured dict with extended fields.
-
-    Returns:
-        {
-            "event_type": str,        # 央行政策|企業財報|監管處罰|地緣政治|市場流動性|其他
-            "affected_entities": list, # 受影響實體清單
-            "transmission_path": str, # 傳導路徑（A→B→C）
-            "urgency": str,           # 立即|24h|本週
-            "recommended_action": str,# 觀察|評估|告警
-            "event_summary": str,     # 發生什麼事（150字）
-            "exposure_analysis": str, # 部位暴險（AI評估）
-            "follow_up": str,         # 後續發展（200字）
-        }
-    """
-    _empty = {
-        "event_type": "",
-        "affected_entities": [],
-        "transmission_path": "",
-        "urgency": "",
-        "recommended_action": "",
-        "event_summary": "",
-        "exposure_analysis": "",
-        "follow_up": "",
-    }
+    """Analyze news for push notification — returns structured dict with 3 sections."""
     if not _is_api_key_valid():
-        return {**_empty, "event_summary": "（需設定 ANTHROPIC_API_KEY 以啟用 AI 分析）"}
+        return {
+            "event_summary": "（需設定 ANTHROPIC_API_KEY 以啟用 AI 分析）",
+            "exposure_analysis": "",
+            "follow_up": "",
+        }
 
     articles_text = "\n\n".join(
         f"[{a.get('source', '')}] {a.get('title', '')}\n{a.get('content', '')[:400]}"
@@ -100,20 +81,15 @@ async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) ->
             for p in positions[:20]
         )
 
-    prompt = f"""你是一位資深金融風控分析師。請閱讀以下新聞內文，以繁體中文進行結構化分析。
+    prompt = f"""你是一位資深金融分析師。請閱讀以下新聞內文，以繁體中文進行結構化分析。
 
 最新新聞（含內文）：
 {articles_text}
 
 {positions_text}
 
-請用以下 JSON 格式回覆（輸出純 JSON，不含 Markdown 或其他文字）：
+請用以下 JSON 格式回覆（不要有其他文字）：
 {{
-  "event_type": "從以下選一：央行政策、企業財報、監管處罰、地緣政治、市場流動性、其他",
-  "affected_entities": ["受直接影響的公司、國家或資產名稱，最多5個"],
-  "transmission_path": "事件傳導路徑，例如：Fed升息 → 美債殖利率上升 → 科技股估值壓縮",
-  "urgency": "從以下選一：立即、24h、本週",
-  "recommended_action": "從以下選一：觀察、評估、告警",
   "event_summary": "閱讀以上新聞內文後，整合濃縮成150字以內的事件摘要，說明目前發生了什麼事，勿只列出標題",
   "exposure_analysis": "部位暴險分析：上述持倉中哪些受影響、影響方向與程度，若無持倉則分析一般投資人暴險",
   "follow_up": "後續發展推演，以列點方式呈現三個情境：\\n• 樂觀情境：...\\n• 基本情境：...\\n• 悲觀情境：..."
@@ -124,7 +100,7 @@ async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) ->
         client = _get_client()
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1200,
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
@@ -134,18 +110,13 @@ async def analyze_news_for_alert(articles: list[dict], positions: list[dict]) ->
                 text = text[4:]
         result = json.loads(text)
         return {
-            "event_type": result.get("event_type", ""),
-            "affected_entities": result.get("affected_entities", []),
-            "transmission_path": result.get("transmission_path", ""),
-            "urgency": result.get("urgency", ""),
-            "recommended_action": result.get("recommended_action", ""),
             "event_summary": result.get("event_summary", ""),
             "exposure_analysis": result.get("exposure_analysis", ""),
             "follow_up": result.get("follow_up", ""),
         }
     except Exception as e:
         logger.error(f"Claude alert analysis error: {e}")
-        return _empty
+        return {}
 
 
 _CHINESE_NUMS = "一二三四五六七八九十"

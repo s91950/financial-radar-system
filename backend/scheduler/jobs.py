@@ -233,6 +233,8 @@ async def _radar_scan_inner(force: bool = False):
         new_articles = []
         seen_urls = set()
         seen_titles = set()
+        seen_content_fps: list = []   # 內容相似度 fingerprint 清單（跨步驟共享）
+
         if feeds:
             rss_results = await rss_feed.fetch_multiple_feeds(
                 feeds, hours_back=gn_hours_back, global_topics=_global_topics
@@ -243,8 +245,12 @@ async def _radar_scan_inner(force: bool = False):
                 if url and title and url not in seen_urls and title not in seen_titles:
                     if force or (not db.query(Article).filter(Article.source_url == url).first() and \
                        not db.query(Article).filter(Article.title == title).first()):
+                        fp = _article_fingerprint(title, article_data.get("content", ""))
+                        if _is_content_duplicate(fp, seen_content_fps):
+                            continue
                         seen_urls.add(url)
                         seen_titles.add(title)
+                        seen_content_fps.append(fp)
                         new_articles.append(article_data)
 
         # 1b. Fetch MOPS 公開資訊觀測站重大訊息（type="mops" 來源啟用時）
@@ -319,8 +325,12 @@ async def _radar_scan_inner(force: bool = False):
                     if url and title and url not in seen_urls and title not in seen_titles:
                         if force or (not db.query(Article).filter(Article.source_url == url).first() and \
                            not db.query(Article).filter(Article.title == title).first()):
+                            fp = _article_fingerprint(title, article_data.get("content", ""))
+                            if _is_content_duplicate(fp, seen_content_fps):
+                                continue
                             seen_urls.add(url)
                             seen_titles.add(title)
+                            seen_content_fps.append(fp)
                             article_data['matched_keyword'] = _extract_matched_terms(topic, title)
                             new_articles.append(article_data)
 
@@ -389,12 +399,15 @@ async def _radar_scan_inner(force: bool = False):
                 if url not in seen_urls and title not in seen_titles:
                     if force or (not db.query(Article).filter(Article.source_url == url).first() and \
                        not db.query(Article).filter(Article.title == title).first()):
-                        seen_urls.add(url)
-                        seen_titles.add(title)
-                        a_copy = dict(a)
-                        a_copy['matched_keyword'] = _extract_matched_terms(" ".join(kws), title) or topic.name
-                        new_articles.append(a_copy)
-                        logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
+                        fp = _article_fingerprint(title, a.get("content", ""))
+                        if not _is_content_duplicate(fp, seen_content_fps):
+                            seen_urls.add(url)
+                            seen_titles.add(title)
+                            seen_content_fps.append(fp)
+                            a_copy = dict(a)
+                            a_copy['matched_keyword'] = _extract_matched_terms(" ".join(kws), title) or topic.name
+                            new_articles.append(a_copy)
+                            logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
 
         if not new_articles:
             _flog(f"[SCAN] No new articles found (force={force}), exiting")
@@ -492,33 +505,12 @@ async def _radar_scan_inner(force: bool = False):
             for a in new_articles if a.get("source_url")
         ]
 
-        # Prevent duplicate alerts:
-        # 1. Soft check: query by dedup_key (catches different-count variants of same story)
+        # Prevent duplicate alerts: query by dedup_key
         recent_dupe = db.query(Alert).filter(Alert.dedup_key == dedup_key).first()
         if recent_dupe:
             _flog(f"[SCAN] Dedup hit: {dedup_key} → existing alert id={recent_dupe.id}")
             logger.warning(f"Duplicate alert prevented (same story this hour): {first_title}")
             return 0
-
-        # 2. 語意去重：若 30 分鐘內有相似標題告警，合併新文章進去而非建立新告警
-        if not force:
-            similar_alert = _find_similar_recent_alert(db, alert_title, window_minutes=30)
-            if similar_alert:
-                _flog(f"[SCAN] Semantic merge → alert id={similar_alert.id} sim≥0.4 with '{alert_title[:40]}'")
-                logger.info(f"Semantic dedup: merging into existing alert id={similar_alert.id}")
-                extra_lines = "\n".join(_fmt_article_line(a) for a in new_articles)
-                similar_alert.content = (similar_alert.content or "") + "\n" + extra_lines
-                new_sev = _assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours)
-                if _SEVERITY_ORDER.get(new_sev, 0) > _SEVERITY_ORDER.get(similar_alert.severity, 0):
-                    similar_alert.severity = new_sev
-                if source_urls:
-                    existing_urls = json.loads(similar_alert.source_urls or "[]")
-                    merged_urls = list(dict.fromkeys(existing_urls + source_urls))
-                    similar_alert.source_urls = json.dumps(merged_urls)
-                if exposure_summary:
-                    similar_alert.exposure_summary = exposure_summary
-                db.commit()
-                return len(new_articles)
 
         _flog(f"[SCAN] Creating alert: {len(new_articles)} articles, sev will be computed")
 
@@ -1116,6 +1108,80 @@ _HIGH_KEYWORDS = [
     "信用評等", "調降", "縮編", "重組", "裁員", "出口禁令",
 ]
 
+# ── 多維風險評分 ───────────────────────────────────────────────────────────────
+
+# 來源可信度權重（substring 比對，由長到短排列避免短串誤觸）
+_SOURCE_WEIGHTS: dict = {
+    "federalreserve": 1.6, "ecb.europa": 1.6, "bis.org": 1.5,
+    "金管會": 1.6, "央行": 1.6, "mops": 1.5,
+    "reuters": 1.5, "bloomberg": 1.5, "financial times": 1.5, "ft.com": 1.4,
+    "wsj": 1.4, "economist": 1.4, "nikkei": 1.4,
+    "cnbc": 1.2, "marketwatch": 1.2, "barron": 1.2, "fortune": 1.2,
+    "yahoo finance": 1.1, "seekingalpha": 1.1,
+    "經濟日報": 1.4, "工商時報": 1.4, "moneydj": 1.3, "鉅亨": 1.3,
+    "聯合報": 1.2, "中時": 1.2, "自由時報": 1.2,
+}
+
+# 否定詞：出現在關鍵字前 6 字元內，視為語意否定
+_NEGATION_WORDS = [
+    "不會", "不至", "不太", "尚未", "避免", "防止", "排除",
+    "不", "沒", "無", "非", "否", "未",
+]
+
+# 內容相似度去重用停用詞
+_CONTENT_STOPWORDS = {
+    "的", "了", "是", "在", "和", "與", "及", "有", "將", "為", "被", "對",
+    "中", "以", "但", "而", "等", "這", "那", "也", "都", "就", "還",
+    "a", "an", "the", "of", "in", "is", "to", "for", "on", "at", "be",
+    "was", "were", "has", "have", "its", "by",
+}
+
+
+def _get_source_weight(source: str) -> float:
+    """回傳來源可信度權重（預設 1.0）。"""
+    s = source.lower().replace(" ", "")
+    for key, w in _SOURCE_WEIGHTS.items():
+        if key.replace(" ", "") in s:
+            return w
+    return 1.0
+
+
+def _has_negation_before(text: str, keyword: str) -> bool:
+    """檢查 keyword 在 text 中是否有否定詞前置（關鍵字前 6 字元內）。"""
+    idx = 0
+    while True:
+        pos = text.find(keyword, idx)
+        if pos < 0:
+            break
+        pre = text[max(0, pos - 6):pos]
+        if any(neg in pre for neg in _NEGATION_WORDS):
+            return True
+        idx = pos + 1
+    return False
+
+
+def _article_fingerprint(title: str, content: str) -> frozenset:
+    """從標題+內文前 500 字抽取關鍵詞集合，供內容相似度比對。"""
+    text = title + " " + content[:500]
+    zh = re.findall(r'[\u4e00-\u9fff]{2,}', text)
+    en = [w.lower() for w in re.findall(r'[A-Za-z]{3,}', text)]
+    return frozenset(set(zh + en) - _CONTENT_STOPWORDS)
+
+
+def _is_content_duplicate(fp: frozenset, seen_fps: list, threshold: float = 0.65) -> bool:
+    """若與任一已見 fingerprint 的 Jaccard 相似度 ≥ threshold，視為重複內容。"""
+    if not fp:
+        return False
+    for seen in seen_fps:
+        if not seen:
+            continue
+        union_size = len(fp | seen)
+        if union_size == 0:
+            continue
+        if len(fp & seen) / union_size >= threshold:
+            return True
+    return False
+
 
 def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: int = 6) -> str:
     """根據文章發布時間衰減嚴重度。
@@ -1138,18 +1204,29 @@ def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: 
 
 
 def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6) -> str:
-    """Assess severity for a single article.
+    """多維風險評分模型。
 
-    Evaluation order (first match wins):
-    1. Boolean rules (user-configured, e.g. "暴跌 AND 台股" → critical)
-    2. Keyword lists (critical_kws / high_kws)
-    3. Time decay: articles older than decay_hours are downgraded one level
+    評估順序：
+    1. Boolean rules（使用者自訂，第一條符合即返回）
+    2. 多維評分：
+       a. 關鍵字命中（critical=3.0, high=2.0）
+       b. 否定語氣過濾（「不會崩盤」不觸發 critical）
+       c. × 來源可信度（Reuters/Bloomberg=1.5, 官方=1.6, 一般=1.0）
+       d. × 標題+內文同時命中確認（1.3x，僅標題或僅內文=1.0）
+       e. × 多關鍵字加乘（每多一個命中 +0.1，上限 1.3）
+       f. 映射：≥3.5→critical, ≥2.0→high, 否則→low
+    3. 時間衰減（超過 decay_hours 降一級）
     """
-    text = (article.get("title", "") + " " + article.get("content", "")[:200]).lower()
-    matched_kw = (article.get("matched_keyword", "") or "").lower()
-    full_text = text + " " + matched_kw
+    title = article.get("title", "")
+    content_raw = article.get("content", "")[:300]
+    matched_kw = (article.get("matched_keyword", "") or "")
+    source = article.get("source", "")
 
-    # 1. Boolean rules — 第一條符合即返回
+    title_lower = title.lower()
+    content_lower = content_raw.lower()
+    full_text = title_lower + " " + content_lower + " " + matched_kw.lower()
+
+    # 1. Boolean rules — 第一條符合即返回（不受多維評分影響）
     if rules:
         for rule in rules:
             cond = rule.get("condition", "")
@@ -1160,12 +1237,42 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
             if _match_keyword_groups(full_text, groups):
                 return _apply_time_decay(sev, article.get("published_at"), decay_hours)
 
-    # 2. Keyword lists fallback
+    # 2. 多維評分
     c = critical_kws if critical_kws is not None else _CRITICAL_KEYWORDS
     h = high_kws if high_kws is not None else _HIGH_KEYWORDS
-    if any(kw in full_text for kw in c):
+
+    # 2a. 命中關鍵字（含否定過濾）
+    crit_hits = [kw for kw in c if kw in full_text and not _has_negation_before(full_text, kw)]
+    high_hits = [kw for kw in h if kw in full_text and not _has_negation_before(full_text, kw)]
+
+    if not crit_hits and not high_hits:
+        return _apply_time_decay("low", article.get("published_at"), decay_hours)
+
+    # 2b. base score
+    if crit_hits:
+        base_score = 3.0
+        ref_kws = crit_hits
+    else:
+        base_score = 2.0
+        ref_kws = high_hits
+
+    # 2c. 來源可信度
+    source_w = _get_source_weight(source)
+
+    # 2d. 標題+內文同時命中 → 1.3x
+    in_title = any(kw in title_lower for kw in ref_kws)
+    in_body  = any(kw in content_lower for kw in ref_kws)
+    confirm_w = 1.3 if (in_title and in_body) else 1.0
+
+    # 2e. 多關鍵字加乘（上限 1.3）
+    kw_count = len(crit_hits) + len(high_hits)
+    multi_w = min(1.0 + (kw_count - 1) * 0.1, 1.3)
+
+    final_score = base_score * source_w * confirm_w * multi_w
+
+    if final_score >= 3.5:
         base_sev = "critical"
-    elif any(kw in full_text for kw in h):
+    elif final_score >= 2.0:
         base_sev = "high"
     else:
         base_sev = "low"
@@ -1197,48 +1304,6 @@ def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rul
     return max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 0))
 
 
-def _extract_title_keywords(title: str) -> set:
-    """從標題抽取有意義的關鍵詞（過濾短詞與停用詞）供語意比對用。"""
-    _STOPWORDS = {"的", "了", "是", "在", "和", "與", "及", "或", "也", "都",
-                  "有", "將", "為", "被", "對", "中", "以", "但", "而", "等",
-                  "a", "an", "the", "of", "in", "is", "to", "for", "on", "at"}
-    # 中文詞：取 2 字以上連續中文字元片段
-    zh_words = re.findall(r'[\u4e00-\u9fff]{2,}', title)
-    # 英文詞：取 2 字以上英文單詞
-    en_words = re.findall(r'[A-Za-z]{2,}', title)
-    words = set(zh_words + [w.lower() for w in en_words])
-    return words - _STOPWORDS
-
-
-def _title_similarity(a: str, b: str) -> float:
-    """計算兩個標題的 Jaccard 相似度（基於關鍵詞集合）。"""
-    kw_a = _extract_title_keywords(a)
-    kw_b = _extract_title_keywords(b)
-    if not kw_a or not kw_b:
-        return 0.0
-    intersection = len(kw_a & kw_b)
-    union = len(kw_a | kw_b)
-    return intersection / union if union > 0 else 0.0
-
-
-def _find_similar_recent_alert(db, new_title: str, window_minutes: int = 30):
-    """在最近 window_minutes 分鐘內尋找語意相似的告警。
-    相似度 >= 0.4 視為同一事件，回傳該告警；否則回傳 None。
-    """
-    from datetime import timedelta
-    cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
-    recent_alerts = (
-        db.query(Alert)
-        .filter(Alert.created_at >= cutoff, Alert.type == "news")
-        .order_by(Alert.created_at.desc())
-        .limit(10)
-        .all()
-    )
-    for alert in recent_alerts:
-        sim = _title_similarity(new_title, alert.title)
-        if sim >= 0.4:
-            return alert
-    return None
 
 
 def _flatten_topics_to_keywords(topics: list[str]) -> list[str]:
