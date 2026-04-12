@@ -14,6 +14,40 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 
+
+def _clean_source_name(source: str) -> str:
+    """Clean verbose Google News source names to short publisher names.
+
+    Examples:
+      '經濟日報：不僅新聞速度 更有脈絡深度' → '經濟日報'
+      '財經新聞 - 自由時報' → '自由時報'
+      '"site:imf.org when:7d" - Google News' → 'Google News'
+      'The New York Times' → 'The New York Times' (unchanged)
+    """
+    if not source:
+        return source
+    # Remove Google News query artifacts: "site:xxx" / "when:xxx" etc.
+    if re.search(r'(?:site:|when:|inurl:)', source, re.IGNORECASE):
+        # Likely a feed-level title like '"site:imf.org when:7d" - Google News'
+        if "Google News" in source:
+            return "Google News"
+        return source
+    # Truncate at Chinese/fullwidth colon + subtitle
+    # e.g. "經濟日報：不僅新聞速度 更有脈絡深度" → "經濟日報"
+    for sep in ('：', ':\u3000', ': '):
+        idx = source.find(sep)
+        if idx > 0:
+            source = source[:idx].strip()
+            break
+    # Remove category prefix: "財經新聞 - 自由時報" → "自由時報"
+    # Only if there's a " - " with a short prefix (≤6 chars, likely a category)
+    if ' - ' in source:
+        parts = source.split(' - ', 1)
+        prefix, name = parts[0].strip(), parts[1].strip()
+        if len(prefix) <= 8 and name:
+            source = name
+    return source.strip()
+
 _GN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
@@ -197,10 +231,17 @@ async def search_google_news(
                 if raw_link and "/articles/" in raw_link:
                     gn_art_id = raw_link.split("/articles/")[-1].split("?")[0]
 
+                # Prefer entry-level <source> element (accurate publisher name)
+                # over title-based extraction (may include category prefixes)
+                entry_source = entry.get("source", {}).get("title", "")
+                if entry_source:
+                    source = entry_source
+                source = _clean_source_name(source) if source else "Google News"
+
                 raw_entries.append({
                     "title": title,
                     "content": _clean_html(entry.get("summary", entry.get("description", ""))),
-                    "source": source or entry.get("source", {}).get("title", "Google News"),
+                    "source": source,
                     "raw_link": raw_link,
                     "gn_art_id": gn_art_id,
                     "published_at": published.isoformat() if published else None,

@@ -61,18 +61,17 @@ export default function RadarPage({ wsSubscribe }) {
     return { severity: null, url: rawUrl, raw: rawUrl }
   }
 
-  const extractMatchedKw = (kw, title) => {
+  const extractMatchedKw = (kw) => {
     if (!kw) return null
-    const titleLower = title.toLowerCase()
+    // 新格式（後端已萃取）：不含布林語法，直接顯示
+    const isRawTopic = kw.includes(' OR ') || kw.startsWith('(') || kw.includes('"')
+    if (!isRawTopic) return kw.length <= 40 ? kw : kw.slice(0, 38) + '…'
+    // 舊格式（原始 topic 字串）：萃取前 3 個詞顯示
     const quoted = [...kw.matchAll(/"([^"]+)"/g)].map(m => m[1])
     const bare = kw.replace(/"[^"]*"/g, '').split(/[\s()]+/)
       .filter(t => t && !['OR', 'AND', 'NOT'].includes(t) && t.length > 1)
-    const allTerms = [...quoted, ...bare]
-    const matched = [...new Set(allTerms.filter(t => titleLower.includes(t.toLowerCase())))]
-    if (matched.length > 0) return matched.slice(0, 3).join(' / ')
-    // 無命中（如由內文匹配）：顯示第一個無括號的短詞或不顯示
-    const first = quoted[0] || bare[0] || null
-    return first && first.length <= 20 ? first : null
+    const terms = [...new Set([...quoted, ...bare])]
+    return terms.slice(0, 4).join(' / ') || null
   }
 
   const splitArticleLines = (content) => {
@@ -87,7 +86,7 @@ export default function RadarPage({ wsSubscribe }) {
         raw: line,
         severity: sevMatch ? sevMatch[1] : null,
         displayLine,
-        kw: extractMatchedKw(rawKw, displayLine),
+        kw: extractMatchedKw(rawKw),
       }
     })
   }

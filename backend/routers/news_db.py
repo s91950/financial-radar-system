@@ -1,5 +1,6 @@
 """Router for Module 3: News Database."""
 
+import asyncio
 import json
 from datetime import datetime
 
@@ -21,6 +22,7 @@ class ArticleUpdate(BaseModel):
 class ManualFetchRequest(BaseModel):
     query: str | None = None
     hours_back: int = 24
+    source_type: str = "sources_only"  # "sources_only" | "gn_only"
 
 
 class SaveSelectedRequest(BaseModel):
@@ -142,43 +144,146 @@ async def delete_article(article_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+def _load_radar_topics(db) -> list[str]:
+    """從 SystemConfig + 主題追蹤載入完整關鍵字清單（與即時雷達一致）。"""
+    from backend.database import SystemConfig, Topic
+
+    tw_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics").first()
+    us_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics_us").first()
+    tw_topics: list[str] = json.loads(tw_cfg.value) if tw_cfg else ["金融", "股市", "經濟"]
+    us_topics: list[str] = json.loads(us_cfg.value) if us_cfg else []
+
+    topic_kws: list[str] = []
+    for t in db.query(Topic).filter(Topic.is_active == True).all():
+        try:
+            topic_kws.extend(json.loads(t.keywords) if t.keywords else [])
+        except Exception:
+            pass
+
+    return tw_topics + us_topics + topic_kws
+
+
+async def _gn_fetch_topic(topic: str, hours_back: int) -> list[dict]:
+    """GN 搜尋單一 topic，自動區分簡單/布林查詢（與雷達邏輯一致）。"""
+    from backend.services.google_news import search_google_news
+    try:
+        if '(' in topic:
+            from backend.scheduler.jobs import _multi_search_topic
+            return await _multi_search_topic([topic], hours_back=hours_back, max_per_query=50)
+        return await search_google_news(query=topic, hours_back=hours_back, max_results=50)
+    except Exception:
+        return []
+
+
+def _split_query_terms(query: str) -> list[str]:
+    """拆分查詢字串：空格分詞 + ASCII/CJK 邊界拆分，回傳 OR 比對詞組。
+
+    "AI產業下一個瓶頸" → ["AI", "產業下一個瓶頸"]
+    "Fed 升息"         → ["Fed", "升息"]
+    "台積電"            → ["台積電"]
+    """
+    import re
+    parts: list[str] = []
+    for token in query.split():
+        # Split at ASCII↔CJK boundary
+        sub = re.split(r'(?<=[A-Za-z0-9])(?=[^\x00-\x7F])|(?<=[^\x00-\x7F])(?=[A-Za-z0-9])', token)
+        parts.extend(s for s in sub if len(s) >= 2)
+    return parts if parts else [query]
+
+
+def _tag_matched_keywords(articles: list[dict], topics: list[str], query: str | None) -> None:
+    """為每篇文章加上 matched_keyword（符合的第一個關鍵字）。In-place。"""
+    if query:
+        for a in articles:
+            a.setdefault("matched_keyword", query)
+        return
+    from backend.services.rss_feed import _extract_display_kw
+    for a in articles:
+        if a.get("matched_keyword"):
+            continue
+        text = (a.get("title", "") + " " + a.get("content", "")).lower()
+        for topic in topics:
+            kw = _extract_display_kw(topic, text)
+            if kw:
+                a["matched_keyword"] = kw
+                break
+
+
 @router.post("/fetch")
 async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
     """Fetch news and return preview (does NOT auto-save).
 
-    Returns fetched articles with already_in_db flag for user to select.
+    無自訂關鍵字時，使用與即時雷達相同的 radar_topics + 主題追蹤關鍵字。
     """
     from backend.database import MonitorSource
     from backend.services import rss_feed
     from backend.services.google_news import search_google_news
 
     articles_data = []
+    all_topics = _load_radar_topics(db)
 
-    if req.query:
-        news_results = await search_google_news(query=req.query, hours_back=req.hours_back)
-        articles_data.extend(news_results)
-    else:
-        # Fetch general financial news
-        for topic in ["金融市場", "台股", "經濟"]:
-            news_results = await search_google_news(query=topic, hours_back=req.hours_back, max_results=10)
+    if req.source_type == "gn_only":
+        if req.query:
+            news_results = await search_google_news(query=req.query, hours_back=req.hours_back, max_results=50)
             articles_data.extend(news_results)
-
-        sources = db.query(MonitorSource).filter(
+        else:
+            # 並行搜尋所有雷達主題（最多 30 個），布林查詢使用 _multi_search_topic
+            semaphore = asyncio.Semaphore(5)
+            async def _bounded(topic):
+                async with semaphore:
+                    return await _gn_fetch_topic(topic, req.hours_back)
+            results = await asyncio.gather(*[_bounded(t) for t in all_topics[:30]])
+            for r in results:
+                articles_data.extend(r)
+    else:
+        # sources_only 模式：RSS + website（鉅亨網等）
+        rss_sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
             MonitorSource.type == "rss",
         ).all()
         feeds = [
-            {
-                "name": s.name,
-                "url": s.url,
-                "keywords": json.loads(s.keywords) if s.keywords else [],
-            }
-            for s in sources
+            {"name": s.name, "url": s.url, "keywords": json.loads(s.keywords) if s.keywords else []}
+            for s in rss_sources
         ]
         if feeds:
-            for feed_info in feeds:
-                rss_articles = await rss_feed.fetch_rss_feed(feed_info["url"], req.hours_back)
-                articles_data.extend(rss_articles)
+            if req.query:
+                terms = _split_query_terms(req.query)
+                rss_results, _ = await rss_feed.fetch_multiple_feeds(feeds, hours_back=req.hours_back, return_raw=True)
+                articles_data = [
+                    a for a in rss_results
+                    if any(t.lower() in (a.get("title", "") + " " + a.get("content", "")).lower() for t in terms)
+                ]
+            else:
+                rss_results, _ = await rss_feed.fetch_multiple_feeds(
+                    feeds, hours_back=req.hours_back, global_topics=all_topics, return_raw=True
+                )
+                articles_data = rss_results
+
+        # website 類型來源（含鉅亨網 JSON API）
+        ws_sources = db.query(MonitorSource).filter(
+            MonitorSource.is_active == True,
+            MonitorSource.type == "website",
+        ).all()
+        for ws in ws_sources:
+            try:
+                from backend.scheduler.jobs import _fetch_website_source
+                ws_articles = await _fetch_website_source(ws.url, req.hours_back)
+                ws_kws = json.loads(ws.keywords) if ws.keywords else []
+                if req.query:
+                    terms = _split_query_terms(req.query)
+                    ws_articles = [a for a in ws_articles if any(t.lower() in (a.get("title","") + " " + a.get("content","")).lower() for t in terms)]
+                elif ws_kws:
+                    from backend.services.rss_feed import _filter_by_keywords
+                    ws_articles = _filter_by_keywords(ws_articles, ws_kws)
+                elif all_topics:
+                    from backend.services.rss_feed import _filter_by_topic_strings
+                    ws_articles = _filter_by_topic_strings(ws_articles, all_topics)
+                articles_data.extend(ws_articles)
+            except Exception:
+                pass
+
+    # 加上 matched_keyword 標籤
+    _tag_matched_keywords(articles_data, all_topics, req.query)
 
     # Mark which are already in DB (dedup by URL)
     preview = []
@@ -225,6 +330,7 @@ async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db))
             source_url=url,
             published_at=_parse_datetime(data.get("published_at")),
             category=data.get("category", "news"),
+            matched_keyword=data.get("matched_keyword") or None,
         )
         db.add(article)
         saved_count += 1
@@ -329,6 +435,7 @@ def _article_to_dict(article: Article) -> dict:
         "is_saved": article.is_saved,
         "user_notes": article.user_notes,
         "tags": tags,
+        "matched_keyword": article.matched_keyword or None,
     }
 
 

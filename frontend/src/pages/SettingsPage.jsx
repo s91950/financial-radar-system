@@ -2,6 +2,27 @@ import { useCallback, useEffect, useState } from 'react'
 import { settingsAPI } from '../services/api'
 import { toast } from 'react-hot-toast'
 
+// 將 API/RSS URL 轉換為可瀏覽的新聞網站連結
+function getBrowseUrl(url) {
+  if (!url) return null
+  // 鉅亨網 JSON API → news.cnyes.com
+  const cnyesMatch = url.match(/api\.cnyes\.com\/media\/api\/v1\/newslist\/category\/([^/?]+)/)
+  if (cnyesMatch) return `https://news.cnyes.com/news/cat/${cnyesMatch[1]}`
+  // RSS feed → 取出 hostname 作為來源首頁
+  try {
+    const { hostname, protocol } = new URL(url)
+    // 若 URL 本身就是可瀏覽網頁（非 api. 開頭，非 feeds. 開頭，非 .xml/.rss 結尾）
+    if (!hostname.startsWith('api.') && !hostname.startsWith('feeds.') &&
+        !url.endsWith('.xml') && !url.endsWith('.rss') && !url.includes('/rss') &&
+        !url.includes('feedburner') && !url.includes('rss.')) {
+      return null // URL 本身就可點，不需要另外顯示
+    }
+    return `${protocol}//${hostname}`
+  } catch {
+    return null
+  }
+}
+
 // Parse "(A OR B) (C OR D)" → [[A,B],[C,D]]; simple keyword → null
 function parseGroupedKeyword(kw) {
   if (!kw.includes('(')) return null
@@ -440,6 +461,17 @@ export default function SettingsPage() {
   const [savingRules, setSavingRules] = useState(false)
   // 嚴重度設定 tab
   const [severityTab, setSeverityTab] = useState('keywords')
+  // 來源 tab
+  const [sourceTab, setSourceTab] = useState('news')
+  // 財經相關性篩選
+  const [financeFilterEnabled, setFinanceFilterEnabled] = useState(false)
+  const [financeThreshold, setFinanceThreshold] = useState(0.15)
+  const [savingFinanceFilter, setSavingFinanceFilter] = useState(false)
+  // RSS 優先模式
+  const [rssMinArticles, setRssMinArticles] = useState(0)
+  const [savingRssPriority, setSavingRssPriority] = useState(false)
+  // Google News 僅緊急模式
+  const [gnCriticalOnly, setGnCriticalOnly] = useState(true)
 
   const toggleSourceExpand = (id) => {
     setExpandedSources(prev => {
@@ -452,7 +484,7 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes, catsRes, rulesRes] = await Promise.all([
+      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes, catsRes, rulesRes, finRes, rssRes, gnCriticalOnlyRes] = await Promise.all([
         settingsAPI.getSources(),
         settingsAPI.getNotificationSettings(),
         settingsAPI.getGoogleSheetsStatus(),
@@ -462,6 +494,9 @@ export default function SettingsPage() {
         settingsAPI.getLineStatus(),
         settingsAPI.getTopicCategories(),
         settingsAPI.getSeverityRules(),
+        settingsAPI.getFinanceFilter(),
+        settingsAPI.getRssPriority(),
+        settingsAPI.getGnCriticalOnly(),
       ])
       setSources(srcRes.data)
       setNotifications(notifRes.data)
@@ -484,6 +519,10 @@ export default function SettingsPage() {
       setSeverityKws(sevRes.data)
       setTopicCategories(catsRes.data.categories || {})
       setSeverityRules(rulesRes.data.rules || [])
+      setFinanceFilterEnabled(finRes.data.enabled ?? false)
+      setFinanceThreshold(finRes.data.threshold ?? 0.15)
+      setRssMinArticles(rssRes.data.min_articles ?? 0)
+      setGnCriticalOnly(gnCriticalOnlyRes.data.enabled ?? true)
     } catch (err) {
       console.error('Failed to load settings:', err)
     }
@@ -684,6 +723,37 @@ export default function SettingsPage() {
     setRadarTopicsUs(prev => prev.filter(t => t !== topic))
   }
 
+  const handleSaveFinanceFilter = async () => {
+    setSavingFinanceFilter(true)
+    try {
+      await settingsAPI.updateFinanceFilter(financeFilterEnabled, financeThreshold)
+      toast.success('財經篩選設定已儲存')
+    } catch {
+      toast.error('儲存失敗')
+    }
+    setSavingFinanceFilter(false)
+  }
+
+  const handleSaveRssPriority = async () => {
+    setSavingRssPriority(true)
+    try {
+      await settingsAPI.updateRssPriority(rssMinArticles)
+      toast.success('RSS 優先設定已儲存')
+    } catch {
+      toast.error('儲存失敗')
+    }
+    setSavingRssPriority(false)
+  }
+
+  const handleSaveGnCriticalOnly = async () => {
+    try {
+      await settingsAPI.updateGnCriticalOnly(gnCriticalOnly)
+      toast.success('Google News 篩選設定已儲存')
+    } catch {
+      toast.error('儲存失敗')
+    }
+  }
+
   const handleSaveTopics = async () => {
     setSavingTopics(true)
     try {
@@ -755,7 +825,7 @@ export default function SettingsPage() {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-lg font-bold">監控來源</h3>
-              <span className="text-xs text-dark-500">({sources.length} 個)</span>
+              <span className="text-xs text-dark-500">({sources.filter(s => sourceTab === 'research' ? s.type === 'research' : s.type !== 'research').length} 個)</span>
               <svg
                 className={`w-4 h-4 text-dark-500 transition-transform ${sourcesExpanded ? 'rotate-180' : ''}`}
                 fill="none" viewBox="0 0 24 24" stroke="currentColor"
@@ -776,6 +846,22 @@ export default function SettingsPage() {
         {/* Collapsible body */}
         {sourcesExpanded && (
         <div className="mt-4">
+
+        {/* 來源分類 tab */}
+        <div className="flex rounded-lg bg-dark-800 p-0.5 w-fit mb-4">
+          <button
+            onClick={() => setSourceTab('news')}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${sourceTab === 'news' ? 'bg-primary-600 text-white' : 'text-dark-400 hover:text-white'}`}
+          >
+            新聞來源 ({sources.filter(s => s.type !== 'research').length})
+          </button>
+          <button
+            onClick={() => setSourceTab('research')}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${sourceTab === 'research' ? 'bg-primary-600 text-white' : 'text-dark-400 hover:text-white'}`}
+          >
+            研究報告 ({sources.filter(s => s.type === 'research').length})
+          </button>
+        </div>
 
         {/* Add Source Form */}
         {showAddSource && (
@@ -833,7 +919,7 @@ export default function SettingsPage() {
 
         {/* Sources List */}
         <div className="space-y-2">
-          {sources.map(source => {
+          {sources.filter(s => sourceTab === 'research' ? s.type === 'research' : s.type !== 'research').map(source => {
             const isExpanded = expandedSources.has(source.id)
             return (
               <div key={source.id} className="rounded-lg bg-dark-900 overflow-hidden">
@@ -856,9 +942,12 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium text-sm">{source.name}</span>
                       <span className="badge bg-dark-700 text-dark-300">{typeLabels[source.type] || source.type}</span>
+                      {source.fetch_all && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30" title="全文讀取：所有文章皆納入，關鍵字僅用於標記與風險評估">全文讀取</span>
+                      )}
                       {source.keywords && source.keywords.length > 0
                         ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
-                        : source.type !== 'mops' && (
+                        : source.type !== 'mops' && !source.fetch_all && (
                           <span className="text-xs text-yellow-600/70" title="未設定關鍵字，將以雷達主題關鍵字篩選">使用雷達主題篩選</span>
                         )
                       }
@@ -900,10 +989,21 @@ export default function SettingsPage() {
                         <button onClick={() => handleCancelEditUrl(source.id)} className="btn-secondary text-xs px-2 py-0.5 shrink-0">取消</button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-dark-500 shrink-0">URL</span>
-                        <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-xs text-primary-400 hover:underline break-all flex-1 min-w-0">{source.url}</a>
-                        <button onClick={() => handleStartEditUrl(source)} className="text-dark-600 hover:text-primary-400 text-xs px-1 transition-colors shrink-0" title="編輯 URL">✎</button>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-dark-500 shrink-0">URL</span>
+                          <a href={source.url} target="_blank" rel="noopener noreferrer" className="text-xs text-dark-400 hover:underline break-all flex-1 min-w-0 font-mono">{source.url}</a>
+                          <button onClick={() => handleStartEditUrl(source)} className="text-dark-600 hover:text-primary-400 text-xs px-1 transition-colors shrink-0" title="編輯 URL">✎</button>
+                        </div>
+                        {getBrowseUrl(source.url) && (
+                          <div className="flex items-center gap-2 pl-8">
+                            <span className="text-xs text-dark-600 shrink-0">網站</span>
+                            <a href={getBrowseUrl(source.url)} target="_blank" rel="noopener noreferrer"
+                               className="text-xs text-primary-400 hover:underline break-all flex-1 min-w-0">
+                              {getBrowseUrl(source.url)}
+                            </a>
+                          </div>
+                        )}
                       </div>
                     )}
                     {/* Keywords row */}
@@ -961,15 +1061,44 @@ export default function SettingsPage() {
                         <button onClick={() => handleStartEditKws(source)} className="text-dark-600 hover:text-primary-400 text-xs px-1 transition-colors shrink-0 whitespace-nowrap" title="編輯關鍵字">✎ 關鍵字</button>
                       </div>
                     )}
-                    {/* RSS test button */}
-                    {(source.type === 'rss' || source.type === 'social') && (
+                    {/* 全文讀取 toggle */}
+                    {source.type !== 'mops' && (
+                      <div className="flex items-center justify-between py-1">
+                        <div>
+                          <span className="text-xs text-dark-300 font-medium">全文讀取</span>
+                          <span className="text-xs text-dark-500 ml-2">
+                            {source.fetch_all ? '所有文章皆納入，關鍵字僅標記與評估風險' : '只納入符合關鍵字的文章'}
+                          </span>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            try {
+                              await settingsAPI.updateSource(source.id, { fetch_all: !source.fetch_all })
+                              setSources(prev => prev.map(s => s.id === source.id ? { ...s, fetch_all: !source.fetch_all } : s))
+                              toast.success(source.fetch_all ? '已關閉全文讀取' : '已開啟全文讀取')
+                            } catch {
+                              toast.error('更新失敗')
+                            }
+                          }}
+                          className={`w-10 h-6 rounded-full transition-colors relative shrink-0 ${
+                            source.fetch_all ? 'bg-teal-600' : 'bg-dark-600'
+                          }`}
+                        >
+                          <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                            source.fetch_all ? 'translate-x-5' : 'translate-x-1'
+                          }`} />
+                        </button>
+                      </div>
+                    )}
+                    {/* 連線測試按鈕（RSS / social / website / mops 均支援）*/}
+                    {(source.type === 'rss' || source.type === 'social' || source.type === 'website' || source.type === 'mops') && (
                       <div>
                         <button
                           onClick={() => handleTestRss(source.id)}
                           disabled={rssTestStates[source.id]?.loading}
                           className="text-xs px-2.5 py-1 rounded border border-dark-600 text-dark-400 hover:text-primary-400 hover:border-primary-500/50 transition-colors disabled:opacity-50"
                         >
-                          {rssTestStates[source.id]?.loading ? '測試中...' : '測試 RSS 連線'}
+                          {rssTestStates[source.id]?.loading ? '測試中...' : (source.type === 'website' ? '測試連線' : source.type === 'mops' ? '測試爬蟲' : '測試 RSS 連線')}
                         </button>
                         {rssTestStates[source.id]?.result && (
                           <div className={`mt-2 p-2 rounded text-xs border ${
@@ -979,7 +1108,10 @@ export default function SettingsPage() {
                           }`}>
                             {rssTestStates[source.id].result.success ? (
                               <>
-                                <div>✓ 成功：共 {rssTestStates[source.id].result.count} 則文章
+                                <div>✓ 成功
+                                  {rssTestStates[source.id].result.count >= 0 && (
+                                    <span>：共 {rssTestStates[source.id].result.count} 則文章</span>
+                                  )}
                                   {rssTestStates[source.id].result.feed_title && (
                                     <span className="text-dark-400 ml-1">（{rssTestStates[source.id].result.feed_title}）</span>
                                   )}
@@ -1013,8 +1145,8 @@ export default function SettingsPage() {
       <section className="card space-y-5">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-bold">Google News 搜尋關鍵字</h3>
-            <p className="text-sm text-dark-400">雷達每 {radarIntervalMinutes} 分鐘同時搜尋台灣版與美國版 Google News</p>
+            <h3 className="text-lg font-bold">雷達關鍵字</h3>
+            <p className="text-sm text-dark-400">用於 Google News 搜尋，同時也是未設關鍵字的 RSS 來源之篩選依據</p>
           </div>
           <button onClick={handleSaveTopics} disabled={savingTopics} className="btn-primary text-sm flex items-center gap-1.5">
             {savingTopics && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />}
@@ -1038,14 +1170,14 @@ export default function SettingsPage() {
         </div>
 
         {/* TW Region */}
-        {!radarRssOnly && (() => {
+        {(() => {
           const simpleTopics = radarTopics.filter(t => !t.includes('('))
           const groupedTopics = radarTopics.filter(t => t.includes('('))
           return (
             <div className="space-y-3 p-3 rounded-lg border border-dark-700 bg-dark-900/40">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded">🇹🇼 台灣 / 中文區</span>
-                <span className="text-xs text-dark-500">使用 Google News 台灣版（hl=zh-TW&gl=TW）</span>
+                <span className="text-xs text-dark-500">Google News 台灣版搜尋 + RSS 無關鍵字來源篩選</span>
               </div>
               <div className="space-y-2">
                 {simpleTopics.length > 0 && (
@@ -1111,7 +1243,7 @@ export default function SettingsPage() {
         })()}
 
         {/* US/EN Region */}
-        {!radarRssOnly && (() => {
+        {(() => {
           const simpleTopics = radarTopicsUs.filter(t => !t.includes('('))
           const groupedTopics = radarTopicsUs.filter(t => t.includes('('))
           return (
@@ -1302,6 +1434,93 @@ export default function SettingsPage() {
         <p className="text-xs text-dark-500">
           支援 Google 搜尋語法：<code className="bg-dark-700 px-1 rounded">OR</code> 聯集 · <code className="bg-dark-700 px-1 rounded">"精確詞"</code> 完全比對 · <code className="bg-dark-700 px-1 rounded">AND</code> 交集（空格即 AND）
         </p>
+      </section>
+
+      {/* 新聞篩選強化設定 */}
+      <section className="card space-y-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold">新聞篩選強化</h3>
+            <p className="text-sm text-dark-400 mt-0.5">降低雜訊：RSS 優先策略 + 本地財經相關性篩選（不呼叫 API）</p>
+          </div>
+          <button onClick={() => { handleSaveFinanceFilter(); handleSaveRssPriority(); handleSaveGnCriticalOnly() }}
+            disabled={savingFinanceFilter || savingRssPriority}
+            className="btn-primary text-sm flex items-center gap-1.5">
+            {(savingFinanceFilter || savingRssPriority) && <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" />}
+            儲存
+          </button>
+        </div>
+
+        {/* RSS 優先模式 */}
+        <div className="p-3 rounded-lg border border-dark-700 bg-dark-900/40 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">RSS 優先模式</p>
+              <p className="text-xs text-dark-400 mt-0.5">RSS 文章數達到門檻後自動跳過 Google News，減少不相關新聞</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-xs text-dark-400 whitespace-nowrap">RSS 文章數門檻</label>
+            <input
+              type="number"
+              min="0"
+              max="50"
+              value={rssMinArticles}
+              onChange={e => setRssMinArticles(parseInt(e.target.value) || 0)}
+              className="input w-20 text-sm"
+            />
+            <span className="text-xs text-dark-400">篇（0 = 停用，每次都執行 Google News）</span>
+          </div>
+        </div>
+
+        {/* Google News 僅緊急 */}
+        <div className="p-3 rounded-lg border border-dark-700 bg-dark-900/40 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Google News 僅緊急</p>
+              <p className="text-xs text-dark-400 mt-0.5">Google News 文章篩選為僅緊急，RSS 來源不受影響</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setGnCriticalOnly(v => !v)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${gnCriticalOnly ? 'bg-primary-600' : 'bg-dark-600'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${gnCriticalOnly ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* 財經相關性篩選 */}
+        <div className="p-3 rounded-lg border border-dark-700 bg-dark-900/40 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">財經相關性篩選</p>
+              <p className="text-xs text-dark-400 mt-0.5">依內文財經詞彙密度過濾非相關文章（本地計算，無 API 費用）</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFinanceFilterEnabled(v => !v)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${financeFilterEnabled ? 'bg-primary-600' : 'bg-dark-600'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${financeFilterEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+          {financeFilterEnabled && (
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-dark-400 whitespace-nowrap">相關性門檻</label>
+              <input
+                type="number"
+                min="0.01"
+                max="1.0"
+                step="0.01"
+                value={financeThreshold}
+                onChange={e => setFinanceThreshold(parseFloat(e.target.value) || 0.15)}
+                className="input w-24 text-sm"
+              />
+              <span className="text-xs text-dark-400">（建議 0.10 ~ 0.25，越高越嚴格）</span>
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Severity Settings (Keywords + Boolean Rules merged) */}

@@ -76,6 +76,12 @@ export const settingsAPI = {
   updateTopicCategories: (categories) => api.put('/settings/radar-topic-categories', { categories }),
   getSeverityRules: () => api.get('/settings/severity-rules'),
   updateSeverityRules: (rules) => api.put('/settings/severity-rules', { rules }),
+  getFinanceFilter: () => api.get('/settings/finance-filter'),
+  updateFinanceFilter: (enabled, threshold) => api.put('/settings/finance-filter', { enabled, threshold }),
+  getRssPriority: () => api.get('/settings/rss-priority'),
+  updateRssPriority: (min_articles) => api.put('/settings/rss-priority', { min_articles }),
+  getGnCriticalOnly: () => api.get('/settings/gn-critical-only'),
+  updateGnCriticalOnly: (enabled) => api.put('/settings/gn-critical-only', { enabled }),
 }
 
 // --- Topic Tracking APIs ---

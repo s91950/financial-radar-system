@@ -81,7 +81,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 `vite.config.js` also whitelists `*.ngrok-free.app` / `*.ngrok-free.dev` hosts for remote tunnelling.
 
-### Modules (6 pages)
+### Modules (7 pages)
 
 1. **即時雷達 (Radar)** `/` — Auto-scans RSS + Google News every 5min, creates alerts with position exposure. AI analysis is **on-demand only** (user clicks button) to save API costs.
 2. **主題追蹤 (Topics)** `/search` — User-defined topics with boolean keywords. Radar auto-imports matching articles AND merges them into radar alerts.
@@ -93,9 +93,22 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 ### Backend Layer Structure
 - **`routers/`** — FastAPI endpoints. Each router has a `/api/{prefix}` path.
-- **`services/`** — Business logic. Each service wraps an external API or computation engine.
+- **`services/`** — Business logic. Key services:
+  - `ai_factory.py` — selects Gemini or Claude based on config
+  - `exposure.py` — position keyword scoring
+  - `finance_filter.py` — local financial relevance scoring (TF-IDF approximation, no API): `compute_finance_relevance(title, content) → float`. Three-tier vocabulary: `FINANCE_CORE` (×3 weight), `FINANCE_CONTEXT` (×1), `NON_FINANCE_INDICATORS` (−2 penalty). Formula: `(core×3 + context − non_fin×2) / sqrt(word_count)`, clipped to [0, 1].
+  - `simple_ner.py` — rule-based entity extraction (stock codes, companies, central banks, currencies) used to enrich `exposure_summary` when no position match is found
+  - `mops_scraper.py` — 公開資訊觀測站 material disclosure scraper. MOPS fully migrated to Vue SPA in late 2025; the old AJAX HTML endpoint (`mops/web/ajax_t05sr01`) is blocked by security policy. Uses new JSON API: `POST https://mops.twse.com.tw/mops/api/home_page/t05sr01_1` with `{"count": N, "marketKind": "sii"|"otc"}`. Dates in 民國 format (`115/04/11`). Fetches up to 100 items per market type (sii + otc).
+  - `cnyes_scraper.py` — 鉅亨網 JSON API fetcher. Uses `api.cnyes.com/media/api/v1/newslist/category/{category}`.
+  - `worldbank_scraper.py` — World Bank JSON API fetcher. Uses `search.worldbank.org/api/v2/news?format=json`. Fields use `{"cdata!": "..."}` wrapper. Filters English-only in code (API `lang_exact` param is unstable).
+  - `fsc_scraper.py` — 金管會 (FSC) HTML scraper. FSC RSS feed is broken (returns HTML), so scrapes `news_list.jsp` page with BeautifulSoup. ~15 news links per page. Dates in 民國 format.
+  - `caixin_scraper.py` — 財新 Caixin Global HTML scraper. Caixin RSS returns 403, so scrapes `/news/` page. Article URLs contain date patterns (`/YYYY-MM-DD/`). ~25 articles per page.
+  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
+  - `research_feed.py` — dual-mode RSS/HTML scraper for research institutions
+  - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` (prevents verbose RSS feed titles like "經濟日報：不僅新聞速度 更有脈絡深度" or Google News query strings from appearing in UI). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied.
 - **`scheduler/jobs.py`** — Four async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily 8:00), `daily_research_fetch` (daily 10:00).
 - **`database.py`** — SQLAlchemy ORM models + `_migrate_db()` for idempotent schema migrations + `_seed_defaults()` for initial data. Seeds only run when tables are empty.
+- **`scripts/`** — Auxiliary tools: `gas_digest.gs` (Google Apps Script digest), `perplexity_digest.py` (Perplexity API integration), `notebooklm_hourly.py` (local Windows Task Scheduler job — pulls critical alerts from API, imports to NotebookLM, saves analysis to `scripts/nlm_reports/`). Not part of the main app runtime.
 
 ### Key Design Decisions
 
@@ -109,13 +122,31 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 ### Radar Scan Flow (`scheduler/jobs.py → _radar_scan_inner`)
 
-Three article sources are collected into `new_articles` **before** any saving or early-return:
+Four article sources are collected into `new_articles` **before** any saving or early-return:
 
-1. **RSS sources** — `hours_back=1`, all active `MonitorSource` where `type="rss"`
-2. **General Google News** — each topic in `SystemConfig["radar_topics"]`, `max_results=5`, `hours_back` from `SystemConfig["radar_hours_back"]` (default 24h)
-3. **Topic keyword searches** — every active `Topic` runs `_multi_search_topic()` with its boolean keywords, results merged into `new_articles` (not just `TopicArticle`). This means user-defined boolean keyword topics **do** generate radar alerts.
+1. **RSS sources** — all active `MonitorSource` where `type in ("rss", "social")`, filtered by source keywords OR global `radar_topics` (union, not exclusive). `fetch_multiple_feeds(return_raw=True)` also returns the unfiltered raw pool for Pass A2.
+2. **MOPS** — active `MonitorSource` where `type="mops"`, fetches 公開資訊觀測站 material disclosures via `services/mops_scraper.py`
+3. **General Google News** — each topic in `SystemConfig["radar_topics"]` (TW) + `SystemConfig["radar_topics_us"]` (US), `max_results=20`, `hours_back` from `SystemConfig["radar_hours_back"]` (default 24h). Skipped if `_skip_gn=True`. If `gn_critical_only=true`, each GN article is pre-assessed — non-critical articles are discarded before being added to `new_articles` (RSS articles are never filtered this way).
+4. **Topic keyword searches** — every active `Topic` processes articles in two sub-passes:
+   - **Pass A2** (new, RSS-only mode only): when `_skip_gn=True`, the raw unfiltered RSS pool is cross-matched against the topic's boolean keywords. Catches articles that passed RSS fetch but didn't match the radar topic filter.
+   - **Pass B** (skipped when `_skip_gn=True`): dedicated Google News search for this topic using `_multi_search_topic()`. If `gn_critical_only=true`, non-critical GN results are dropped (but still saved to `TopicArticle`).
 
-After collection, articles are deduplicated against `Article` DB by URL and title. If nothing new, scan exits. Otherwise: save to `Article` DB + `TopicArticle`, then create one Alert covering all new articles.
+   Results from both passes are merged into `new_articles`, so topic-tracked articles **do** generate radar alerts.
+
+**RSS priority mode**: if `radar_rss_min_articles > 0` and RSS has collected ≥ that many articles (and not a forced scan), Google News steps are skipped entirely. Controlled by `SystemConfig["radar_rss_min_articles"]` (default `"0"`, disabled). `radar_rss_only=true` also skips Google News unconditionally. Both cases set `_skip_gn = True`.
+
+**`fetch_all` source mode**: `MonitorSource.fetch_all=True` bypasses keyword filtering entirely — all articles from that source enter `new_articles`. Keyword matching still runs via `_annotate_matched_terms` to produce badge labels, but only for keywords whose full boolean AND-condition is satisfied (no partial-match badges). Articles from `fetch_all` sources carry `fetch_all_source=True` in the article dict, which causes the finance filter to skip them (they pass unconditionally regardless of relevance score). Finance relevance is still computed for composite scoring.
+
+**Finance filter** (optional, off by default): if `finance_filter_enabled=true`, articles scoring below `finance_relevance_threshold` (default 0.15) are dropped before saving. Articles with `fetch_all_source=True` are exempt. Even when disabled, `finance_relevance` is still computed per article for the composite score.
+
+**Article scoring** (`_compute_article_scores()`): runs before `db.add(Article(...))` and writes five fields: `decay_factor = exp(-0.1 × hours_elapsed)`, `novelty_score = 1/(1 + similar_count)` (Jaccard ≥ 0.5 against `seen_content_fps`), `finance_relevance` (from filter above), `intensity_score = abs((pos−neg)/total)` using sentiment keywords, `composite_score = decay × novelty × max(relevance, 0.05) × (0.5 + 0.5 × intensity)`.
+
+After collection, articles pass through **three dedup layers** before saving:
+1. In-memory exact URL + title match
+2. DB check against `Article` table (URL + title)
+3. **Content fingerprint** (`_article_fingerprint` → Jaccard similarity ≥ 0.65) — catches same story from different sources with different titles. `seen_content_fps` list is shared across all 4 steps.
+
+If nothing new, scan exits. Otherwise: save to `Article` DB + `TopicArticle`, then create one Alert.
 
 **Dedup key** format: `scan:{YYYYMMDDHH}:{md5(first_title)[:16]}` — same lead story in the same clock-hour is silently skipped. The `Alert.dedup_key` column has a `UNIQUE` constraint as a DB-level guard against `--reload` race conditions.
 
@@ -138,9 +169,21 @@ The frontend (`RadarPage`) parses these with `parseSourceUrl()` and `splitArticl
 
 ### Severity Assessment
 
-Defined in `scheduler/jobs.py` (`_assess_severity_single`) and user-overridable via `SystemConfig["severity_critical_keywords"]` / `SystemConfig["severity_high_keywords"]` (edited in Settings page). Falls back to hardcoded defaults if not set. Returns `critical`, `high`, or `low` only — `medium` is not used by the scan engine (only the market signal path uses it).
+`_assess_severity_single()` in `scheduler/jobs.py` uses a **multi-dimensional scoring model**:
 
-The frontend (`NewsDBPage`, `RadarPage`) mirrors the same keyword lists client-side for display purposes.
+1. **Boolean rules** (highest priority) — user-configured `SystemConfig["severity_rules"]` e.g. `"暴跌 AND 台股" → critical`. First match wins.
+2. **Multi-dimensional score** (keyword hits only if no rule matches):
+   - `base_score`: critical=3.0, high=2.0 (after negation filtering)
+   - **Negation filter** (`_has_negation_before`): keywords preceded by 不/沒/未/不會 etc. within 6 chars are excluded — "不會崩盤" does not trigger critical
+   - **Source credibility** (`_get_source_weight`): Reuters/Bloomberg ×1.5, official sources (Fed/金管會) ×1.6, general ×1.0. **Unknown GN source penalty**: if `source_w == 1.0` AND the article came from Google News (`origin == "gn"`) AND the source name is not in `_known_source_names` (frozenset built from active `MonitorSource` names at scan start) → `source_w = 0.65`, making high/critical harder to trigger for low-authority outlets.
+   - **Confirmation factor**: keyword in both title AND body → ×1.3
+   - **Multi-keyword bonus**: each additional matched keyword → +0.1, max ×1.3
+   - Threshold: ≥3.5→critical, ≥2.0→high, else→low
+3. **Time decay** (`_apply_time_decay`): articles older than `SystemConfig["severity_decay_hours"]` (default 6h) are downgraded one level (critical→high, high→low).
+
+Returns `critical`, `high`, or `low` only — `medium` is not used by the scan engine.
+
+The frontend (`NewsDBPage`, `RadarPage`) mirrors keyword lists client-side for display purposes.
 
 ### `SystemConfig` — Runtime Config Store
 
@@ -148,13 +191,22 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 
 | Key | Description |
 |-----|-------------|
-| `radar_topics` | JSON array of general Google News search terms |
+| `radar_topics` | JSON array of general Google News search terms (TW/Chinese) |
+| `radar_topics_us` | JSON array of US/English Google News search terms |
 | `radar_hours_back` | Hours back for Google News search (default 24) |
+| `radar_interval_minutes` | Radar scan interval in minutes (overrides `.env`, reloaded at startup) |
+| `radar_rss_only` | `"true"` to skip Google News and only use RSS sources |
 | `severity_critical_keywords` | User-overridable critical keyword list (JSON) |
 | `severity_high_keywords` | User-overridable high keyword list (JSON) |
+| `severity_rules` | Boolean severity rules (JSON array of `{condition, severity}`) |
+| `severity_decay_hours` | Hours after which severity is downgraded one level (default 6) |
 | `radar_scan_lock` | ISO timestamp — cross-process dedup guard |
 | `line_last_reply_at` | ISO timestamp — last time LINE news query was answered (unread baseline) |
 | `line_last_yt_reply_at` | ISO timestamp — last time LINE YouTube query was answered (unread baseline) |
+| `radar_rss_min_articles` | If RSS collects ≥ N articles, skip Google News (default `"0"` = disabled) |
+| `finance_filter_enabled` | `"true"` to drop articles below relevance threshold (default `"false"`) |
+| `finance_relevance_threshold` | Min finance relevance score to keep article (default `"0.15"`) |
+| `gn_critical_only` | `"true"` to pre-filter Google News results to critical severity only; RSS articles unaffected (default `"false"`) |
 
 ### LINE Webhook Command System (`routers/line_webhook.py`)
 
@@ -176,9 +228,15 @@ Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `
 
 `YoutubeVideo.is_new` — `True` until user marks as seen. Used by LINE webhook for unread YT queries.
 
-`MonitorSource.type` field values: `rss`, `website`, `social`, `newsapi`, `research`, `person`. Research sources use `type="research"` and are fetched separately from news RSS sources.
+`MonitorSource.type` field values: `rss`, `website`, `social`, `newsapi`, `research`, `person`, `mops`. Research sources use `type="research"` and are fetched separately from news RSS sources. `mops` sources are fetched via `services/mops_scraper.py`. `website` sources are routed by `_fetch_website_source()` to specialized scrapers (cnyes, worldbank, fsc, caixin) or a generic web_scraper fallback.
+
+**Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:7d` RSS as proxy. 商周 (`businessweekly.com.tw`) also blocks most pages — uses Google News proxy. UDN financial RSS moved from `udn.com/rssfeed` (broken, returns empty entries) to `money.udn.com/rssfeed`.
+
+`MonitorSource.fetch_all` — boolean (default `False`). When `True`, skips keyword filtering so all articles from the source enter the radar; keyword badges are still annotated but only when the full boolean condition matches. Added via `_migrate_db()` `ALTER TABLE`.
 
 `TopicArticle.add_source`: `"radar"` (added by scheduler) or `"manual"` (added by user search).
+
+`Article` has six extra columns added via `_migrate_db()`: `composite_score`, `finance_relevance`, `novelty_score`, `decay_factor`, `intensity_score` (all `REAL`, nullable, computed by `_compute_article_scores()` in `jobs.py` at save time) + `matched_keyword VARCHAR` (nullable, set from preview data when user saves selected articles via `POST /api/news/save-selected`).
 
 ### Frontend Structure
 
@@ -208,12 +266,22 @@ Copy `.env.example` to `.env`. Key variables:
 |--------|--------|---------|
 | `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
-| `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment |
+| `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. `POST /fetch` supports `source_type`: `"sources_only"` (RSS + website sources, default) or `"gn_only"` (Google News). When no query, uses radar_topics + active Topic keywords. Query strings are split via `_split_query_terms()` (spaces + ASCII/CJK boundary) for OR matching. Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. |
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
 | `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
-| `/api/settings` | `routers/settings.py` | Monitor sources, notifications, Google Sheets, AI model config |
+| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all` field), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle. `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to cnyes/worldbank/fsc/caixin scrapers via same `is_*_url()` routing), and `rss`/`social`. |
 | `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
 | `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |
 | `/ws` | `main.py` | WebSocket for real-time broadcasts |
+
+## NotebookLM Local Automation (`scripts/notebooklm_hourly.py`)
+
+Runs on the **local Windows machine** via Task Scheduler (not on the VM). Requires `pip install notebooklm-py requests` and `notebooklm login` (browser-based auth, saves to `~/.notebooklm/storage_state.json`; re-run when auth expires).
+
+**Flow**: fetch alerts from VM API → filter by time window + severity → build Markdown → `await client.sources.add_text(NOTEBOOK_ID, ...)` → `await client.chat.ask(NOTEBOOK_ID, question)` → save result to `scripts/nlm_reports/YYYYMMDD_HHMM.txt`.
+
+Config in `scripts/.env.local` (copy from `scripts/.env.local.example`): `API_BASE_URL`, `NOTEBOOK_ID`, `HOURS_BACK`, `MIN_SEVERITY`, `RESULT_PUSH_LINE`.
+
+**notebooklm-py 0.3.4 API**: `async with await NotebookLMClient.from_storage() as client:` — note the double `await`. Sub-clients: `client.sources` (`add_text`, `add_url`, `add_file`), `client.chat` (`ask` → returns `AskResult` with `.answer`), `client.notebooks` (`list`, `create`, `get`).

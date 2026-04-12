@@ -18,6 +18,7 @@ class SourceCreate(BaseModel):
     type: str  # 'rss' | 'website' | 'social' | 'newsapi'
     url: str
     keywords: list[str] = []
+    fetch_all: bool = False
 
 
 class SourceUpdate(BaseModel):
@@ -25,6 +26,7 @@ class SourceUpdate(BaseModel):
     url: str | None = None
     keywords: list[str] | None = None
     is_active: bool | None = None
+    fetch_all: bool | None = None
 
 
 @router.get("/sources")
@@ -43,6 +45,7 @@ async def create_source(source: SourceCreate, db: Session = Depends(get_db)):
         url=source.url,
         keywords=json.dumps(source.keywords, ensure_ascii=False),
         is_active=True,
+        fetch_all=source.fetch_all,
     )
     db.add(item)
     db.commit()
@@ -69,6 +72,8 @@ async def update_source(
         source.keywords = json.dumps(update.keywords, ensure_ascii=False)
     if update.is_active is not None:
         source.is_active = update.is_active
+    if update.fetch_all is not None:
+        source.fetch_all = update.fetch_all
 
     db.commit()
     return _source_to_dict(source)
@@ -271,6 +276,7 @@ def _source_to_dict(source: MonitorSource) -> dict:
         "url": source.url,
         "keywords": keywords,
         "is_active": source.is_active,
+        "fetch_all": bool(source.fetch_all),
     }
 
 
@@ -526,11 +532,54 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
     if not source:
         return {"success": False, "error": "來源不存在", "count": 0, "sample_titles": []}
     if source.type == "mops":
-        return {"success": True, "count": -1, "feed_title": "公開資訊觀測站",
-                "sample_titles": ["此來源使用專屬爬蟲，不走 RSS。雷達掃描時自動抓取重大訊息。"],
-                "error": None}
+        try:
+            from backend.services.mops_scraper import fetch_mops_material_news
+            articles = await fetch_mops_material_news(hours_back=24)
+            titles = [a["title"][:60] for a in articles[:5]]
+            return {
+                "success": True,
+                "count": len(articles),
+                "feed_title": "公開資訊觀測站重大訊息",
+                "sample_titles": titles if titles else ["24 小時內無重大訊息"],
+                "error": None,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"MOPS 爬蟲失敗：{e}", "count": 0, "sample_titles": []}
+    if source.type == "website":
+        # website 型：呼叫對應爬蟲測試
+        from backend.services.cnyes_scraper import is_cnyes_api_url, fetch_cnyes_from_url
+        from backend.services.worldbank_scraper import is_worldbank_api_url, fetch_worldbank_news
+        from backend.services.fsc_scraper import is_fsc_url, fetch_fsc_news
+        from backend.services.caixin_scraper import is_caixin_url, fetch_caixin_news
+
+        # 路由到對應爬蟲
+        scraper_map = [
+            (is_cnyes_api_url, lambda: fetch_cnyes_from_url(source.url, hours_back=24), "鉅亨網 JSON API"),
+            (is_worldbank_api_url, lambda: fetch_worldbank_news(source.url, hours_back=48), "World Bank API"),
+            (is_fsc_url, lambda: fetch_fsc_news(hours_back=48), "金管會新聞稿"),
+            (is_caixin_url, lambda: fetch_caixin_news(hours_back=48), "財新 Caixin Global"),
+        ]
+        for check_fn, fetch_fn, label in scraper_map:
+            if check_fn(source.url):
+                try:
+                    articles = await fetch_fn()
+                    titles = [a["title"][:60] for a in articles[:5]]
+                    return {"success": True, "count": len(articles), "feed_title": label,
+                            "sample_titles": titles if titles else ["時間範圍內無文章"], "error": None}
+                except Exception as e:
+                    return {"success": False, "error": f"{label} 錯誤：{e}", "count": 0, "sample_titles": []}
+
+        # 其他 website：基本 HTTP 連線測試
+        try:
+            async with httpx.AsyncClient(timeout=10, verify=False, follow_redirects=True) as client:
+                resp = await client.get(source.url, headers={"User-Agent": "Mozilla/5.0 (compatible; FinancialRadar/1.0)"})
+                resp.raise_for_status()
+            return {"success": True, "count": -1, "feed_title": "網頁",
+                    "sample_titles": [f"HTTP {resp.status_code} — 連線正常（網頁型無法預覽文章）"], "error": None}
+        except Exception as e:
+            return {"success": False, "error": f"連線失敗：{e}", "count": 0, "sample_titles": []}
     if source.type not in ("rss", "social"):
-        return {"success": False, "error": f"類型「{source.type}」不是 RSS，不支援此測試", "count": 0, "sample_titles": []}
+        return {"success": False, "error": f"類型「{source.type}」不支援此測試", "count": 0, "sample_titles": []}
     # 提早偵測 MOPS URL（使用者可能填錯類型）
     if "mops.twse.com.tw" in source.url:
         return {"success": False,
@@ -565,12 +614,33 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
             }
 
         sample_titles = [e.get("title", "（無標題）") for e in feed.entries[:5]]
+
+        # 檢查 feed 是否過期（最新文章超過 48 小時 = 可能已停止更新）
+        import calendar
+        stale_warning = None
+        for entry in feed.entries[:3]:
+            for attr in ("published_parsed", "updated_parsed"):
+                parsed = getattr(entry, attr, None)
+                if parsed:
+                    try:
+                        from datetime import datetime, timedelta
+                        entry_dt = datetime.utcfromtimestamp(calendar.timegm(parsed))
+                        age_hours = (datetime.utcnow() - entry_dt).total_seconds() / 3600
+                        if age_hours > 48:
+                            age_days = int(age_hours / 24)
+                            stale_warning = f"⚠️ 此 RSS 最新文章為 {age_days} 天前，可能已停止更新。實際掃描時這些舊文會被時間過濾擋掉，不會進入雷達。建議改用 Google News 代理（類型改 RSS，URL 用 https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US）"
+                    except Exception:
+                        pass
+                    break
+            if stale_warning:
+                break
+
         return {
-            "success": True,
+            "success": True if not stale_warning else False,
             "count": total,
             "feed_title": feed.feed.get("title", ""),
             "sample_titles": sample_titles,
-            "error": None,
+            "error": stale_warning,
         }
 
     except httpx.HTTPStatusError as e:
@@ -587,3 +657,75 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
             "count": 0,
             "sample_titles": [],
         }
+
+
+# --- 財經相關性篩選設定 ---
+
+class FinanceFilterRequest(BaseModel):
+    enabled: bool = False
+    threshold: float = 0.15
+
+
+@router.get("/finance-filter")
+async def get_finance_filter(db: Session = Depends(get_db)):
+    """取得財經相關性篩選設定。"""
+    enabled = _get_config(db, "finance_filter_enabled", "false") == "true"
+    try:
+        threshold = float(_get_config(db, "finance_relevance_threshold", "0.15"))
+    except (ValueError, TypeError):
+        threshold = 0.15
+    return {"enabled": enabled, "threshold": threshold}
+
+
+@router.put("/finance-filter")
+async def update_finance_filter(req: FinanceFilterRequest, db: Session = Depends(get_db)):
+    """更新財經相關性篩選設定。"""
+    _set_config(db, "finance_filter_enabled", "true" if req.enabled else "false")
+    _set_config(db, "finance_relevance_threshold", str(round(max(0.0, min(req.threshold, 1.0)), 4)))
+    db.commit()
+    return {"enabled": req.enabled, "threshold": req.threshold}
+
+
+# --- RSS 優先模式設定 ---
+
+class RssMinArticlesRequest(BaseModel):
+    min_articles: int = 0  # 0 = 停用 RSS 優先（維持原有行為）
+
+
+@router.get("/rss-priority")
+async def get_rss_priority(db: Session = Depends(get_db)):
+    """取得 RSS 優先模式設定（min_articles=0 表示停用）。"""
+    try:
+        min_articles = int(_get_config(db, "radar_rss_min_articles", "0"))
+    except (ValueError, TypeError):
+        min_articles = 0
+    return {"min_articles": min_articles}
+
+
+@router.put("/rss-priority")
+async def update_rss_priority(req: RssMinArticlesRequest, db: Session = Depends(get_db)):
+    """更新 RSS 優先模式門檻（min_articles=0 停用，>0 啟用）。"""
+    _set_config(db, "radar_rss_min_articles", str(max(0, req.min_articles)))
+    db.commit()
+    return {"min_articles": req.min_articles}
+
+
+# --- Google News 僅緊急模式 ---
+
+class GnCriticalOnlyRequest(BaseModel):
+    enabled: bool = False
+
+
+@router.get("/gn-critical-only")
+async def get_gn_critical_only(db: Session = Depends(get_db)):
+    """取得 Google News 僅緊急模式設定。"""
+    enabled = _get_config(db, "gn_critical_only", "false") == "true"
+    return {"enabled": enabled}
+
+
+@router.put("/gn-critical-only")
+async def update_gn_critical_only(req: GnCriticalOnlyRequest, db: Session = Depends(get_db)):
+    """更新 Google News 僅緊急模式（啟用時 GN 文章只保留緊急，RSS 不受影響）。"""
+    _set_config(db, "gn_critical_only", "true" if req.enabled else "false")
+    db.commit()
+    return {"enabled": req.enabled}

@@ -42,6 +42,13 @@ class Article(Base):
     is_saved = Column(Boolean, default=False)
     user_notes = Column(Text)
     tags = Column(Text)  # JSON array string
+    # 四維評分（掃描時本地計算，無 API 呼叫）
+    composite_score   = Column(Float, nullable=True)  # 綜合分 0.0~1.0
+    finance_relevance = Column(Float, nullable=True)  # 財經相關性（TF-IDF 近似）
+    novelty_score     = Column(Float, nullable=True)  # 新奇度 1/(1+similar_count)
+    decay_factor      = Column(Float, nullable=True)  # 時間衰減 exp(-0.1×hours)
+    intensity_score   = Column(Float, nullable=True)  # 情緒強度 abs(sentiment)
+    matched_keyword   = Column(String, nullable=True)  # 符合的關鍵字（儲存時帶入）
 
 
 class Alert(Base):
@@ -111,6 +118,7 @@ class MonitorSource(Base):
     url = Column(String)
     keywords = Column(Text)  # JSON array
     is_active = Column(Boolean, default=True)
+    fetch_all = Column(Boolean, default=False)  # 全文讀取：跳過關鍵字過濾，但仍標記匹配關鍵字
 
 
 class NotificationSetting(Base):
@@ -576,6 +584,9 @@ def _migrate_db():
         for key, default in [
             ("radar_topics", '["金融", "股市", "經濟"]'),
             ("radar_hours_back", "24"),
+            ("gn_critical_only", "true"),
+            ("finance_filter_enabled", "true"),
+            ("finance_relevance_threshold", "0.15"),
         ]:
             if not conn.execute(text("SELECT value FROM system_config WHERE key = :k"), {"k": key}).fetchone():
                 conn.execute(text("INSERT INTO system_config (key, value) VALUES (:k, :v)"), {"k": key, "v": default})
@@ -692,6 +703,288 @@ def _migrate_db():
             ))
         conn.commit()
 
+        # ── 停用已確認失效的 RSS 來源（保留記錄，僅停用）──
+        _broken_urls = [
+            # IMF News: 403 blocked
+            "https://www.imf.org/en/News/RSS",
+            # World Bank: 404 URL changed
+            "https://www.worldbank.org/en/rss/home",
+            # 中央社財經: 404 URL deprecated
+            "https://www.cna.com.tw/rss/financemarket.aspx",
+            # Reuters: RSS service dead (000 connection refused)
+            "https://feeds.reuters.com/reuters/businessNews",
+            # 工商時報: connection refused (000)
+            "https://ctee.com.tw/feed",
+            # 新浪財經: RSS discontinued (404)
+            "https://rss.sina.com.cn/finance/forex/index.xml",
+            "https://rss.sina.com.cn/finance/financenews/globalstock.xml",
+            # AP Business: blocked from server IPs (000)
+            "https://feeds.apnews.com/rss/apf-business",
+            # OECD: 403 blocked
+            "https://www.oecd.org/rss/newsroom.xml",
+            # Caixin: 403 blocked
+            "https://www.caixinglobal.com/rss",
+            # PIIE: 403 blocked
+            "https://www.piie.com/rss",
+            # IMF Working Papers: 403 blocked
+            "https://www.imf.org/en/Publications/RSS/all_papers",
+            # ECB Working Papers: 404 URL changed
+            "https://www.ecb.europa.eu/rss/wppubs.rss",
+            # 台灣央行: HTML page (not RSS)
+            "https://www.cbc.gov.tw/tw/cp-302-3364-B8157-1.html",
+            # White House: 404
+            "https://www.whitehouse.gov/feed/",
+            # Berkshire: HTML page (not RSS)
+            "https://www.berkshirehathaway.com/news/newsb.html",
+        ]
+        for _u in _broken_urls:
+            conn.execute(text(
+                "UPDATE monitor_sources SET is_active=0 WHERE url=:u"
+            ), {"u": _u})
+        # 鉅亨網 RSS 已停用 → 改用 JSON API（type="website"）
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0 WHERE name LIKE '%鉅亨網%'"
+        ))
+        # 重新啟用三個主分類，指向有效的 JSON API 端點
+        _cnyes_api = [
+            ("鉅亨網",
+             "https://api.cnyes.com/media/api/v1/newslist/category/tw_stock",
+             '["台股","外資","法人","加權","漲","跌","ETF","台積","聯發","鴻海","大盤","台幣"]'),
+            ("鉅亨網 - 總經",
+             "https://api.cnyes.com/media/api/v1/newslist/category/macro",
+             '["GDP","通膨","就業","利率","總經","央行","貨幣政策"]'),
+            ("鉅亨網 - 美股",
+             "https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
+             '["美股","道瓊","納斯達克","標普","科技股","聯準會","AI","輝達","蘋果"]'),
+        ]
+        for _n, _u, _k in _cnyes_api:
+            # 若已有此名稱的來源，直接更新 URL + type + 重新啟用
+            _row = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE name=:n LIMIT 1"
+            ), {"n": _n}).fetchone()
+            if _row:
+                conn.execute(text(
+                    "UPDATE monitor_sources SET url=:u, type='website', is_active=1 "
+                    "WHERE id=:i"
+                ), {"u": _u, "i": _row[0]})
+            else:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES (:n, 'website', :u, :k, 1)"
+                ), {"n": _n, "u": _u, "k": _k})
+        conn.commit()
+
+        # ── 新增可靠財金來源 v2（若不存在則插入）──
+        _new_sources_v2 = [
+            # 台灣補充
+            ("自由時報財經", "rss",
+             "https://news.ltn.com.tw/rss/business.xml",
+             '["台股","台幣","產業","財經","匯率","外資","上市","上櫃"]', 1),
+            ("MoneyDJ 財經知識庫", "rss",
+             "https://www.moneydj.com/KMDJ/RSSService/RSS.aspx?cat=news",
+             '["台股","ETF","基金","個股","法人","技術分析","台積","聯發"]', 1),
+            ("鉅亨網 - 美股", "rss",
+             "https://news.cnyes.com/rss/cat/us_stock",
+             '["美股","道瓊","納斯達克","標普","科技股","聯準會","AI","輝達","蘋果"]', 1),
+            # 國際通訊社 / 媒體
+            ("AP Business", "rss",
+             "https://feeds.apnews.com/rss/apf-business",
+             '["economy","trade","tariff","Fed","inflation","market","recession","rate","debt"]', 1),
+            ("Nikkei Asia", "rss",
+             "https://asia.nikkei.com/rss/feed/nar",
+             '["Asia","Japan","China","trade","economy","semiconductor","yen","BOJ","Taiwan"]', 1),
+            ("South China Morning Post", "rss",
+             "https://www.scmp.com/rss/91/feed",
+             '["China","Hong Kong","yuan","economy","trade","PBOC","property","tariff"]', 1),
+            ("The Guardian Business", "rss",
+             "https://www.theguardian.com/uk/business/rss",
+             '["economy","Europe","inflation","UK","interest rate","trade","recession","ECB"]', 1),
+            ("Politico Economy", "rss",
+             "https://rss.politico.com/economy.xml",
+             '["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]', 1),
+            # 能源 / 商品
+            ("EIA Today in Energy", "rss",
+             "https://www.eia.gov/rss/todayinenergy.xml",
+             '["oil","crude","natural gas","OPEC","energy","petroleum","LNG","refinery"]', 1),
+            ("OilPrice.com", "rss",
+             "https://oilprice.com/rss/main",
+             '["oil","OPEC","crude","energy","pipeline","supply","LNG","natural gas"]', 1),
+            # 官方機構
+            ("OECD Newsroom", "rss",
+             "https://www.oecd.org/rss/newsroom.xml",
+             '["OECD","GDP","growth","trade","inflation","interest rate","outlook","forecast"]', 1),
+            # 中港
+            ("財新 Caixin Global", "rss",
+             "https://www.caixinglobal.com/rss",
+             '["China","PBOC","yuan","economy","trade war","regulation","GDP","property","debt"]', 1),
+        ]
+        for _n, _t, _u, _k, _a in _new_sources_v2:
+            _exists = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url = :u LIMIT 1"
+            ), {"u": _u}).fetchone()
+            if not _exists:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES (:n, :t, :u, :k, :a)"
+                ), {"n": _n, "t": _t, "u": _u, "k": _k, "a": _a})
+        conn.commit()
+
+        # ── 新增研究機構 v2 ──
+        _new_research_v2 = [
+            ("NBER Working Papers",
+             "https://www.nber.org/rss/new.xml",
+             '["NBER","economics","monetary policy","fiscal","labor","finance","growth"]'),
+            ("PIIE Research",
+             "https://www.piie.com/rss",
+             '["trade","tariff","global economy","sanctions","monetary","exchange rate","China"]'),
+        ]
+        for _n, _u, _k in _new_research_v2:
+            # 同時檢查 URL 與名稱，避免前面的 migration UPDATE 改了 URL 後每次重啟都重複插入
+            _exists = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url = :u OR (name = :n AND type = 'research') LIMIT 1"
+            ), {"u": _u, "n": _n}).fetchone()
+            if not _exists:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES (:n, 'research', :u, :k, 1)"
+                ), {"n": _n, "u": _u, "k": _k})
+        conn.commit()
+
+        # ── 新增替代來源 v3（補充停用來源的覆蓋面）──
+        _replacement_sources_v3 = [
+            # Channel News Asia: 亞太區英文財經/政治新聞，覆蓋台灣、中國、東南亞
+            ("Channel News Asia", "rss",
+             "https://www.channelnewsasia.com/rssfeeds/8395744",
+             '["Asia","economy","trade","Taiwan","China","US","market","central bank","Singapore","tariff"]', 1),
+            # Yahoo Finance: 美國市場新聞，聚合 Reuters/AP/Bloomberg 內容
+            ("Yahoo Finance", "rss",
+             "https://finance.yahoo.com/rss/topstories",
+             '["market","Fed","inflation","stocks","economy","rate","earnings","recession","tariff","trade"]', 1),
+        ]
+        for _n, _t, _u, _k, _a in _replacement_sources_v3:
+            _exists = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url = :u LIMIT 1"
+            ), {"u": _u}).fetchone()
+            if not _exists:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES (:n, :t, :u, :k, :a)"
+                ), {"n": _n, "t": _t, "u": _u, "k": _k, "a": _a})
+        conn.commit()
+
+        # ── 修復 NBER 重複資料（每次 migration UPDATE URL 後 _new_research_v2 會重插）──
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE name='NBER Working Papers' AND type='research' "
+            "AND id NOT IN ("
+            "  SELECT MIN(id) FROM monitor_sources WHERE name='NBER Working Papers' AND type='research'"
+            ")"
+        ))
+        conn.commit()
+
+        # ── 新增可靠財金來源 v4 ──
+        # 台灣央行 (CBC)：修正 RSS URL 或新增（舊 URL 是 HTML 頁，正確 RSS 在 rss-302-1.xml）
+        _cbc_rss_url = "https://www.cbc.gov.tw/tw/rss-302-1.xml"
+        _cbc_existing = conn.execute(text(
+            "SELECT id FROM monitor_sources WHERE url LIKE '%cbc.gov.tw%' LIMIT 1"
+        )).fetchone()
+        if _cbc_existing:
+            conn.execute(text(
+                "UPDATE monitor_sources SET url=:u, is_active=1 WHERE id=:i"
+            ), {"u": _cbc_rss_url, "i": _cbc_existing[0]})
+        else:
+            conn.execute(text(
+                "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                "VALUES ('台灣央行新聞稿 (CBC)', 'rss', :u, "
+                "'[\"央行\",\"利率\",\"貨幣政策\",\"外匯\",\"台幣\",\"通膨\",\"金融穩定\",\"理監事會\"]', 1)"
+            ), {"u": _cbc_rss_url})
+        conn.commit()
+
+        # 清除鉅亨網舊 RSS 條目（404 路徑，已被 website 型 JSON API 取代）
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE url LIKE '%news.cnyes.com/rss%' AND type='rss'"
+        ))
+        conn.commit()
+
+        # MoneyDJ：舊 KMDJ/RSSService/RSS.aspx 路徑已棄用，改為正確的 RssCenter 端點
+        _moneydj_new_url = "https://www.moneydj.com/kmdj/RssCenter.aspx?svc=NW&fno=1&arg=X0000000"
+        conn.execute(text(
+            "UPDATE monitor_sources SET url=:u "
+            "WHERE url LIKE '%moneydj.com%RSSService%' OR url LIKE '%moneydj.com%RSS.aspx%'"
+        ), {"u": _moneydj_new_url})
+        # MoneyDJ 去重：若因 UPDATE 產生重複，保留最舊的一筆
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE url=:u "
+            "AND id NOT IN (SELECT MIN(id) FROM monitor_sources WHERE url=:u)"
+        ), {"u": _moneydj_new_url})
+        # FSC 金管會 RSS：所有 /rss/*.xml 路徑皆回傳 HTML（服務失效），改為停用
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0 "
+            "WHERE url LIKE '%fsc.gov.tw/rss%'"
+        ))
+        conn.commit()
+
+        _new_sources_v4 = [
+            # Yahoo 奇摩台灣股市新聞（包含 tw.stock.yahoo.com 文章）
+            ("Yahoo 台灣財經新聞", "rss",
+             "https://tw.news.yahoo.com/rss/",
+             '["台股","台灣","財經","外資","漲","跌","法人","ETF","大盤","匯率","央行"]', 1),
+            # 日經中文網（覆蓋日本/亞洲金融、中日台相關）
+            ("日經中文網", "rss",
+             "https://zh.cn.nikkei.com/rss.html",
+             '["日本","亞洲","日圓","日銀","BOJ","中國","台灣","半導體","貿易","關稅","美日"]', 1),
+            # 證券期貨局 (SFB) 新聞稿
+            ("證券期貨局新聞稿 (SFB)", "rss",
+             "https://www.sfb.gov.tw/RSS/sfb/Messages?serno=201501270006&language=chinese",
+             '["證券","期貨","上市","上櫃","裁罰","監理","法規","財報","投資人","違規"]', 1),
+        ]
+        for _n, _t, _u, _k, _a in _new_sources_v4:
+            _exists = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url = :u LIMIT 1"
+            ), {"u": _u}).fetchone()
+            if not _exists:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES (:n, :t, :u, :k, :a)"
+                ), {"n": _n, "t": _t, "u": _u, "k": _k, "a": _a})
+        conn.commit()
+
+        # ── v5: 清理重複來源 + 修正失效 + 恢復已正常來源 ──
+        # 刪除重複 MOPS 條目（同 URL 只保留 id 最小的）
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE type='mops' "
+            "AND id NOT IN (SELECT MIN(id) FROM monitor_sources WHERE type='mops')"
+        ))
+        # 刪除 UDN 經濟日報（money.udn.com RSS 永遠 0 篇，feed 無 item，已確認無效）
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE url='https://money.udn.com/rssfeed/news/1/5591'"
+        ))
+        # BIS 新聞 RSS：/rss/index.htm 現在回傳 HTML，停用
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0 WHERE url='https://www.bis.org/rss/index.htm'"
+        ))
+        # 鉅亨網 - 總經：macro 分類 API 已停用(422)，改用 headline（頭條）
+        conn.execute(text(
+            "UPDATE monitor_sources SET "
+            "url='https://api.cnyes.com/media/api/v1/newslist/category/headline' "
+            "WHERE url='https://api.cnyes.com/media/api/v1/newslist/category/macro'"
+        ))
+        # 恢復已確認正常的來源（測試通過：SCMP 50則 / US Treasury 10則 / Nikkei Asia 50則）
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=1 WHERE url IN ("
+            "  'https://www.scmp.com/rss/91/feed',"
+            "  'https://home.treasury.gov/rss.xml',"
+            "  'https://asia.nikkei.com/rss/feed/nar'"
+            ")"
+        ))
+        # WSJ (Dow Jones) RSS 已於 2025年1月停止更新，改用 Google News 代理
+        conn.execute(text(
+            "UPDATE monitor_sources SET "
+            "url='https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US&ceid=US:en', "
+            "name='Wall Street Journal' "
+            "WHERE url LIKE '%feeds.a.dj.com%'"
+        ))
+        conn.commit()
+
         # Backfill min_severity into existing LINE notification setting if missing
         import json as _json
         row = conn.execute(text(
@@ -709,6 +1002,28 @@ def _migrate_db():
                     {"c": _json.dumps(cfg), "i": row[0]},
                 )
                 conn.commit()
+
+        # 新增 Article 四維評分欄位 + matched_keyword（本地計算，無 API 呼叫）
+        for _col in [
+            "composite_score REAL",
+            "finance_relevance REAL",
+            "novelty_score REAL",
+            "decay_factor REAL",
+            "intensity_score REAL",
+            "matched_keyword VARCHAR",
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE articles ADD COLUMN {_col}"))
+                conn.commit()
+            except Exception:
+                pass  # 欄位已存在，略過
+
+        # 新增 MonitorSource.fetch_all（全文讀取：跳過關鍵字過濾）
+        try:
+            conn.execute(text("ALTER TABLE monitor_sources ADD COLUMN fetch_all BOOLEAN DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass  # 欄位已存在，略過
 
 
 def get_db():
@@ -816,12 +1131,14 @@ def _seed_defaults():
                     type="rss",
                     url="https://www.imf.org/en/News/RSS",
                     keywords='["IMF","global economy","growth","debt"]',
+                    is_active=False,  # 403 blocked — re-enable if URL is fixed
                 ),
                 MonitorSource(
                     name="World Bank",
                     type="rss",
                     url="https://www.worldbank.org/en/rss/home",
                     keywords='["development","emerging","growth"]',
+                    is_active=False,  # 404 URL deprecated — re-enable if URL is fixed
                 ),
                 MonitorSource(
                     name="Financial Times",
@@ -830,9 +1147,9 @@ def _seed_defaults():
                     keywords='["market","economy","trade","central bank"]',
                 ),
                 MonitorSource(
-                    name="Wall Street Journal Markets",
+                    name="Wall Street Journal",
                     type="rss",
-                    url="https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+                    url="https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US&ceid=US:en",
                     keywords='["market","stocks","bonds","Fed","economy"]',
                 ),
                 MonitorSource(
@@ -846,6 +1163,7 @@ def _seed_defaults():
                     type="rss",
                     url="https://www.cna.com.tw/rss/financemarket.aspx",
                     keywords='["台股","外資","法人","央行","利率","匯率"]',
+                    is_active=False,  # 404 RSS deprecated — re-enable if URL is fixed
                 ),
                 MonitorSource(
                     name="公開資訊觀測站重大訊息",
@@ -859,6 +1177,7 @@ def _seed_defaults():
                     type="rss",
                     url="https://feeds.reuters.com/reuters/businessNews",
                     keywords='["business","trade","economy","market"]',
+                    is_active=False,  # Reuters RSS service dead (000 connection refused)
                 ),
                 # ── 台灣國內來源 ──
                 MonitorSource(
@@ -872,24 +1191,26 @@ def _seed_defaults():
                     type="rss",
                     url="https://ctee.com.tw/feed",
                     keywords='["台股","產業","法說會","獲利","投資"]',
+                    is_active=False,  # 連線拒絕 (000) — 請確認 RSS URL
                 ),
                 MonitorSource(
                     name="鉅亨網",
-                    type="rss",
-                    url="https://news.cnyes.com/rss/cat/index",
-                    keywords='["台股","外資","法人","指數","漲跌"]',
+                    type="website",
+                    url="https://api.cnyes.com/media/api/v1/newslist/category/tw_stock",
+                    keywords='["台股","外資","法人","加權","漲","跌","ETF","台積","聯發","鴻海","大盤","台幣"]',
                 ),
                 MonitorSource(
                     name="台灣央行 (CBC)",
                     type="rss",
                     url="https://www.cbc.gov.tw/tw/cp-302-3364-B8157-1.html",
                     keywords='["利率","貨幣政策","通膨","外匯","台幣"]',
+                    is_active=False,  # HTML 頁面非 RSS — 請更換正確 RSS URL
                 ),
                 MonitorSource(
                     name="鉅亨網 - 總經",
-                    type="rss",
-                    url="https://news.cnyes.com/rss/cat/macro",
-                    keywords='["GDP","通膨","就業","利率","總經"]',
+                    type="website",
+                    url="https://api.cnyes.com/media/api/v1/newslist/category/macro",
+                    keywords='["GDP","通膨","就業","利率","總經","央行","貨幣政策"]',
                 ),
                 # ── 國際擴充 ──
                 MonitorSource(
@@ -921,12 +1242,14 @@ def _seed_defaults():
                     type="rss",
                     url="https://rss.sina.com.cn/finance/forex/index.xml",
                     keywords='["人民幣","外匯","央行","降準","匯率"]',
+                    is_active=False,  # RSS 已停用 (404)
                 ),
                 MonitorSource(
                     name="新浪財經",
                     type="rss",
                     url="https://rss.sina.com.cn/finance/financenews/globalstock.xml",
                     keywords='["A股","滬深","港股","人民幣","中概股"]',
+                    is_active=False,  # RSS 已停用 (404)
                 ),
                 MonitorSource(
                     name="Investing.com",
@@ -968,6 +1291,99 @@ def _seed_defaults():
                     type="person",
                     url="https://www.berkshirehathaway.com/news/newsb.html",
                     keywords='["Buffett","Berkshire","investment","portfolio"]',
+                    is_active=False,  # HTML 頁面非 RSS feed
+                ),
+                # ── 台灣補充 ──
+                MonitorSource(
+                    name="自由時報財經",
+                    type="rss",
+                    url="https://news.ltn.com.tw/rss/business.xml",
+                    keywords='["台股","台幣","產業","財經","匯率","外資","上市","上櫃"]',
+                ),
+                MonitorSource(
+                    name="MoneyDJ 財經知識庫",
+                    type="rss",
+                    url="https://www.moneydj.com/KMDJ/RSSService/RSS.aspx?cat=news",
+                    keywords='["台股","ETF","基金","個股","法人","技術分析","台積","聯發"]',
+                ),
+                MonitorSource(
+                    name="鉅亨網 - 美股",
+                    type="website",
+                    url="https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
+                    keywords='["美股","道瓊","納斯達克","標普","科技股","聯準會","AI","輝達","蘋果"]',
+                ),
+                # ── 國際通訊社 / 媒體 ──
+                MonitorSource(
+                    name="AP Business",
+                    type="rss",
+                    url="https://feeds.apnews.com/rss/apf-business",
+                    keywords='["economy","trade","tariff","Fed","inflation","market","recession","rate","debt"]',
+                ),
+                MonitorSource(
+                    name="Nikkei Asia",
+                    type="rss",
+                    url="https://asia.nikkei.com/rss/feed/nar",
+                    keywords='["Asia","Japan","China","trade","economy","semiconductor","yen","BOJ","Taiwan"]',
+                ),
+                MonitorSource(
+                    name="South China Morning Post",
+                    type="rss",
+                    url="https://www.scmp.com/rss/91/feed",
+                    keywords='["China","Hong Kong","yuan","economy","trade","PBOC","property","tariff"]',
+                ),
+                MonitorSource(
+                    name="The Guardian Business",
+                    type="rss",
+                    url="https://www.theguardian.com/uk/business/rss",
+                    keywords='["economy","Europe","inflation","UK","interest rate","trade","recession","ECB"]',
+                ),
+                MonitorSource(
+                    name="Politico Economy",
+                    type="rss",
+                    url="https://rss.politico.com/economy.xml",
+                    keywords='["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]',
+                ),
+                # ── 能源 / 商品 ──
+                MonitorSource(
+                    name="EIA Today in Energy",
+                    type="rss",
+                    url="https://www.eia.gov/rss/todayinenergy.xml",
+                    keywords='["oil","crude","natural gas","OPEC","energy","petroleum","LNG","refinery"]',
+                ),
+                MonitorSource(
+                    name="OilPrice.com",
+                    type="rss",
+                    url="https://oilprice.com/rss/main",
+                    keywords='["oil","OPEC","crude","energy","pipeline","supply","LNG","natural gas"]',
+                ),
+                # ── 官方機構補充 ──
+                MonitorSource(
+                    name="OECD Newsroom",
+                    type="rss",
+                    url="https://www.oecd.org/rss/newsroom.xml",
+                    keywords='["OECD","GDP","growth","trade","inflation","interest rate","outlook","forecast"]',
+                    is_active=False,  # 403 blocked
+                ),
+                # ── 中港 ──
+                MonitorSource(
+                    name="財新 Caixin Global",
+                    type="rss",
+                    url="https://www.caixinglobal.com/rss",
+                    keywords='["China","PBOC","yuan","economy","trade war","regulation","GDP","property","debt"]',
+                    is_active=False,  # 403 blocked
+                ),
+                # ── 替代：亞太 / 美國市場 ──
+                MonitorSource(
+                    name="Channel News Asia",
+                    type="rss",
+                    url="https://www.channelnewsasia.com/rssfeeds/8395744",
+                    keywords='["Asia","economy","trade","Taiwan","China","US","market","central bank","Singapore","tariff"]',
+                ),
+                MonitorSource(
+                    name="Yahoo Finance",
+                    type="rss",
+                    url="https://finance.yahoo.com/rss/topstories",
+                    keywords='["market","Fed","inflation","stocks","economy","rate","earnings","recession","tariff","trade"]',
                 ),
             ]
             db.add_all(sources)
@@ -977,7 +1393,7 @@ def _seed_defaults():
             research_sources = [
                 MonitorSource(name="IMF Working Papers", type="research",
                     url="https://www.imf.org/en/Publications/RSS/all_papers",
-                    keywords='["IMF","monetary","fiscal","global economy"]', is_active=True),
+                    keywords='["IMF","monetary","fiscal","global economy"]', is_active=False),  # 403 blocked
                 MonitorSource(name="BIS Working Papers", type="research",
                     url="https://www.bis.org/doclist/wppubls.rss",
                     keywords='["BIS","central bank","financial stability","monetary policy"]', is_active=True),
@@ -986,13 +1402,19 @@ def _seed_defaults():
                     keywords='["Fed","monetary policy","inflation","interest rate"]', is_active=True),
                 MonitorSource(name="ECB Working Papers", type="research",
                     url="https://www.ecb.europa.eu/rss/wppubs.rss",
-                    keywords='["ECB","euro","monetary policy","inflation"]', is_active=True),
+                    keywords='["ECB","euro","monetary policy","inflation"]', is_active=False),  # 404 URL deprecated
                 MonitorSource(name="BOJ Research", type="research",
                     url="https://www.boj.or.jp/en/rss/whatsnew.xml",
                     keywords='["BOJ","Japan","monetary policy","yen"]', is_active=True),
                 MonitorSource(name="BOE Staff WP", type="research",
                     url="https://www.bankofengland.co.uk/rss/publications",
                     keywords='["BOE","UK","monetary policy","sterling"]', is_active=True),
+                MonitorSource(name="NBER Working Papers", type="research",
+                    url="https://www.nber.org/rss/new.xml",
+                    keywords='["NBER","economics","monetary policy","fiscal","labor","finance","growth"]', is_active=True),
+                MonitorSource(name="PIIE Research", type="research",
+                    url="https://www.piie.com/rss",
+                    keywords='["trade","tariff","global economy","sanctions","monetary","exchange rate","China"]', is_active=False),  # 403 blocked
             ]
             db.add_all(research_sources)
 

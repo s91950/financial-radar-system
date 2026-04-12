@@ -49,6 +49,7 @@ export default function NewsDBPage() {
   const [showDateFilter, setShowDateFilter] = useState(false)
   const [searchInput, setSearchInput] = useState('')
   const [customQuery, setCustomQuery] = useState('')
+  const [fetchHoursBack, setFetchHoursBack] = useState(24)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(20)
 
@@ -106,14 +107,15 @@ export default function NewsDBPage() {
     sortedArticles.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))
   }
 
-  const handleManualFetch = async (query = null) => {
+  const handleManualFetch = async (query = null, sourceType = 'sources_only') => {
     setFetchLoading(true)
     setPreview(null)
     setPreviewSeverityFilter('all')
     try {
       const { data } = await newsAPI.manualFetch({
         query: query || null,
-        hours_back: 24,
+        hours_back: fetchHoursBack,
+        source_type: sourceType,
       })
       setPreview(data.preview || [])
       const newIds = new Set()
@@ -129,12 +131,16 @@ export default function NewsDBPage() {
     setFetchLoading(false)
   }
 
-  const handleCustomSearch = (e) => {
+  const handleSourceSearch = (e) => {
     e.preventDefault()
-    if (customQuery.trim()) {
-      handleManualFetch(customQuery.trim())
-      setCustomQuery('')
-    }
+    handleManualFetch(customQuery.trim() || null, 'sources_only')
+    setCustomQuery('')
+  }
+
+  const handleGnSearch = (e) => {
+    e.preventDefault()
+    handleManualFetch(customQuery.trim() || null, 'gn_only')
+    setCustomQuery('')
   }
 
   const handleTogglePreviewItem = (idx) => {
@@ -368,6 +374,11 @@ export default function NewsDBPage() {
                       className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500"
                     />
                     <SeverityBadge severity={sev} />
+                    {article.matched_keyword && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary-600/20 text-primary-400 whitespace-nowrap shrink-0">
+                        {article.matched_keyword}
+                      </span>
+                    )}
                     <div className="flex-1 min-w-0">
                       <span className="text-sm text-gray-200 line-clamp-1">{article.title}</span>
                       <span className="text-xs text-dark-500 ml-2">[{article.source}]</span>
@@ -411,8 +422,33 @@ export default function NewsDBPage() {
 
       {/* Action Bar */}
       <div className="flex flex-wrap items-center gap-3">
+        {/* 時間範圍 */}
+        <select
+          value={fetchHoursBack}
+          onChange={(e) => setFetchHoursBack(Number(e.target.value))}
+          className="input w-28 text-sm"
+          disabled={fetchLoading}
+        >
+          <option value={6}>6 小時</option>
+          <option value={12}>12 小時</option>
+          <option value={24}>24 小時</option>
+          <option value={48}>48 小時</option>
+          <option value={72}>72 小時</option>
+        </select>
+
+        {/* 搜尋輸入 */}
+        <input
+          type="text"
+          value={customQuery}
+          onChange={(e) => setCustomQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleSourceSearch(e) }}
+          placeholder="關鍵字（空白=雷達主題）"
+          className="input w-48"
+        />
+
+        {/* 抓取來源新聞（預設）*/}
         <button
-          onClick={() => handleManualFetch()}
+          onClick={(e) => handleSourceSearch(e)}
           disabled={fetchLoading}
           className="btn-primary flex items-center gap-2"
         >
@@ -424,21 +460,21 @@ export default function NewsDBPage() {
                 d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
             </svg>
           )}
-          抓取新聞 (24hr)
+          抓取來源新聞
         </button>
 
-        <form onSubmit={handleCustomSearch} className="flex gap-2">
-          <input
-            type="text"
-            value={customQuery}
-            onChange={(e) => setCustomQuery(e.target.value)}
-            placeholder="自訂搜尋主題..."
-            className="input w-56"
-          />
-          <button type="submit" disabled={fetchLoading || !customQuery.trim()} className="btn-secondary">
-            搜尋抓取
-          </button>
-        </form>
+        {/* Google News 搜尋 */}
+        <button
+          onClick={(e) => handleGnSearch(e)}
+          disabled={fetchLoading}
+          className="btn-secondary flex items-center gap-2"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          Google News
+        </button>
 
         <div className="flex-1" />
 
@@ -659,6 +695,11 @@ export default function NewsDBPage() {
                       className="mt-1 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 shrink-0"
                     />
                     <SeverityBadge severity={sev} />
+                    {article.matched_keyword && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary-600/20 text-primary-400 whitespace-nowrap shrink-0">
+                        {article.matched_keyword}
+                      </span>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         {article.is_saved && (

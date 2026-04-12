@@ -179,6 +179,38 @@ async def radar_scan(force: bool = False):
         await _radar_scan_inner(force=force)
 
 
+async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
+    """Fetch articles from a website/API source.
+
+    Routing logic:
+    - 鉅亨網 JSON API (api.cnyes.com) → cnyes_scraper
+    - World Bank API (search.worldbank.org) → worldbank_scraper
+    - 金管會 FSC (fsc.gov.tw) → fsc_scraper
+    - 財新 Caixin (caixinglobal.com) → caixin_scraper
+    - Other URLs → generic web_scraper (single-page scrape)
+    """
+    from backend.services.cnyes_scraper import is_cnyes_api_url, fetch_cnyes_from_url
+    from backend.services.worldbank_scraper import is_worldbank_api_url, fetch_worldbank_news
+    from backend.services.fsc_scraper import is_fsc_url, fetch_fsc_news
+    from backend.services.caixin_scraper import is_caixin_url, fetch_caixin_news
+    from backend.services.web_scraper import scrape_page
+
+    if is_cnyes_api_url(url):
+        return await fetch_cnyes_from_url(url, hours_back)
+    if is_worldbank_api_url(url):
+        return await fetch_worldbank_news(url, hours_back)
+    if is_fsc_url(url):
+        return await fetch_fsc_news(hours_back)
+    if is_caixin_url(url):
+        return await fetch_caixin_news(hours_back)
+
+    # Generic HTML scraping — returns at most one article (the page itself)
+    result = await scrape_page(url)
+    if result.get("title") and result.get("content"):
+        return [result]
+    return []
+
+
 async def _radar_scan_inner(force: bool = False):
     from backend.services import rss_feed
     from backend.services.google_news import search_google_news
@@ -215,6 +247,35 @@ async def _radar_scan_inner(force: bool = False):
         _rss_only_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_rss_only").first()
         _rss_only = (_rss_only_cfg.value == "true") if _rss_only_cfg else False
 
+        # RSS 優先模式：RSS 文章數 >= 門檻時跳過 Google News
+        _rss_min_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_rss_min_articles").first()
+        _rss_min_articles = int(_rss_min_cfg.value) if _rss_min_cfg and _rss_min_cfg.value.isdigit() else 0
+        # 0 表示停用 RSS 優先（預設行為）
+
+        # Google News 僅保留緊急設定
+        _gn_crit_cfg = db.query(SystemConfig).filter(SystemConfig.key == "gn_critical_only").first()
+        _gn_critical_only = (_gn_crit_cfg.value == "true") if _gn_crit_cfg else False
+
+        # 財經相關性篩選設定
+        _fin_filter_cfg = db.query(SystemConfig).filter(SystemConfig.key == "finance_filter_enabled").first()
+        _fin_filter_enabled = (_fin_filter_cfg.value == "true") if _fin_filter_cfg else False
+        _fin_threshold_cfg = db.query(SystemConfig).filter(SystemConfig.key == "finance_relevance_threshold").first()
+        try:
+            _fin_threshold = float(_fin_threshold_cfg.value) if _fin_threshold_cfg else 0.15
+        except (ValueError, TypeError):
+            _fin_threshold = 0.15
+
+        # 建立已知來源名稱集合（用於 GN 文章可信度懲罰：來源不在此清單者 weight=0.65）
+        _all_ms = db.query(MonitorSource).filter(MonitorSource.is_active == True).all()
+        _ksn: set = set()
+        for _ms in _all_ms:
+            if _ms.name:
+                # 去除括號內備註（如「Bloomberg Markets」→「bloomberg markets」）
+                _clean = re.sub(r'\s*[\(（].*?[\)）]', '', _ms.name).strip().lower()
+                if _clean:
+                    _ksn.add(_clean)
+        _known_source_names: frozenset = frozenset(_ksn)
+
         # 1. Fetch from active RSS sources (includes social type = Nitter/RSS mirrors)
         sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
@@ -226,6 +287,7 @@ async def _radar_scan_inner(force: bool = False):
                 "name": s.name,
                 "url": s.url,
                 "keywords": json.loads(s.keywords) if s.keywords else [],
+                "fetch_all": bool(getattr(s, "fetch_all", False)),
             }
             for s in sources
         ]
@@ -235,23 +297,44 @@ async def _radar_scan_inner(force: bool = False):
         seen_titles = set()
         seen_content_fps: list = []   # 內容相似度 fingerprint 清單（跨步驟共享）
 
+        _raw_rss_articles: list[dict] = []  # unfiltered RSS pool for topic cross-matching
         if feeds:
-            rss_results = await rss_feed.fetch_multiple_feeds(
-                feeds, hours_back=gn_hours_back, global_topics=_global_topics
+            rss_results, _raw_rss_articles = await rss_feed.fetch_multiple_feeds(
+                feeds, hours_back=gn_hours_back, global_topics=_global_topics, return_raw=True
             )
+            _rss_skip_empty = 0
+            _rss_skip_seen = 0
+            _rss_skip_db_url = 0
+            _rss_skip_db_title = 0
+            _rss_skip_dup = 0
             for article_data in rss_results:
                 url = article_data.get("source_url", "")
                 title = article_data.get("title", "").strip()
-                if url and title and url not in seen_urls and title not in seen_titles:
-                    if force or (not db.query(Article).filter(Article.source_url == url).first() and \
-                       not db.query(Article).filter(Article.title == title).first()):
-                        fp = _article_fingerprint(title, article_data.get("content", ""))
-                        if _is_content_duplicate(fp, seen_content_fps):
-                            continue
-                        seen_urls.add(url)
-                        seen_titles.add(title)
-                        seen_content_fps.append(fp)
-                        new_articles.append(article_data)
+                if not url or not title:
+                    _rss_skip_empty += 1
+                    continue
+                if url in seen_urls or title in seen_titles:
+                    _rss_skip_seen += 1
+                    continue
+                if not force:
+                    if db.query(Article).filter(Article.source_url == url).first():
+                        _rss_skip_db_url += 1
+                        continue
+                    if db.query(Article).filter(Article.title == title).first():
+                        _rss_skip_db_title += 1
+                        continue
+                fp = _article_fingerprint(title, article_data.get("content", ""))
+                if _is_content_duplicate(fp, seen_content_fps):
+                    _rss_skip_dup += 1
+                    continue
+                seen_urls.add(url)
+                seen_titles.add(title)
+                seen_content_fps.append(fp)
+                article_data['from_rss'] = True
+                new_articles.append(article_data)
+            _flog(f"[SCAN] RSS: {len(rss_results)} fetched, {len(new_articles)} new "
+                  f"(skip: empty={_rss_skip_empty} seen={_rss_skip_seen} db_url={_rss_skip_db_url} "
+                  f"db_title={_rss_skip_db_title} dup={_rss_skip_dup})")
 
         # 1b. Fetch MOPS 公開資訊觀測站重大訊息（type="mops" 來源啟用時）
         mops_source = db.query(MonitorSource).filter(
@@ -279,9 +362,66 @@ async def _radar_scan_inner(force: bool = False):
             except Exception as mops_err:
                 logger.warning(f"MOPS fetch error (non-fatal): {mops_err}")
 
+        # 1c. Fetch website/API sources (type="website"): JSON API 或 HTML 爬蟲
+        website_sources = db.query(MonitorSource).filter(
+            MonitorSource.is_active == True,
+            MonitorSource.type == "website",
+        ).all()
+        if website_sources:
+            from backend.services.rss_feed import (
+                _filter_by_keywords as _kw_filter,
+                _filter_by_topic_strings as _tp_filter,
+            )
+            for ws in website_sources:
+                try:
+                    ws_fetch_all = bool(getattr(ws, 'fetch_all', False))
+                    # fetch_all 來源：用 48h 底限，確保 API 返回的所有精選文章都能通過時間過濾
+                    # 一般來源：用 max(hours_back, 3h) 作小緩衝，防止短暫中斷造成漏抓
+                    ws_hours_back = max(gn_hours_back, 48) if ws_fetch_all else max(gn_hours_back, 3)
+                    ws_articles = await _fetch_website_source(ws.url, ws_hours_back)
+                    ws_kws = json.loads(ws.keywords) if ws.keywords else []
+                    if ws_fetch_all:
+                        # 全文讀取：納入全部，用 _annotate_matched_terms 標記實際出現的所有關鍵詞
+                        # 標記 fetch_all_source 讓財經篩選跳過這些文章（但仍計算分數）
+                        if ws_kws:
+                            from backend.services.rss_feed import _annotate_matched_terms as _ann
+                            ws_articles = [
+                                {**a, "matched_keyword": _ann(a, ws_kws), "fetch_all_source": True}
+                                for a in ws_articles
+                            ]
+                        else:
+                            ws_articles = [{**a, "fetch_all_source": True} for a in ws_articles]
+                    elif ws_kws:
+                        ws_articles = _kw_filter(ws_articles, ws_kws)
+                    elif _global_topics:
+                        ws_articles = _tp_filter(ws_articles, _global_topics)
+                    else:
+                        ws_articles = []
+                    for article_data in ws_articles:
+                        url = article_data.get("source_url", "")
+                        title = article_data.get("title", "").strip()
+                        if url and title and url not in seen_urls and title not in seen_titles:
+                            if force or (not db.query(Article).filter(Article.source_url == url).first() and \
+                               not db.query(Article).filter(Article.title == title).first()):
+                                fp = _article_fingerprint(title, article_data.get("content", ""))
+                                if _is_content_duplicate(fp, seen_content_fps):
+                                    continue
+                                seen_urls.add(url)
+                                seen_titles.add(title)
+                                seen_content_fps.append(fp)
+                                new_articles.append(article_data)
+                except Exception as ws_err:
+                    logger.warning(f"Website source fetch error ({ws.url}): {ws_err}")
+
         # 2. Fetch latest headlines via Google News RSS — TW + US topics in parallel
-        # Skipped when RSS-only mode is enabled
-        if not _rss_only:
+        # 跳過條件：RSS-only 模式，或 RSS 優先模式且 RSS 文章數已達門檻
+        _rss_collected = sum(1 for a in new_articles if a.get('from_rss'))
+        _skip_gn = _rss_only or (
+            _rss_min_articles > 0 and not force and _rss_collected >= _rss_min_articles
+        )
+        if _skip_gn and not _rss_only:
+            _flog(f"[SCAN] RSS 優先：已蒐集 {_rss_collected} 篇（>= {_rss_min_articles}），跳過 Google News")
+        if not _skip_gn:
             topics = _all_tw_topics
             us_topics = _all_us_topics
             # gn_hours_back already loaded above (shared with RSS step)
@@ -331,7 +471,16 @@ async def _radar_scan_inner(force: bool = False):
                             seen_urls.add(url)
                             seen_titles.add(title)
                             seen_content_fps.append(fp)
-                            article_data['matched_keyword'] = _extract_matched_terms(topic, title)
+                            article_data['matched_keyword'] = _extract_matched_terms(topic, title, article_data.get("content", ""))
+                            article_data['origin'] = 'gn'
+                            # GN 僅緊急模式：預先評估嚴重度，非緊急文章丟棄
+                            if _gn_critical_only:
+                                _pre_sev = _assess_severity_single(article_data, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+                                if _pre_sev != "critical":
+                                    seen_urls.discard(url)
+                                    seen_titles.discard(title)
+                                    seen_content_fps.pop()
+                                    continue
                             new_articles.append(article_data)
 
         # 3b. Topic-specific searches — results feed BOTH radar alerts and TopicArticle.
@@ -370,9 +519,38 @@ async def _radar_scan_inner(force: bool = False):
                     topic_articles_to_save.append((topic.id, a))
                     logger.debug(f"Topic '{topic.name}' ← RSS/GN: {a.get('title','')[:60]}")
 
+            # Pass A2: RSS-only 模式下，對未過濾的 raw RSS 文章做主題比對
+            # 補上「符合主題關鍵字但未符合雷達關鍵字」的文章，帶進雷達 + 主題頁
+            if _skip_gn and _raw_rss_articles:
+                for a in _raw_rss_articles:
+                    url = a.get("source_url", "")
+                    title = a.get("title", "").strip()
+                    if not url or not title or url in seen_urls or title in seen_titles:
+                        continue
+                    text = f"{title} {a.get('content', '')}".lower()
+                    if not _match_keyword_groups(text, groups):
+                        continue
+                    # New article matching topic keywords — add to radar + topic
+                    if force or (not db.query(Article).filter(Article.source_url == url).first() and
+                                 not db.query(Article).filter(Article.title == title).first()):
+                        fp = _article_fingerprint(title, a.get("content", ""))
+                        if _is_content_duplicate(fp, seen_content_fps):
+                            continue
+                        seen_urls.add(url)
+                        seen_titles.add(title)
+                        seen_content_fps.append(fp)
+                        a_copy = dict(a)
+                        a_copy['matched_keyword'] = _extract_matched_terms(kws, title, a.get("content", ""))
+                        a_copy['from_rss'] = True
+                        new_articles.append(a_copy)
+                        if url not in queued_urls and not db.query(TopicArticle).filter_by(topic_id=topic.id, source_url=url).first():
+                            queued_urls.add(url)
+                            topic_articles_to_save.append((topic.id, a_copy))
+                        logger.debug(f"Topic '{topic.name}' ← raw RSS (A2): {title[:60]}")
+
             # Pass B: dedicated Google News search for this topic
-            # Skipped when RSS-only mode is enabled
-            if _rss_only:
+            # Skipped when RSS-only mode is enabled, or RSS priority threshold met
+            if _skip_gn:
                 continue
             # force 掃描用 2h（顯示近期），自動掃描用 3h（避免 1h 間隔遺漏文章）
             try:
@@ -405,7 +583,16 @@ async def _radar_scan_inner(force: bool = False):
                             seen_titles.add(title)
                             seen_content_fps.append(fp)
                             a_copy = dict(a)
-                            a_copy['matched_keyword'] = _extract_matched_terms(" ".join(kws), title) or topic.name
+                            a_copy['matched_keyword'] = _extract_matched_terms(kws, title, a.get("content", ""))
+                            a_copy['origin'] = 'gn'
+                            # GN 僅緊急模式：預先評估嚴重度，非緊急文章不進雷達（仍存入主題頁）
+                            if _gn_critical_only:
+                                _pre_sev = _assess_severity_single(a_copy, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+                                if _pre_sev != "critical":
+                                    seen_urls.discard(url)
+                                    seen_titles.discard(title)
+                                    seen_content_fps.pop()
+                                    continue
                             new_articles.append(a_copy)
                             logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
 
@@ -414,9 +601,42 @@ async def _radar_scan_inner(force: bool = False):
             logger.info("Radar scan: no new articles found")
             return
 
+        # 2.5 財經相關性篩選（可選，預設關閉）
+        if _fin_filter_enabled:
+            from backend.services.finance_filter import compute_finance_relevance
+            _before_filter = len(new_articles)
+            filtered = []
+            for _a in new_articles:
+                _score = compute_finance_relevance(
+                    _a.get("title", ""), _a.get("content", "")
+                )
+                _a["finance_relevance"] = _score
+                # 全文讀取來源：跳過篩選（已選擇信任該來源所有文章），但分數仍保留
+                if _a.get("fetch_all_source"):
+                    filtered.append(_a)
+                elif _score >= _fin_threshold:
+                    filtered.append(_a)
+                else:
+                    _flog(f"[FILTER] 排除低相關文章 ({_score:.2f}): {_a.get('title','')[:60]}")
+            new_articles = filtered
+            _flog(f"[FILTER] 財經篩選：{_before_filter} → {len(new_articles)} 篇（閾值 {_fin_threshold}）")
+            if not new_articles:
+                _flog("[FILTER] 所有文章被篩除，退出掃描")
+                return
+        else:
+            # 篩選關閉時仍計算相關性分數（供四維評分使用），但不過濾
+            from backend.services.finance_filter import compute_finance_relevance
+            for _a in new_articles:
+                if "finance_relevance" not in _a:
+                    _a["finance_relevance"] = compute_finance_relevance(
+                        _a.get("title", ""), _a.get("content", "")
+                    )
+
         # 3. Save new articles to Article DB（用 SAVEPOINT 逐筆寫入，遇重複跳過）
+        _now_for_scores = datetime.utcnow()
         for data in new_articles:
             try:
+                _scores = _compute_article_scores(data, seen_content_fps, _now_for_scores)
                 with db.begin_nested():
                     db.add(Article(
                         title=data.get("title", "").strip(),
@@ -425,6 +645,11 @@ async def _radar_scan_inner(force: bool = False):
                         source_url=data.get("source_url", ""),
                         published_at=_parse_datetime(data.get("published_at")),
                         category=data.get("category", "radar"),
+                        composite_score=_scores["composite"],
+                        finance_relevance=_scores["finance_relevance"],
+                        novelty_score=_scores["novelty"],
+                        decay_factor=_scores["decay"],
+                        intensity_score=_scores["intensity"],
                     ))
             except IntegrityError:
                 pass  # 已存在，略過
@@ -493,7 +718,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # 預先建立 article line formatter 與 source_urls（供去重合併與建立告警共用）
         def _fmt_article_line(a: dict) -> str:
-            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours)
+            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
             kw = a.get('matched_keyword', '')
             base = f"[{a.get('source', '')}] {a.get('title', '')}"
             line = f"{base} (關鍵字：{kw})" if kw else base
@@ -501,7 +726,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # Store source_urls with severity prefix so frontend can filter them
         source_urls = [
-            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours)}}}{a.get('source_url', '')}"
+            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)}}}{a.get('source_url', '')}"
             for a in new_articles if a.get("source_url")
         ]
 
@@ -519,7 +744,7 @@ async def _radar_scan_inner(force: bool = False):
             title=alert_title,
             content="\n".join(_fmt_article_line(a) for a in new_articles),
             analysis=None,
-            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours),
+            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names),
             source="Radar Scan",
             exposure_summary=exposure_summary or None,
             source_urls=json.dumps(source_urls) if source_urls else None,
@@ -586,7 +811,7 @@ async def _radar_scan_inner(force: bool = False):
             if _cfg.GOOGLE_APPS_SCRIPT_URL:
                 _urgent_rows = []
                 for _a in new_articles:
-                    _sev = _assess_severity_single(_a, _sev_crit, _sev_high, _sev_rules)
+                    _sev = _assess_severity_single(_a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
                     if _sev in ("critical", "high"):
                         _urgent_rows.append({
                             "date":    datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
@@ -774,6 +999,7 @@ async def daily_news_fetch():
                 "name": s.name,
                 "url": s.url,
                 "keywords": json.loads(s.keywords) if s.keywords else [],
+                "fetch_all": bool(getattr(s, "fetch_all", False)),
             }
             for s in sources
         ]
@@ -1160,6 +1386,62 @@ def _has_negation_before(text: str, keyword: str) -> bool:
     return False
 
 
+def _compute_article_scores(article: dict, seen_fps: list, now: datetime) -> dict:
+    """計算文章四維評分，完全本地運算，不呼叫任何 API。
+
+    回傳 dict: composite, finance_relevance, novelty, decay, intensity
+    """
+    import math as _math
+    from datetime import timezone as _tz
+
+    # 1. 時間衰減：exp(-0.1 × hours_elapsed)
+    hours = 0.0
+    pub_str = article.get("published_at")
+    if pub_str:
+        try:
+            pub = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
+            if pub.tzinfo is not None:
+                pub = pub.astimezone(_tz.utc).replace(tzinfo=None)
+            hours = max(0.0, (now - pub).total_seconds() / 3600)
+        except Exception:
+            pass
+    decay = _math.exp(-0.1 * hours)
+
+    # 2. 新奇度：1/(1+similar_count)，利用現有 fingerprint 清單
+    fp = _article_fingerprint(article.get("title", ""), article.get("content", ""))
+    similar_count = 0
+    for seen in seen_fps:
+        if seen and len(fp | seen) > 0 and len(fp & seen) / len(fp | seen) >= 0.5:
+            similar_count += 1
+    novelty = 1.0 / (1 + similar_count)
+
+    # 3. 財經相關性：若已在前一步驟計算過則直接取用
+    finance_rel = float(article.get("finance_relevance") or 0.0)
+
+    # 4. 情緒強度：複用 sentiment.py 詞彙表，不呼叫完整 analyze_sentiment()
+    from backend.services.sentiment import POSITIVE_KEYWORDS, NEGATIVE_KEYWORDS
+    text_sample = (
+        (article.get("title") or "") + " " + (article.get("content") or "")[:300]
+    ).lower()
+    pos = sum(1 for kw in POSITIVE_KEYWORDS if kw in text_sample)
+    neg = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text_sample)
+    total_sig = pos + neg
+    raw_sent = (pos - neg) / total_sig if total_sig > 0 else 0.0
+    intensity = abs(raw_sent)
+
+    # 5. 綜合分：decay × novelty × relevance × (0.5 + 0.5 × intensity)
+    #    relevance 下限 0.05（避免 0 使整體為 0，但確保非財經文章得低分）
+    composite = decay * novelty * max(finance_rel, 0.05) * (0.5 + 0.5 * intensity)
+
+    return {
+        "composite":        round(composite, 4),
+        "finance_relevance": round(finance_rel, 4),
+        "novelty":           round(novelty, 4),
+        "decay":             round(decay, 4),
+        "intensity":         round(intensity, 4),
+    }
+
+
 def _article_fingerprint(title: str, content: str) -> frozenset:
     """從標題+內文前 500 字抽取關鍵詞集合，供內容相似度比對。"""
     text = title + " " + content[:500]
@@ -1169,18 +1451,9 @@ def _article_fingerprint(title: str, content: str) -> frozenset:
 
 
 def _is_content_duplicate(fp: frozenset, seen_fps: list, threshold: float = 0.65) -> bool:
-    """若與任一已見 fingerprint 的 Jaccard 相似度 ≥ threshold，視為重複內容。"""
-    if not fp:
-        return False
-    for seen in seen_fps:
-        if not seen:
-            continue
-        union_size = len(fp | seen)
-        if union_size == 0:
-            continue
-        if len(fp & seen) / union_size >= threshold:
-            return True
-    return False
+    """若與任一已見 fingerprint 的 Jaccard 相似度 ≥ threshold，視為重複內容。
+    [暫時停用] 內容指紋去重已全面關閉，函式直接回傳 False。"""
+    return False  # 暫時停用：直接允許所有文章通過
 
 
 def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: int = 6) -> str:
@@ -1203,7 +1476,7 @@ def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: 
     return severity
 
 
-def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6) -> str:
+def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6, known_sources: frozenset = frozenset()) -> str:
     """多維風險評分模型。
 
     評估順序：
@@ -1211,7 +1484,8 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
     2. 多維評分：
        a. 關鍵字命中（critical=3.0, high=2.0）
        b. 否定語氣過濾（「不會崩盤」不觸發 critical）
-       c. × 來源可信度（Reuters/Bloomberg=1.5, 官方=1.6, 一般=1.0）
+       c. × 來源可信度（Reuters/Bloomberg=1.5, 官方=1.6, 一般=1.0；
+          GN 文章且來源不在 MonitorSource 清單中 → 0.65，更難觸發高/緊急）
        d. × 標題+內文同時命中確認（1.3x，僅標題或僅內文=1.0）
        e. × 多關鍵字加乘（每多一個命中 +0.1，上限 1.3）
        f. 映射：≥3.5→critical, ≥2.0→high, 否則→low
@@ -1258,6 +1532,11 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
 
     # 2c. 來源可信度
     source_w = _get_source_weight(source)
+    # GN 文章且 _SOURCE_WEIGHTS 無明確權重 → 檢查是否為使用者設定來源；否則懲罰 0.65
+    if source_w == 1.0 and known_sources and article.get("origin") == "gn":
+        src_lower = source.lower()
+        if not any(k in src_lower or src_lower in k for k in known_sources):
+            source_w = 0.65
 
     # 2d. 標題+內文同時命中 → 1.3x
     in_title = any(kw in title_lower for kw in ref_kws)
@@ -1280,27 +1559,33 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
     return _apply_time_decay(base_sev, article.get("published_at"), decay_hours)
 
 
-def _extract_matched_terms(query: str, title: str) -> str:
-    """Extract the specific terms from a complex boolean query that matched the article title."""
-    import re
-    title_lower = title.lower()
-    # Extract quoted phrases first
-    quoted = re.findall(r'"([^"]+)"', query)
-    # Then bare terms (skip boolean operators)
-    bare = [t for t in re.findall(r'\b([^\s"()]+)\b', query)
-            if t not in ("OR", "AND", "NOT", "") and len(t) > 1]
-    matched = [t for t in (quoted + bare) if t.lower() in title_lower]
-    if matched:
-        return " / ".join(dict.fromkeys(matched[:3]))  # dedup, max 3
-    # 無命中 → 不顯示 badge（避免顯示原始查詢字串）
-    return ""
+def _extract_matched_terms(query, title: str, content: str = "") -> str:
+    """Extract matched terms from a boolean query for display in the UI keyword badge.
+
+    query 可以是 str 或 list[str]。
+    - str：直接對該字串跑 _extract_display_kw（群組感知排序）
+    - list：逐一尋找第一個「所有 AND-groups 都命中」的關鍵字，只對那個關鍵字萃取顯示詞。
+      這樣可確保 badge 的第 1 個詞來自 Group A、第 2 個來自 Group B … 以此類推，
+      不會因為 " ".join(kws) 把多個關鍵字合併後讓 _parse_topic_groups 誤判群組數量。
+    """
+    from backend.services.rss_feed import _extract_display_kw, _parse_topic_groups
+    full_lower = title.lower() + " " + (content or "")[:400].lower()
+
+    if isinstance(query, list):
+        for kw in query:
+            groups = _parse_topic_groups(kw)
+            if all(any(term.lower() in full_lower for term in group) for group in groups):
+                return _extract_display_kw(kw, full_lower)
+        return ""
+
+    return _extract_display_kw(query, full_lower)
 
 
-def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6) -> str:
+def _assess_severity(articles: list[dict], critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6, known_sources: frozenset = frozenset()) -> str:
     """Overall severity = max of all per-article severities."""
     if not articles:
         return "low"
-    severities = [_assess_severity_single(a, critical_kws, high_kws, rules, decay_hours) for a in articles]
+    severities = [_assess_severity_single(a, critical_kws, high_kws, rules, decay_hours, known_sources) for a in articles]
     return max(severities, key=lambda s: _SEVERITY_ORDER.get(s, 0))
 
 
