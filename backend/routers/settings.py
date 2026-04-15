@@ -23,6 +23,7 @@ class SourceCreate(BaseModel):
 
 class SourceUpdate(BaseModel):
     name: str | None = None
+    type: str | None = None  # 'rss' | 'website' | 'social' | 'mops' | 'person'
     url: str | None = None
     keywords: list[str] | None = None
     is_active: bool | None = None
@@ -66,6 +67,8 @@ async def update_source(
 
     if update.name is not None:
         source.name = update.name
+    if update.type is not None:
+        source.type = update.type
     if update.url is not None:
         source.url = update.url
     if update.keywords is not None:

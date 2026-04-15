@@ -1025,6 +1025,48 @@ def _migrate_db():
         except Exception:
             pass  # 欄位已存在，略過
 
+        # ── v6: 修正來源 type，使其對應正確的爬蟲處理器 ──
+        # World Bank：舊 RSS (404) → 新 JSON API + website type（worldbank_scraper）
+        conn.execute(text(
+            "UPDATE monitor_sources SET "
+            "type='website', "
+            "url='https://search.worldbank.org/api/v2/news?format=json&rows=30&os=0', "
+            "name='World Bank', is_active=1 "
+            "WHERE (name LIKE '%World Bank%' OR name LIKE '%世界銀行%') "
+            "AND type IN ('rss','website')"
+        ))
+        # FSC 金管會：RSS 已失效 → HTML 爬蟲 + website type（fsc_scraper）
+        conn.execute(text(
+            "UPDATE monitor_sources SET "
+            "type='website', "
+            "url='https://www.fsc.gov.tw/ch/home.jsp?id=96&parentpath=0,2&mcustomize=news_list.jsp', "
+            "name='金管會新聞稿 (FSC)', is_active=1 "
+            "WHERE (name LIKE '%FSC%' OR name LIKE '%金管會%') "
+            "AND type IN ('rss','website')"
+        ))
+        # Caixin 財新：RSS 403 → HTML 爬蟲 + website type（caixin_scraper）
+        # 只更新 is_active=0 的舊 RSS 條目（caixinglobal.com/rss）
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0 "
+            "WHERE url='https://www.caixinglobal.com/rss'"
+        ))
+        # 確保 /news/ 版本存在且啟用
+        _caixin_web = conn.execute(text(
+            "SELECT id FROM monitor_sources WHERE url='https://www.caixinglobal.com/news/' LIMIT 1"
+        )).fetchone()
+        if _caixin_web:
+            conn.execute(text(
+                "UPDATE monitor_sources SET type='website', name='財新 Caixin Global', "
+                "is_active=1, fetch_all=1 WHERE id=:i"
+            ), {"i": _caixin_web[0]})
+        else:
+            conn.execute(text(
+                "INSERT INTO monitor_sources (name, type, url, keywords, is_active, fetch_all) VALUES "
+                "('財新 Caixin Global', 'website', 'https://www.caixinglobal.com/news/', "
+                "'[\"China\",\"PBOC\",\"yuan\",\"economy\",\"trade\",\"regulation\",\"GDP\",\"property\",\"debt\"]', 1, 1)"
+            ))
+        conn.commit()
+
 
 def get_db():
     """FastAPI dependency for database sessions."""
