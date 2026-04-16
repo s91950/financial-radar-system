@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.database import Alert, MarketWatchItem, SignalCondition, get_db
+from backend.database import Alert, MarketWatchItem, SignalCondition, SystemConfig, get_db
 from backend.services import market_data
 
 router = APIRouter()
@@ -381,6 +381,44 @@ def _condition_to_dict(cond: SignalCondition) -> dict:
         "message": cond.message,
         "is_active": cond.is_active,
         "priority": cond.priority,
+    }
+
+
+@router.post("/notebooklm-report")
+async def save_nlm_report(payload: dict, db: Session = Depends(get_db)):
+    """接收並儲存 NotebookLM 分析報告（由本機 notebooklm_hourly.py 推送）。"""
+    content = payload.get("content", "")
+    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
+    source_title = payload.get("source_title", "")
+
+    for key, value in [
+        ("nlm_latest_report", content),
+        ("nlm_report_generated_at", generated_at),
+        ("nlm_report_source_title", source_title),
+    ]:
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if row:
+            row.value = value
+        else:
+            db.add(SystemConfig(key=key, value=value))
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/notebooklm-report")
+async def get_nlm_report(db: Session = Depends(get_db)):
+    """取得最新 NotebookLM 分析報告。"""
+    def _val(key):
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        return row.value if row else None
+
+    content = _val("nlm_latest_report")
+    if not content:
+        return {"content": None, "generated_at": None, "source_title": None}
+    return {
+        "content": content,
+        "generated_at": _val("nlm_report_generated_at"),
+        "source_title": _val("nlm_report_source_title"),
     }
 
 

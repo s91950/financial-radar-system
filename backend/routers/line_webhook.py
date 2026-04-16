@@ -119,6 +119,47 @@ def _parse_time_range(text: str) -> timedelta | None:
 
 
 _ARTICLES_PER_MSG = 30
+_ANALYSIS_MAX_CHARS = 4800  # LINE 單訊息上限約 5000，留緩衝
+
+
+def _md_to_plain(text: str) -> str:
+    """將 Markdown 轉換為 LINE 可讀純文字（移除標記符號）。"""
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)   # 標題
+    text = re.sub(r'\*{1,3}([^*\n]+)\*{1,3}', r'\1', text)        # 粗/斜體
+    text = re.sub(r'^\|[-:| ]+\|$', '', text, flags=re.MULTILINE) # 表格分隔列
+    text = re.sub(r'^\|(.+)\|$',
+                  lambda m: '  '.join(c.strip() for c in m.group(1).split('|') if c.strip()),
+                  text, flags=re.MULTILINE)                        # 表格內容
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)          # 引用
+    text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)         # 分隔線
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def _build_analysis_reply(content: str | None, generated_at: str | None) -> list[str]:
+    """格式化 NLM 分析報告為 LINE 訊息（最多 5 則）。"""
+    if not content:
+        return ["目前尚無分析報告，請稍後再試或先執行 notebooklm_hourly.py。"]
+
+    time_str = ""
+    if generated_at:
+        try:
+            dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            time_str = (dt + timedelta(hours=_TZ_HOURS)).strftime("%m/%d %H:%M")
+        except Exception:
+            time_str = generated_at[:16]
+
+    header = f"📊 金融風險分析報告 {time_str}\n{'─' * 22}\n\n"
+    plain = _md_to_plain(content)
+
+    messages: list[str] = []
+    first = header + plain[:_ANALYSIS_MAX_CHARS - len(header)]
+    messages.append(first)
+    remaining = plain[_ANALYSIS_MAX_CHARS - len(header):]
+    while remaining and len(messages) < 5:
+        messages.append(remaining[:_ANALYSIS_MAX_CHARS])
+        remaining = remaining[_ANALYSIS_MAX_CHARS:]
+    return messages
 
 
 def _build_news_reply(alerts: list, since: datetime | None, label: str | None = None) -> list[str]:
@@ -208,6 +249,7 @@ async def line_webhook(request: Request):
     """接收 LINE Webhook 事件並用 Reply API 回覆（免費無月額限制）。
 
     指令：
+      分析        → 最新 NotebookLM 分析報告
       通知        → 未讀緊急新聞
       通知 + 時間  → 指定時間範圍新聞
       yt/YT       → 未讀 YouTube 影片
@@ -240,17 +282,28 @@ async def line_webhook(request: Request):
         if not user_text:
             continue
 
-        # 判斷模式：yt 開頭 or 包含「通知」
+        # 判斷模式：yt 開頭 / 分析 / 通知
         is_yt = user_text[:2].lower() == "yt"
-        is_news = not is_yt and "通知" in user_text
+        is_analysis = not is_yt and "分析" in user_text
+        is_news = not is_yt and not is_analysis and "通知" in user_text
 
-        if not is_yt and not is_news:
-            # 不認識的指令，不回應
+        if not is_yt and not is_analysis and not is_news:
             continue
 
         db = SessionLocal()
         try:
-            if is_yt:
+            if is_analysis:
+                # ── 分析報告模式 ──
+                def _cfg(key):
+                    row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+                    return row.value if row else None
+
+                reply_text = _build_analysis_reply(
+                    _cfg("nlm_latest_report"),
+                    _cfg("nlm_report_generated_at"),
+                )
+
+            elif is_yt:
                 # ── YouTube 模式 ──
                 remainder = user_text[2:].strip()  # 去掉 "yt" 前綴
                 time_range = _parse_time_range(remainder)
@@ -282,7 +335,7 @@ async def line_webhook(request: Request):
                     reply_text = _build_yt_reply(videos, since)
                     _set_config(db, "line_last_yt_reply_at", datetime.utcnow())
 
-            else:
+            else:  # is_news
                 # ── 新聞通知模式 ──
                 time_range = _parse_time_range(user_text)
 
