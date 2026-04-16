@@ -212,6 +212,9 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `finance_filter_enabled` | `"true"` to drop articles below relevance threshold (default `"false"`) |
 | `finance_relevance_threshold` | Min finance relevance score to keep article (default `"0.15"`) |
 | `gn_critical_only` | `"true"` to pre-filter Google News results to critical severity only; RSS articles unaffected (default `"false"`) |
+| `nlm_latest_report` | Full Markdown text of the latest NotebookLM analysis report (written by `notebooklm_hourly.py` via `POST /api/radar/notebooklm-report`) |
+| `nlm_report_generated_at` | ISO timestamp of when the NLM report was generated |
+| `nlm_report_source_title` | Source title string used when the report was created in NotebookLM |
 
 ### LINE Webhook Command System (`routers/line_webhook.py`)
 
@@ -219,13 +222,14 @@ Bot only responds to specific commands — all other messages are silently ignor
 
 | Input pattern | Response |
 |---------------|----------|
+| `分析` / any text containing `分析` | Latest NotebookLM analysis report from `SystemConfig["nlm_latest_report"]` |
 | `通知` | Unread critical news alerts since last query (updates `line_last_reply_at`) |
 | `通知1天` / `通知今日` / `通知3小時` | Critical news from that time range |
 | `yt` / `YT` / `yt通知` | Unread YouTube videos since last query (updates `line_last_yt_reply_at`) |
 | `yt1天` / `yt今日` / `yt3小時` | YouTube videos from that time range |
 | anything else | no reply |
 
-Detection: `is_yt = user_text[:2].lower() == "yt"`, `is_news = not is_yt and "通知" in user_text`.
+Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_news = not is_yt and not is_analysis and "通知" in user_text`. The `分析` command takes priority over `通知` so "分析通知" triggers analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each.
 
 ### Database (SQLite)
 
@@ -273,7 +277,7 @@ Copy `.env.example` to `.env`. Key variables:
 
 | Prefix | Router | Purpose |
 |--------|--------|---------|
-| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions |
+| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. `POST /notebooklm-report` receives NLM report from local script and stores in SystemConfig; `GET /notebooklm-report` retrieves latest report. |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
 | `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. `POST /fetch` supports `source_type`: `"sources_only"` (RSS + website sources, default) or `"gn_only"` (Google News). When no query, uses radar_topics + active Topic keywords. Query strings are split via `_split_query_terms()` (spaces + ASCII/CJK boundary) for OR matching. Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. |
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
@@ -289,8 +293,22 @@ Copy `.env.example` to `.env`. Key variables:
 
 Runs on the **local Windows machine** via Task Scheduler (not on the VM). Requires `pip install notebooklm-py requests` and `notebooklm login` (browser-based auth, saves to `~/.notebooklm/storage_state.json`; re-run when auth expires).
 
-**Flow**: fetch alerts from VM API → filter by time window + severity → build Markdown → `await client.sources.add_text(NOTEBOOK_ID, ...)` → `await client.chat.ask(NOTEBOOK_ID, question)` → save result to `scripts/nlm_reports/YYYYMMDD_HHMM.txt`.
+**Flow**:
+1. Fetch alerts from VM API → filter by time window + per-article severity (not alert-level severity)
+2. Resolve Google News redirect URLs via `requests.head(allow_redirects=True)` before adding
+3. `await client.sources.add_url(NOTEBOOK_ID, url, wait=False)` for each article URL (up to 20)
+4. `await client.sources.add_text(NOTEBOOK_ID, summary_md, wait=True)` for alert overview
+5. `await client.artifacts.generate_report(NOTEBOOK_ID, report_format=ReportFormat.CUSTOM, language="zh-TW", custom_prompt=...)` — uses NotebookLM's built-in report generation, not chat Q&A
+6. `await client.artifacts.wait_for_completion(NOTEBOOK_ID, task_id, timeout=300)`
+7. `await client.artifacts.download_report(NOTEBOOK_ID, output_path, artifact_id)` → saves to `scripts/nlm_reports/YYYYMMDD_HHMM.md`
+8. `POST {API_BASE_URL}/api/radar/notebooklm-report` → pushes report to VM so LINE bot can serve it
 
-Config in `scripts/.env.local` (copy from `scripts/.env.local.example`): `API_BASE_URL`, `NOTEBOOK_ID`, `HOURS_BACK`, `MIN_SEVERITY`, `RESULT_PUSH_LINE`.
+Config in `scripts/.env.local` (copy from `scripts/.env.local.example`): `API_BASE_URL=http://34.23.154.194` (VM IP, no port — nginx handles proxy), `NOTEBOOK_ID`, `HOURS_BACK`, `MIN_SEVERITY`, `RESULT_PUSH_LINE`.
 
-**notebooklm-py 0.3.4 API**: `async with await NotebookLMClient.from_storage() as client:` — note the double `await`. Sub-clients: `client.sources` (`add_text`, `add_url`, `add_file`), `client.chat` (`ask` → returns `AskResult` with `.answer`), `client.notebooks` (`list`, `create`, `get`).
+**notebooklm-py 0.3.4 API**: `async with await NotebookLMClient.from_storage() as client:` — note the double `await`. Sub-clients:
+- `client.sources` — `add_text`, `add_url(wait=False for async)`, `add_file`
+- `client.artifacts` — `generate_report(report_format, language, custom_prompt)`, `wait_for_completion(notebook_id, task_id, timeout)`, `download_report(notebook_id, output_path, artifact_id)`. `ReportFormat` values: `BRIEFING_DOC`, `STUDY_GUIDE`, `BLOG_POST`, `CUSTOM`.
+- `client.chat` — `ask` → `AskResult.answer` (use for Q&A, not for structured reports)
+- `client.notebooks` — `list`, `create`, `get`
+
+**Important**: `Alert.source_urls` is returned as a Python `list` by the FastAPI endpoint (already deserialized), not a JSON string — do not call `json.loads()` on it again. `_parse_alert_articles()` handles both formats.
