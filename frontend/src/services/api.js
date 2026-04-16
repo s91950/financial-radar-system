@@ -59,6 +59,7 @@ export const settingsAPI = {
   createSource: (data) => api.post('/settings/sources', data),
   updateSource: (id, data) => api.put(`/settings/sources/${id}`, data),
   deleteSource: (id) => api.delete(`/settings/sources/${id}`),
+  reorderSources: (order) => api.put('/settings/sources/reorder', order),
   getNotificationSettings: () => api.get('/settings/notifications'),
   updateNotification: (channel, data) => api.put(`/settings/notifications/${channel}`, data),
   testNotification: (channel) => api.post(`/settings/notifications/test/${channel}`),

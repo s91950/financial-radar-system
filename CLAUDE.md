@@ -108,7 +108,12 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` (prevents verbose RSS feed titles like "經濟日報：不僅新聞速度 更有脈絡深度" or Google News query strings from appearing in UI). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied.
 - **`scheduler/jobs.py`** — Four async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily 8:00), `daily_research_fetch` (daily 10:00).
 - **`database.py`** — SQLAlchemy ORM models + `_migrate_db()` for idempotent schema migrations + `_seed_defaults()` for initial data. Seeds only run when tables are empty.
-- **`scripts/`** — Auxiliary tools: `gas_digest.gs` (Google Apps Script digest), `perplexity_digest.py` (Perplexity API integration), `notebooklm_hourly.py` (local Windows Task Scheduler job — pulls critical alerts from API, imports to NotebookLM, saves analysis to `scripts/nlm_reports/`). Not part of the main app runtime.
+- **`scripts/`** — Auxiliary tools (none are part of the main app runtime):
+  - `gas_digest.gs` — Google Apps Script digest
+  - `perplexity_digest.py` — Perplexity API integration
+  - `notebooklm_hourly.py` — local Windows Task Scheduler job: pulls critical alerts from API, imports to NotebookLM, saves analysis to `scripts/nlm_reports/`
+  - `sync_vm_settings.py` — reads local SQLite DB and pushes all settings (system_config, monitor_sources, topics) to the production VM via REST API. Run: `python scripts/sync_vm_settings.py http://<VM_IP>`. Uses URL alias map to handle sources that changed URLs between local and VM.
+  - `check_sources_health.py` — async health check for all monitor sources. Dispatches to the same scraper logic as the backend (rss, cnyes, worldbank, fsc, caixin, mops). Run: `python scripts/check_sources_health.py [http://<VM_IP>] [--active-only] [-v]`. Requires `pip install httpx feedparser beautifulsoup4`.
 
 ### Key Design Decisions
 
@@ -232,7 +237,9 @@ Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `
 
 **Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:7d` RSS as proxy. 商周 (`businessweekly.com.tw`) also blocks most pages — uses Google News proxy. UDN financial RSS moved from `udn.com/rssfeed` (broken, returns empty entries) to `money.udn.com/rssfeed`.
 
-`MonitorSource.fetch_all` — boolean (default `False`). When `True`, skips keyword filtering so all articles from the source enter the radar; keyword badges are still annotated but only when the full boolean condition matches. Added via `_migrate_db()` `ALTER TABLE`.
+`MonitorSource.fetch_all` — boolean (default `False`). When `True`, skips keyword filtering so all articles from the source enter the radar; keyword badges are still annotated but only when the full boolean condition matches. Applies to **all source types** including `mops`. Added via `_migrate_db()` `ALTER TABLE`.
+
+`MonitorSource.sort_order` — integer (default `0`). User-controlled display order in SettingsPage; lower = earlier. Initialized from `id` order on first migration. Updated via `PUT /api/settings/sources/reorder` (list of IDs in desired order).
 
 `TopicArticle.add_source`: `"radar"` (added by scheduler) or `"manual"` (added by user search).
 
@@ -245,6 +252,8 @@ Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `
 - **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts.
 - **Styling:** Tailwind CSS dark theme, custom classes `card`, `card-hover`, `btn-primary`, `btn-secondary`, `btn-danger`, `input` defined in `index.css`.
 - **Severity display** (`NewsDBPage`): `assessSeverity(title, content)` runs client-side with the same keyword lists as the backend. `SeverityBadge` renders text pills (緊急/高/低). Not a server field — computed on render.
+- **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle. Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category.
+- **Routing constraint**: `PUT /api/settings/sources/reorder` must be declared **before** `PUT /api/settings/sources/{source_id}` in `settings.py` or FastAPI will match `"reorder"` as a source ID.
 
 ## Configuration
 
@@ -271,7 +280,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
 | `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
-| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all` field), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle. `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to cnyes/worldbank/fsc/caixin scrapers via same `is_*_url()` routing), and `rss`/`social`. |
+| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to cnyes/worldbank/fsc/caixin scrapers via same `is_*_url()` routing), and `rss`/`social`. |
 | `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
 | `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |
 | `/ws` | `main.py` | WebSocket for real-time broadcasts |

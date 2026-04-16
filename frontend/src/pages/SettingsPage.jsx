@@ -272,6 +272,18 @@ function NewGroupedBuilder({ onAdd, onClose }) {
   )
 }
 
+// 關鍵字分類顏色系統
+const CAT_COLORS = [
+  { dot: 'bg-sky-400',     text: 'text-sky-400',     bg: 'bg-sky-500/15',     border: 'border-sky-500/30' },
+  { dot: 'bg-violet-400',  text: 'text-violet-400',  bg: 'bg-violet-500/15',  border: 'border-violet-500/30' },
+  { dot: 'bg-emerald-400', text: 'text-emerald-400', bg: 'bg-emerald-500/15', border: 'border-emerald-500/30' },
+  { dot: 'bg-amber-400',   text: 'text-amber-400',   bg: 'bg-amber-500/15',   border: 'border-amber-500/30' },
+  { dot: 'bg-rose-400',    text: 'text-rose-400',    bg: 'bg-rose-500/15',    border: 'border-rose-500/30' },
+  { dot: 'bg-cyan-400',    text: 'text-cyan-400',    bg: 'bg-cyan-500/15',    border: 'border-cyan-500/30' },
+  { dot: 'bg-orange-400',  text: 'text-orange-400',  bg: 'bg-orange-500/15',  border: 'border-orange-500/30' },
+  { dot: 'bg-fuchsia-400', text: 'text-fuchsia-400', bg: 'bg-fuchsia-500/15', border: 'border-fuchsia-500/30' },
+]
+
 function SeverityRuleCard({ rule, onSave, onRemove, canMoveUp, canMoveDown, onMoveUp, onMoveDown }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => parseCondition(rule.condition))
@@ -472,6 +484,13 @@ export default function SettingsPage() {
   const [savingRssPriority, setSavingRssPriority] = useState(false)
   // Google News 僅緊急模式
   const [gnCriticalOnly, setGnCriticalOnly] = useState(true)
+  // 拖曳排序
+  const [dragSourceId, setDragSourceId] = useState(null)
+  const [dragOverId, setDragOverId] = useState(null)
+  // 來源名稱 inline 編輯
+  const [editingSourceName, setEditingSourceName] = useState({})  // { [id]: string }
+  // 關鍵字分類 picker
+  const [activeKwPicker, setActiveKwPicker] = useState(null)  // topic string
 
   const toggleSourceExpand = (id) => {
     setExpandedSources(prev => {
@@ -686,6 +705,47 @@ export default function SettingsPage() {
     }
   }
 
+  const handleRenameSave = async (id, name) => {
+    const trimmed = (name || '').trim()
+    setEditingSourceName(p => { const n = { ...p }; delete n[id]; return n })
+    if (!trimmed) return
+    try {
+      await settingsAPI.updateSource(id, { name: trimmed })
+      setSources(prev => prev.map(s => s.id === id ? { ...s, name: trimmed } : s))
+    } catch { toast.error('更名失敗') }
+  }
+
+  const handleDragStart = (e, sourceId) => {
+    setDragSourceId(sourceId)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+  const handleDragOver = (e, targetId) => {
+    e.preventDefault()
+    if (targetId !== dragSourceId) setDragOverId(targetId)
+  }
+  const handleDrop = async (e, targetId) => {
+    e.preventDefault()
+    const fromId = dragSourceId
+    setDragSourceId(null)
+    setDragOverId(null)
+    if (!fromId || fromId === targetId) return
+    const tabSources = sources.filter(s => sourceTab === 'research' ? s.type === 'research' : s.type !== 'research')
+    const fromIdx = tabSources.findIndex(s => s.id === fromId)
+    const toIdx = tabSources.findIndex(s => s.id === targetId)
+    if (fromIdx < 0 || toIdx < 0) return
+    const reordered = [...tabSources]
+    const [moved] = reordered.splice(fromIdx, 1)
+    reordered.splice(toIdx, 0, moved)
+    const orderIds = reordered.map(s => s.id)
+    setSources(prev => {
+      const others = prev.filter(s => sourceTab === 'research' ? s.type !== 'research' : s.type === 'research')
+      return sourceTab === 'research' ? [...others, ...reordered] : [...reordered, ...others]
+    })
+    try {
+      await settingsAPI.reorderSources(orderIds)
+    } catch { toast.error('排序儲存失敗'); loadSettings() }
+  }
+
   const handleSaveDiscordWebhook = async () => {
     setSavingDiscord(true)
     try {
@@ -795,6 +855,13 @@ export default function SettingsPage() {
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
   }, [activeTopicPicker])
+
+  useEffect(() => {
+    if (!activeKwPicker) return
+    const handler = () => setActiveKwPicker(null)
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [activeKwPicker])
 
   const typeLabels = { rss: 'RSS', website: '網頁', social: '社群', newsapi: 'NewsAPI' }
   const channelLabels = { web: '網頁通知', line: 'LINE', email: 'Email', discord: 'Discord' }
@@ -922,13 +989,27 @@ export default function SettingsPage() {
           {sources.filter(s => sourceTab === 'research' ? s.type === 'research' : s.type !== 'research').map(source => {
             const isExpanded = expandedSources.has(source.id)
             return (
-              <div key={source.id} className="rounded-lg bg-dark-900 overflow-hidden">
-                {/* Header row — always visible, click to expand */}
-                <div
-                  className="flex items-center justify-between p-3 cursor-pointer hover:bg-dark-800/50 transition-colors"
-                  onClick={() => toggleSourceExpand(source.id)}
-                >
-                  <div className="flex items-center gap-3">
+              <div
+                key={source.id}
+                className={`rounded-lg bg-dark-900 overflow-hidden transition-all ${dragOverId === source.id ? 'ring-2 ring-primary-500/40' : ''}`}
+                onDragOver={(e) => handleDragOver(e, source.id)}
+                onDrop={(e) => handleDrop(e, source.id)}
+              >
+                {/* Header row */}
+                <div className="flex items-center p-3 hover:bg-dark-800/50 transition-colors gap-2">
+                  {/* Drag handle */}
+                  <div
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, source.id)}
+                    onDragEnd={() => { setDragSourceId(null); setDragOverId(null) }}
+                    className="cursor-grab active:cursor-grabbing text-dark-700 hover:text-dark-500 transition-colors select-none shrink-0 px-0.5 text-base leading-none"
+                    title="拖曳排序"
+                  >⠿</div>
+                  {/* Expand clickable area */}
+                  <div
+                    className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
+                    onClick={() => toggleSourceExpand(source.id)}
+                  >
                     <button
                       onClick={(e) => { e.stopPropagation(); handleToggleSource(source) }}
                       className={`w-10 h-6 rounded-full transition-colors relative shrink-0 ${
@@ -939,21 +1020,44 @@ export default function SettingsPage() {
                         source.is_active ? 'translate-x-5' : 'translate-x-1'
                       }`} />
                     </button>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-sm">{source.name}</span>
-                      <span className="badge bg-dark-700 text-dark-300">{typeLabels[source.type] || source.type}</span>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      {/* Inline name edit */}
+                      {editingSourceName[source.id] !== undefined ? (
+                        <input
+                          value={editingSourceName[source.id]}
+                          onChange={e => setEditingSourceName(p => ({ ...p, [source.id]: e.target.value }))}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') handleRenameSave(source.id, editingSourceName[source.id])
+                            if (e.key === 'Escape') setEditingSourceName(p => { const n = { ...p }; delete n[source.id]; return n })
+                          }}
+                          onBlur={() => handleRenameSave(source.id, editingSourceName[source.id])}
+                          onClick={e => e.stopPropagation()}
+                          className="input text-sm py-0.5 px-2 w-36 shrink-0"
+                          autoFocus
+                        />
+                      ) : (
+                        <div className="flex items-center gap-0.5 group/name shrink-0" onClick={e => e.stopPropagation()}>
+                          <span className="font-medium text-sm">{source.name}</span>
+                          <button
+                            onClick={e => { e.stopPropagation(); setEditingSourceName(p => ({ ...p, [source.id]: source.name })) }}
+                            className="text-dark-700 hover:text-dark-400 text-xs opacity-0 group-hover/name:opacity-100 transition-opacity px-0.5"
+                            title="重新命名"
+                          >✎</button>
+                        </div>
+                      )}
+                      <span className="badge bg-dark-700 text-dark-300 shrink-0">{typeLabels[source.type] || source.type}</span>
                       {source.fetch_all && (
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30" title="全文讀取：所有文章皆納入，關鍵字僅用於標記與風險評估">全文讀取</span>
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30 shrink-0" title="全文讀取：所有文章皆納入，關鍵字僅用於標記與風險評估">全文讀取</span>
                       )}
                       {source.keywords && source.keywords.length > 0
                         ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
-                        : source.type !== 'mops' && !source.fetch_all && (
+                        : !source.fetch_all && (
                           <span className="text-xs text-yellow-600/70" title="未設定關鍵字，將以雷達主題關鍵字篩選">使用雷達主題篩選</span>
                         )
                       }
                     </div>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeleteSource(source.id) }}
                       className="p-1.5 hover:bg-red-500/10 rounded text-dark-500 hover:text-red-400 transition-colors"
@@ -964,7 +1068,8 @@ export default function SettingsPage() {
                       </svg>
                     </button>
                     <svg
-                      className={`w-4 h-4 text-dark-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                      className={`w-4 h-4 text-dark-500 transition-transform cursor-pointer ${isExpanded ? 'rotate-180' : ''}`}
+                      onClick={() => toggleSourceExpand(source.id)}
                       fill="none" viewBox="0 0 24 24" stroke="currentColor"
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -1062,8 +1167,7 @@ export default function SettingsPage() {
                       </div>
                     )}
                     {/* 全文讀取 toggle */}
-                    {source.type !== 'mops' && (
-                      <div className="flex items-center justify-between py-1">
+                    <div className="flex items-center justify-between py-1">
                         <div>
                           <span className="text-xs text-dark-300 font-medium">全文讀取</span>
                           <span className="text-xs text-dark-500 ml-2">
@@ -1088,8 +1192,7 @@ export default function SettingsPage() {
                             source.fetch_all ? 'translate-x-5' : 'translate-x-1'
                           }`} />
                         </button>
-                      </div>
-                    )}
+                    </div>
                     {/* 連線測試按鈕（RSS / social / website / mops 均支援）*/}
                     {(source.type === 'rss' || source.type === 'social' || source.type === 'website' || source.type === 'mops') && (
                       <div>
@@ -1300,108 +1403,212 @@ export default function SettingsPage() {
         })()}
 
         {/* Topic Category Manager */}
-        <div className="border-t border-dark-700 pt-3">
-          <button
-            type="button"
-            onClick={() => setShowCatManager(v => !v)}
-            className="flex items-center gap-1.5 text-sm text-dark-400 hover:text-white transition-colors"
-          >
-            <svg className={`w-3.5 h-3.5 transition-transform ${showCatManager ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            主題分類標籤
-            <span className="text-xs text-dark-600">（選用，僅作整理用途）</span>
-            {Object.keys(topicCategories).length > 0 && (
-              <span className="text-xs bg-dark-700 text-dark-400 px-1.5 rounded-full">{Object.keys(topicCategories).length} 組</span>
-            )}
-          </button>
+        {(() => {
+          const catNames = Object.keys(topicCategories)
+          const kwCatMap = {}
+          for (const [catName, kws] of Object.entries(topicCategories)) {
+            for (const kw of kws) kwCatMap[kw] = catName
+          }
+          const catColorOf = (catName) => CAT_COLORS[catNames.indexOf(catName) % CAT_COLORS.length]
+          const allTopics = [...radarTopics, ...radarTopicsUs]
 
-          {showCatManager && (
-            <div className="mt-3 space-y-3">
-              {/* Existing categories */}
-              {Object.entries(topicCategories).map(([catName, keywords]) => (
-                <div key={catName} className="p-3 rounded-lg bg-dark-900 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-dark-200">{catName}</span>
-                    <button
-                      onClick={() => setTopicCategories(p => { const n = { ...p }; delete n[catName]; return n })}
-                      className="text-dark-600 hover:text-red-400 text-sm px-1"
-                    >刪除分類</button>
+          const assignKwToCategory = (kw, catName) => {
+            setTopicCategories(prev => {
+              const updated = {}
+              for (const [n, kws] of Object.entries(prev)) {
+                updated[n] = kws.filter(k => k !== kw)
+              }
+              if (catName && updated[catName] !== undefined) {
+                updated[catName] = [...updated[catName], kw]
+              }
+              return updated
+            })
+            setActiveKwPicker(null)
+          }
+
+          return (
+            <div className="border-t border-dark-700 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowCatManager(v => !v)}
+                className="flex items-center gap-1.5 text-sm text-dark-400 hover:text-white transition-colors"
+              >
+                <svg className={`w-3.5 h-3.5 transition-transform ${showCatManager ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                主題分類標籤
+                <span className="text-xs text-dark-600">（選用，僅作整理用途）</span>
+                {catNames.length > 0 && (
+                  <span className="text-xs bg-dark-700 text-dark-400 px-1.5 rounded-full">{catNames.length} 組</span>
+                )}
+              </button>
+
+              {showCatManager && (
+                <div className="mt-3 space-y-4">
+                  {/* 分類圖例 */}
+                  {catNames.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {catNames.map(catName => {
+                        const c = catColorOf(catName)
+                        return (
+                          <span key={catName} className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full ${c.bg} ${c.text} border ${c.border}`}>
+                            <span className={`w-2 h-2 rounded-full ${c.dot} shrink-0`} />
+                            {catName}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* 點擊關鍵字快速分類 */}
+                  <div className="p-3 rounded-lg bg-dark-900">
+                    <div className="text-xs text-dark-500 mb-2">點擊關鍵字以指定分類</div>
+                    {allTopics.length === 0 && <span className="text-xs text-dark-600">尚無雷達關鍵字</span>}
+                    <div className="flex flex-wrap gap-1.5">
+                      {allTopics.filter(t => !t.includes('(')).map(topic => {
+                        const assignedCat = kwCatMap[topic]
+                        const c = assignedCat ? catColorOf(assignedCat) : null
+                        const pickerOpen = activeKwPicker === topic
+                        return (
+                          <div key={topic} className="relative">
+                            {pickerOpen && (
+                              <div
+                                className="absolute bottom-full left-0 mb-1.5 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex flex-col gap-0.5 min-w-[7rem]"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                <button
+                                  onClick={() => assignKwToCategory(topic, null)}
+                                  className={`text-xs px-2 py-0.5 rounded text-left hover:bg-dark-700 transition-colors ${!assignedCat ? 'text-dark-200 font-medium' : 'text-dark-500'}`}
+                                >無分類</button>
+                                {catNames.map(catName => {
+                                  const cc = catColorOf(catName)
+                                  return (
+                                    <button
+                                      key={catName}
+                                      onClick={() => assignKwToCategory(topic, catName)}
+                                      className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded text-left hover:bg-dark-700 transition-colors ${assignedCat === catName ? `${cc.text} font-medium` : 'text-dark-400'}`}
+                                    >
+                                      <span className={`w-2 h-2 rounded-full ${cc.dot} shrink-0`} />
+                                      {catName}
+                                    </button>
+                                  )
+                                })}
+                                {catNames.length === 0 && <span className="text-xs text-dark-600 px-2">先建立分類</span>}
+                              </div>
+                            )}
+                            <button
+                              onClick={e => { e.stopPropagation(); setActiveKwPicker(pickerOpen ? null : topic) }}
+                              className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                c
+                                  ? `${c.bg} ${c.text} ${c.border}`
+                                  : 'bg-dark-700 text-dark-300 border-dark-600 hover:border-dark-500'
+                              }`}
+                            >
+                              {c && <span className={`w-1.5 h-1.5 rounded-full ${c.dot} shrink-0`} />}
+                              {topic}
+                            </button>
+                          </div>
+                        )
+                      })}
+                      {allTopics.filter(t => t.includes('(')).length > 0 && (
+                        <span className="text-xs text-dark-600 self-center">（布林關鍵字不支援分類）</span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-1.5 min-h-6">
-                    {keywords.map(kw => (
-                      <span key={kw} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-dark-700 text-dark-300 border border-dark-600">
-                        {kw}
-                        <button
-                          onClick={() => setTopicCategories(p => ({ ...p, [catName]: p[catName].filter(k => k !== kw) }))}
-                          className="hover:text-red-400 ml-0.5 text-dark-500">×</button>
-                      </span>
-                    ))}
-                    {keywords.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字</span>}
-                  </div>
+
+                  {/* 分類管理 */}
+                  {Object.entries(topicCategories).map(([catName, keywords]) => {
+                    const c = catColorOf(catName)
+                    return (
+                      <div key={catName} className="p-3 rounded-lg bg-dark-900 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2.5 h-2.5 rounded-full ${c.dot}`} />
+                            <span className={`text-sm font-medium ${c.text}`}>{catName}</span>
+                            <span className="text-xs text-dark-600">{keywords.length} 個</span>
+                          </div>
+                          <button
+                            onClick={() => setTopicCategories(p => { const n = { ...p }; delete n[catName]; return n })}
+                            className="text-dark-600 hover:text-red-400 text-xs px-1 transition-colors"
+                          >刪除</button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 min-h-6">
+                          {keywords.map(kw => (
+                            <span key={kw} className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${c.bg} ${c.text} border ${c.border}`}>
+                              {kw}
+                              <button
+                                onClick={() => setTopicCategories(p => ({ ...p, [catName]: p[catName].filter(k => k !== kw) }))}
+                                className="hover:text-red-400 ml-0.5 opacity-60 hover:opacity-100">×</button>
+                            </span>
+                          ))}
+                          {keywords.length === 0 && <span className="text-xs text-dark-600">尚無關鍵字（由上方點擊分配）</span>}
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={newCatKws[catName] || ''}
+                            onChange={e => setNewCatKws(p => ({ ...p, [catName]: e.target.value }))}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && newCatKws[catName]?.trim()) {
+                                const kw = newCatKws[catName].trim()
+                                setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
+                                setNewCatKws(p => ({ ...p, [catName]: '' }))
+                              }
+                            }}
+                            placeholder="手動輸入關鍵字"
+                            className="input text-xs py-1 flex-1"
+                          />
+                          <button
+                            onClick={() => {
+                              const kw = (newCatKws[catName] || '').trim()
+                              if (!kw) return
+                              setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
+                              setNewCatKws(p => ({ ...p, [catName]: '' }))
+                            }}
+                            className="btn-secondary text-xs px-3 py-1"
+                          >+</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+
+                  {/* 新增分類 */}
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      value={newCatKws[catName] || ''}
-                      onChange={e => setNewCatKws(p => ({ ...p, [catName]: e.target.value }))}
+                      value={newCatName}
+                      onChange={e => setNewCatName(e.target.value)}
                       onKeyDown={e => {
-                        if (e.key === 'Enter' && newCatKws[catName]?.trim()) {
-                          const kw = newCatKws[catName].trim()
-                          setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
-                          setNewCatKws(p => ({ ...p, [catName]: '' }))
+                        if (e.key === 'Enter' && newCatName.trim() && !topicCategories[newCatName.trim()]) {
+                          setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
+                          setNewCatName('')
                         }
                       }}
-                      placeholder="新增關鍵字後按 Enter"
-                      className="input text-xs py-1 flex-1"
+                      placeholder="新增分類名稱（例：央行政策）"
+                      className="input text-sm flex-1"
                     />
                     <button
                       onClick={() => {
-                        const kw = (newCatKws[catName] || '').trim()
-                        if (!kw) return
-                        setTopicCategories(p => ({ ...p, [catName]: [...(p[catName] || []), kw] }))
-                        setNewCatKws(p => ({ ...p, [catName]: '' }))
+                        if (newCatName.trim() && !topicCategories[newCatName.trim()]) {
+                          setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
+                          setNewCatName('')
+                        }
                       }}
-                      className="btn-secondary text-xs px-3 py-1"
-                    >新增</button>
+                      className="btn-secondary text-sm px-3"
+                    >新增分類</button>
+                  </div>
+
+                  <div className="flex items-center gap-3 pt-1">
+                    <button onClick={handleSaveCategories} disabled={savingCats} className="btn-primary text-sm">
+                      {savingCats ? '儲存中...' : '儲存分類'}
+                    </button>
+                    <span className="text-xs text-dark-500">分類不影響雷達搜尋，僅作整理標記用</span>
                   </div>
                 </div>
-              ))}
-
-              {/* Add new category */}
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newCatName}
-                  onChange={e => setNewCatName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && newCatName.trim() && !topicCategories[newCatName.trim()]) {
-                      setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
-                      setNewCatName('')
-                    }
-                  }}
-                  placeholder="新增分類名稱（例：央行政策）"
-                  className="input text-sm flex-1"
-                />
-                <button
-                  onClick={() => {
-                    if (newCatName.trim() && !topicCategories[newCatName.trim()]) {
-                      setTopicCategories(p => ({ ...p, [newCatName.trim()]: [] }))
-                      setNewCatName('')
-                    }
-                  }}
-                  className="btn-secondary text-sm px-3"
-                >新增分類</button>
-              </div>
-
-              <div className="flex items-center gap-3 pt-1">
-                <button onClick={handleSaveCategories} disabled={savingCats} className="btn-primary text-sm">
-                  {savingCats ? '儲存中...' : '儲存分類'}
-                </button>
-                <span className="text-xs text-dark-500">分類不影響雷達搜尋，僅作整理標記用</span>
-              </div>
+              )}
             </div>
-          )}
-        </div>
+          )
+        })()}
 
         {/* Hours Back + Interval Settings */}
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pt-3 border-t border-dark-700">

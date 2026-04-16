@@ -344,13 +344,25 @@ async def _radar_scan_inner(force: bool = False):
         if mops_source:
             try:
                 from backend.services.mops_scraper import fetch_mops_material_news
-                from backend.services.rss_feed import _filter_by_keywords as _kw_filter
+                from backend.services.rss_feed import (
+                    _filter_by_keywords as _kw_filter,
+                    _filter_by_topic_strings as _tp_filter,
+                    _annotate_matched_terms as _ann,
+                )
                 mops_articles = await fetch_mops_material_news(hours_back=gn_hours_back)
-                # Apply source-specific keywords if configured (no global fallback for MOPS —
-                # material disclosures are inherently relevant, global topics would over-filter)
                 mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
-                if mops_kws:
+                mops_fetch_all = bool(getattr(mops_source, "fetch_all", False))
+                if mops_fetch_all:
+                    mops_articles = [
+                        {**a, "matched_keyword": _ann(a, mops_kws) if mops_kws else "", "fetch_all_source": True}
+                        for a in mops_articles
+                    ]
+                elif mops_kws:
                     mops_articles = _kw_filter(mops_articles, mops_kws)
+                elif _global_topics:
+                    mops_articles = _tp_filter(mops_articles, _global_topics)
+                else:
+                    mops_articles = []
                 for article_data in mops_articles:
                     url = article_data.get("source_url", "")
                     title = article_data.get("title", "").strip()
@@ -681,19 +693,6 @@ async def _radar_scan_inner(force: bool = False):
         # Exposure matching across all articles
         matched = match_positions_to_news(positions, new_articles) if positions else []
         exposure_summary = format_exposure_summary(matched) if matched else ""
-
-        # NER：抽取實體，補充到 exposure_summary（若持倉匹配結果為空時）
-        from backend.services.simple_ner import extract_entities, format_entities_summary
-        all_text = " ".join(
-            (a.get("title", "") + " " + a.get("content", "")[:200])
-            for a in new_articles
-        )
-        ner_entities = extract_entities(all_text, positions or [])
-        ner_summary = format_entities_summary(ner_entities)
-        if ner_summary and not exposure_summary:
-            exposure_summary = f"[NER] {ner_summary}"
-        elif ner_summary and exposure_summary:
-            exposure_summary = f"{exposure_summary}\n[NER] {ner_summary}"
 
         # Build title
         first_title = new_articles[0].get("title", "").strip()

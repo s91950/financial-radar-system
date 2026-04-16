@@ -33,8 +33,19 @@ class SourceUpdate(BaseModel):
 @router.get("/sources")
 async def get_sources(db: Session = Depends(get_db)):
     """Get all monitor sources."""
-    sources = db.query(MonitorSource).all()
+    sources = db.query(MonitorSource).order_by(MonitorSource.sort_order, MonitorSource.id).all()
     return [_source_to_dict(s) for s in sources]
+
+
+@router.put("/sources/reorder")
+async def reorder_sources(order: list[int], db: Session = Depends(get_db)):
+    """Bulk-update sort_order for all sources. `order` is a list of source IDs in desired order."""
+    for i, source_id in enumerate(order):
+        source = db.query(MonitorSource).filter(MonitorSource.id == source_id).first()
+        if source:
+            source.sort_order = i
+    db.commit()
+    return {"success": True}
 
 
 @router.post("/sources")
@@ -280,6 +291,7 @@ def _source_to_dict(source: MonitorSource) -> dict:
         "keywords": keywords,
         "is_active": source.is_active,
         "fetch_all": bool(source.fetch_all),
+        "sort_order": source.sort_order or 0,
     }
 
 

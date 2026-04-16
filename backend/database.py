@@ -119,6 +119,7 @@ class MonitorSource(Base):
     keywords = Column(Text)  # JSON array
     is_active = Column(Boolean, default=True)
     fetch_all = Column(Boolean, default=False)  # 全文讀取：跳過關鍵字過濾，但仍標記匹配關鍵字
+    sort_order = Column(Integer, default=0)     # 使用者自訂排序（越小越前）
 
 
 class NotificationSetting(Base):
@@ -746,32 +747,59 @@ def _migrate_db():
             "UPDATE monitor_sources SET is_active=0 WHERE name LIKE '%鉅亨網%'"
         ))
         # 重新啟用三個主分類，指向有效的 JSON API 端點
+        # 注意：headline URL 是 macro 後來遷移過來的最終位址
         _cnyes_api = [
             ("鉅亨網",
              "https://api.cnyes.com/media/api/v1/newslist/category/tw_stock",
              '["台股","外資","法人","加權","漲","跌","ETF","台積","聯發","鴻海","大盤","台幣"]'),
             ("鉅亨網 - 總經",
-             "https://api.cnyes.com/media/api/v1/newslist/category/macro",
+             "https://api.cnyes.com/media/api/v1/newslist/category/headline",
              '["GDP","通膨","就業","利率","總經","央行","貨幣政策"]'),
             ("鉅亨網 - 美股",
              "https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
              '["美股","道瓊","納斯達克","標普","科技股","聯準會","AI","輝達","蘋果"]'),
         ]
         for _n, _u, _k in _cnyes_api:
-            # 若已有此名稱的來源，直接更新 URL + type + 重新啟用
+            # 優先以 URL 查找（名稱可能已被使用者改動，URL 才是穩定識別鍵）
             _row = conn.execute(text(
-                "SELECT id FROM monitor_sources WHERE name=:n LIMIT 1"
-            ), {"n": _n}).fetchone()
+                "SELECT id FROM monitor_sources WHERE url=:u LIMIT 1"
+            ), {"u": _u}).fetchone()
             if _row:
                 conn.execute(text(
-                    "UPDATE monitor_sources SET url=:u, type='website', is_active=1 "
+                    "UPDATE monitor_sources SET type='website', is_active=1 "
                     "WHERE id=:i"
-                ), {"u": _u, "i": _row[0]})
+                ), {"i": _row[0]})
             else:
-                conn.execute(text(
-                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
-                    "VALUES (:n, 'website', :u, :k, 1)"
-                ), {"n": _n, "u": _u, "k": _k})
+                # URL 不存在時，再嘗試以名稱查找（首次安裝時 URL 可能尚未設定）
+                _row = conn.execute(text(
+                    "SELECT id FROM monitor_sources WHERE name=:n LIMIT 1"
+                ), {"n": _n}).fetchone()
+                if _row:
+                    conn.execute(text(
+                        "UPDATE monitor_sources SET url=:u, type='website', is_active=1 "
+                        "WHERE id=:i"
+                    ), {"u": _u, "i": _row[0]})
+                else:
+                    conn.execute(text(
+                        "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                        "VALUES (:n, 'website', :u, :k, 1)"
+                    ), {"n": _n, "u": _u, "k": _k})
+        # 清除因名稱遷移 bug 造成的鉅亨網 URL 重複條目（保留最舊的即使用者原始設定）
+        _cnyes_dedup_urls = [
+            "https://api.cnyes.com/media/api/v1/newslist/category/tw_stock",
+            "https://api.cnyes.com/media/api/v1/newslist/category/headline",
+            "https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
+            "https://api.cnyes.com/media/api/v1/newslist/category/macro",
+        ]
+        for _dup_url in _cnyes_dedup_urls:
+            _dup_rows = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url=:u ORDER BY id ASC"
+            ), {"u": _dup_url}).fetchall()
+            if len(_dup_rows) > 1:
+                for _dup in _dup_rows[1:]:  # 保留最舊的（id 最小），刪除後來插入的重複
+                    conn.execute(text(
+                        "DELETE FROM monitor_sources WHERE id=:i"
+                    ), {"i": _dup[0]})
         conn.commit()
 
         # ── 新增可靠財金來源 v2（若不存在則插入）──
@@ -1024,6 +1052,22 @@ def _migrate_db():
             conn.commit()
         except Exception:
             pass  # 欄位已存在，略過
+
+        # 新增 MonitorSource.sort_order（使用者自訂排序）
+        try:
+            conn.execute(text("ALTER TABLE monitor_sources ADD COLUMN sort_order INTEGER DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass  # 欄位已存在，略過
+        # 初始化 sort_order（依現有 id 順序，只更新 sort_order=0 的列）
+        conn.execute(text("""
+            UPDATE monitor_sources
+            SET sort_order = (
+                SELECT COUNT(*) FROM monitor_sources m2 WHERE m2.id < monitor_sources.id
+            )
+            WHERE sort_order = 0 OR sort_order IS NULL
+        """))
+        conn.commit()
 
         # ── v6: 修正來源 type，使其對應正確的爬蟲處理器 ──
         # World Bank：舊 RSS (404) → 新 JSON API + website type（worldbank_scraper）

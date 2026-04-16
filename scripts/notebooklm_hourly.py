@@ -53,11 +53,15 @@ _SEV_RANK = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 def _parse_alert_articles(alert: dict) -> list[dict]:
     """解析 Alert.content（{severity} 前綴格式）還原文章清單。"""
     lines = (alert.get("content") or "").splitlines()
-    urls_raw = []
-    try:
-        urls_raw = json.loads(alert.get("source_urls") or "[]")
-    except Exception:
-        pass
+    # source_urls 可能是 JSON 字串（本機讀 DB）或已解析的 list（API 回傳）
+    urls_raw_val = alert.get("source_urls") or "[]"
+    if isinstance(urls_raw_val, list):
+        urls_raw = urls_raw_val
+    else:
+        try:
+            urls_raw = json.loads(urls_raw_val)
+        except Exception:
+            urls_raw = []
 
     articles = []
     for i, line in enumerate(lines):
@@ -116,38 +120,140 @@ def _build_notebook_content(alerts: list[dict]) -> str:
 
 
 async def _run_notebooklm(alerts: list[dict], content_md: str, requests_mod) -> str | None:
-    """匯入 NotebookLM 並取得分析結果（async）。"""
+    """匯入 NotebookLM，使用「建立報告」功能生成分析，並下載報告。
+
+    流程：
+    1. add_url() 匯入達門檻嚴重度的文章連結（Google News URL 先解析重導向）
+    2. add_text() 附上警報概覽摘要
+    3. artifacts.generate_report() 建立自訂分析報告
+    4. wait_for_completion() 等待生成完成
+    5. download_report() 下載報告存至 nlm_reports/
+    """
     try:
         from notebooklm import NotebookLMClient
+        from notebooklm.rpc.types import ReportFormat
     except ImportError:
         print("[ERROR] 缺少 notebooklm-py 套件，請執行：pip install notebooklm-py", file=sys.stderr)
         print("        首次使用需執行：notebooklm login", file=sys.stderr)
         return None
 
+    # ── 收集達到 MIN_SEVERITY 門檻的文章 URL（逐篇判斷，非整個警報）────────
+    min_rank = _SEV_RANK.get(MIN_SEVERITY, 3)
+    article_data: list[dict] = []
+    seen_urls: set[str] = set()
+    for alert in alerts:
+        for a in _parse_alert_articles(alert):
+            if _SEV_RANK.get(a["severity"], 0) < min_rank:
+                continue
+            if a["url"] and a["url"] not in seen_urls:
+                seen_urls.add(a["url"])
+                article_data.append(a)
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 從 {len(alerts)} 則警報提取到 {len(article_data)} 個 {MIN_SEVERITY}+ 文章 URL")
+    if article_data:
+        print(f"  URL 範例：{article_data[0]['url'][:80]}")
+
     source_title = f"緊急新聞_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    MAX_URLS = 20
+
+    # 準備輸出路徑（先決定，讓 download_report 直接寫入目標位置）
+    reports_dir = os.path.join(_script_dir, "nlm_reports")
+    os.makedirs(reports_dir, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+    report_file = os.path.join(reports_dir, f"{timestamp}.md")
+
+    added_urls = 0
+    skipped: list[dict] = []
+    answer = ""
 
     try:
         async with await NotebookLMClient.from_storage() as client:
-            # ── Step 3：新增文字 source ──────────────────────────────────────
-            src = await client.sources.add_text(
-                NOTEBOOK_ID, title=source_title, content=content_md, wait=True
-            )
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 source：{source_title} (id={src.id})")
 
-            # ── Step 4：觸發問答 ─────────────────────────────────────────────
-            question = (
-                "請分析本小時最重要的金融風險事件，說明：\n"
-                "1. 事件摘要（2-3句）\n"
-                "2. 對台灣銀行業/金融市場的潛在影響\n"
-                "3. 建議關注的後續指標\n"
-                "請用繁體中文回答，格式適合在 LINE 閱讀。"
+            # ── Step A：逐一匯入文章 URL ─────────────────────────────────────
+            for a in article_data[:MAX_URLS]:
+                url = a["url"]
+                # Google News RSS 重導向 → 先解析成實際文章 URL
+                if "news.google.com" in url:
+                    try:
+                        r = requests_mod.head(url, allow_redirects=True, timeout=8,
+                                              headers={"User-Agent": "Mozilla/5.0"})
+                        url = r.url
+                    except Exception:
+                        pass
+                try:
+                    await client.sources.add_url(NOTEBOOK_ID, url=url, wait=False)
+                    added_urls += 1
+                    print(f"  [+URL] [{a['severity']}] {a['title'][:60]}")
+                except Exception as e:
+                    skipped.append(a)
+                    print(f"  [skip] {a['title'][:50]}: {e}")
+
+            # ── Step B：附上警報摘要文字 source ──────────────────────────────
+            if added_urls > 0:
+                summary_lines = [
+                    f"# 本次匯入摘要（{datetime.now().strftime('%Y/%m/%d %H:%M')}）\n",
+                    f"已匯入 {added_urls} 篇文章連結，回溯 {HOURS_BACK} 小時、嚴重度 {MIN_SEVERITY}+。\n",
+                    "## 警報列表",
+                ]
+                for alert in alerts:
+                    sev = alert.get("severity", "")
+                    summary_lines.append(f"- [{sev}] {alert.get('title', '')[:80]}")
+                    if alert.get("exposure_summary"):
+                        summary_lines.append(f"  部位暴險：{alert['exposure_summary']}")
+                if skipped:
+                    summary_lines.append(f"\n（另有 {len(skipped)} 篇 URL 無法存取略過）")
+                    for a in skipped:
+                        summary_lines.append(f"  - [{a['severity']}] {a['title']}")
+                summary_text = "\n".join(summary_lines)
+            else:
+                print("[WARNING] 所有 URL 均無法加入，改用完整文字 source")
+                summary_text = content_md
+
+            await client.sources.add_text(
+                NOTEBOOK_ID, title=source_title, content=summary_text, wait=True
             )
-            ask_result = await client.chat.ask(NOTEBOOK_ID, question)
-            answer = ask_result.answer if hasattr(ask_result, "answer") else str(ask_result)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] NotebookLM 分析完成（{len(answer)} 字）")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 {added_urls} 個 URL + 1 份摘要 source")
+
+            # ── Step C：建立報告（自訂格式，繁體中文金融分析）─────────────────
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立報告中...")
+            gen_status = await client.artifacts.generate_report(
+                NOTEBOOK_ID,
+                report_format=ReportFormat.CUSTOM,
+                language="zh-TW",
+                custom_prompt=(
+                    "請針對本時段最重要的金融風險事件撰寫簡明分析報告，內容包含：\n"
+                    "1. 核心事件摘要（2-3 句）\n"
+                    "2. 對台灣金融市場（股市、匯市、銀行業）的潛在影響\n"
+                    "3. 建議關注的後續指標與時間點\n"
+                    "請以繁體中文撰寫，格式清晰適合高階主管快速閱讀。"
+                ),
+            )
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 報告生成中（task={gen_status.task_id[:16]}...）")
+
+            # ── Step D：等待報告生成完成（最多 5 分鐘）───────────────────────
+            completed = await client.artifacts.wait_for_completion(
+                NOTEBOOK_ID, gen_status.task_id, timeout=300.0
+            )
+            if completed.is_failed:
+                print(f"[ERROR] 報告生成失敗：{completed.error}", file=sys.stderr)
+                return None
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 報告生成完成，開始下載...")
+
+            # ── Step E：下載報告至 nlm_reports/ ─────────────────────────────
+            saved_path = await client.artifacts.download_report(
+                NOTEBOOK_ID,
+                output_path=report_file,
+                artifact_id=completed.task_id,
+            )
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 報告已儲存至：{saved_path}")
+
+            with open(saved_path, encoding="utf-8") as f:
+                answer = f.read()
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 報告共 {len(answer)} 字")
+
     except ValueError as e:
         if "Authentication expired" in str(e) or "Run 'notebooklm login'" in str(e):
-            print(f"[ERROR] NotebookLM 認證已過期，請在本機執行：notebooklm login", file=sys.stderr)
+            print("[ERROR] NotebookLM 認證已過期，請在本機執行：notebooklm login", file=sys.stderr)
         else:
             print(f"[ERROR] NotebookLM 失敗：{e}", file=sys.stderr)
         return None
@@ -155,23 +261,13 @@ async def _run_notebooklm(alerts: list[dict], content_md: str, requests_mod) -> 
         print(f"[ERROR] NotebookLM 失敗：{e}", file=sys.stderr)
         return None
 
-    # ── Step 5：儲存分析結果 ────────────────────────────────────────────────
+    # ── Step F：寫回 VM API（選用，供 Web Dashboard 顯示）────────────────────
     if answer:
-        # 5a. 存至本機 scripts/nlm_reports/（永遠執行）
-        reports_dir = os.path.join(_script_dir, "nlm_reports")
-        os.makedirs(reports_dir, exist_ok=True)
-        report_file = os.path.join(reports_dir, f"{datetime.now().strftime('%Y%m%d_%H%M')}.txt")
-        with open(report_file, "w", encoding="utf-8") as f:
-            f.write(f"來源：{source_title}\n生成時間：{datetime.now().strftime('%Y/%m/%d %H:%M')}\n\n")
-            f.write(answer)
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 分析結果已存至：{report_file}")
-
-        # 5b. 寫回 VM API（選用，供 Web Dashboard 顯示）
         try:
             alert_ids = [a.get("id") for a in alerts if a.get("id")]
             payload = {
                 "content": answer,
-                "generated_at": datetime.utcnow().isoformat(),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "alert_ids": alert_ids,
                 "source_title": source_title,
             }
@@ -183,11 +279,11 @@ async def _run_notebooklm(alerts: list[dict], content_md: str, requests_mod) -> 
             if write_resp.status_code in (200, 201):
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 分析結果已寫回 VM API")
             elif write_resp.status_code == 404:
-                pass  # 端點尚未實作，靜默略過
+                pass
             else:
                 print(f"[WARNING] 寫回 API 回傳 {write_resp.status_code}")
-        except Exception as e:
-            pass  # API 不通時不影響本機儲存
+        except Exception:
+            pass
 
     return answer
 
