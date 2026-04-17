@@ -5,13 +5,13 @@ if (-not $task) {
 }
 
 $python = "C:\Users\User\AppData\Local\Programs\Python\Python313\python.exe"
-$script = "D:\即時偵測系統claude\scripts\notebooklm_hourly.py"
-$log    = "D:\即時偵測系統claude\scripts\nlm_reports\run.log"
+# 使用 junction C:\nlm_scripts 對應中文路徑，Task Scheduler 無法傳遞含中文的引數
+$script = "C:\nlm_scripts\notebooklm_hourly.py"
+$log    = "C:\nlm_scripts\nlm_reports\run.log"
 
 $action = New-ScheduledTaskAction `
     -Execute $python `
-    -Argument "-X utf8 `"$script`"" `
-    -WorkingDirectory "D:\即時偵測系統claude\scripts"
+    -Argument "-X utf8 `"$script`""
 
 if ($task) {
     Set-ScheduledTask -TaskName $task.TaskName -Action $action
