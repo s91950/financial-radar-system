@@ -39,8 +39,8 @@ from datetime import datetime, timedelta, timezone
 # Windows 預設 CP950 編碼會在含有 CP950 字集外中文字（如「燈」U+706F）的頻道名稱或影片標題時
 # 導致 notebooklm-py 序列化失敗；強制 stdout/stderr 使用 UTF-8 避免此問題。
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 # ── 讀取 .env.local ────────────────────────────────────────────────────────
 _script_dir = os.path.dirname(os.path.abspath(__file__))
