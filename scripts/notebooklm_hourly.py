@@ -191,44 +191,36 @@ async def _add_source_with_fallback(
 # 新聞分析
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_news_summary(alerts: list[dict], cutoff: datetime) -> str:
-    """將多則 Alert 整理成 Markdown 摘要 source。"""
+def _build_news_summary(articles: list[dict], cutoff: datetime) -> str:
+    """將文章清單整理成 Markdown 摘要 source（直接來自 Article 資料表）。"""
     now_tw = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y/%m/%d %H:%M")
+    since_tw = cutoff.astimezone(timezone(timedelta(hours=8))).strftime("%m/%d %H:%M")
     lines = [
-        f"# 金融偵測緊急新聞（{now_tw} UTC+8）\n",
-        f"**分析時段**：{cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')} 起 | **篩選等級**：{MIN_SEVERITY} 以上\n",
+        f"# 金融偵測新聞摘要（{now_tw} UTC+8）\n",
+        f"**分析時段**：{since_tw} 起 | **篩選等級**：{MIN_SEVERITY} 以上 | **共 {len(articles)} 篇**\n",
         "---\n",
     ]
-    for i, alert in enumerate(alerts, 1):
-        sev_label = {"critical": "🚨 緊急", "high": "⚠️ 高風險"}.get(alert.get("severity"), alert.get("severity", ""))
+    for i, a in enumerate(articles, 1):
         try:
-            dt = datetime.fromisoformat(alert["created_at"].replace("Z", "+00:00")).astimezone(
+            dt = datetime.fromisoformat((a.get("fetched_at") or "").replace("Z", "+00:00")).astimezone(
                 timezone(timedelta(hours=8))
             ).strftime("%m/%d %H:%M")
         except Exception:
-            dt = alert.get("created_at", "")[:16]
-
-        lines.append(f"## 警報 {i}：{alert.get('title', '')[:80]}")
-        lines.append(f"**等級**：{sev_label} | **時間**：{dt}\n")
-        if alert.get("exposure_summary"):
-            lines.append(f"**部位暴險**：{alert['exposure_summary']}\n")
-
-        articles = _parse_alert_articles(alert)
-        if articles:
-            lines.append("**相關文章**：")
-            for a in articles[:15]:
-                line = f"- [{a['severity']}] {a['title']}"
-                if a["url"]:
-                    line += f"\n  {a['url']}"
-                lines.append(line)
-            lines.append("")
-        lines.append("---\n")
-
+            dt = ""
+        lines.append(f"### {i}. {a.get('title', '')}")
+        lines.append(f"**來源**：{a.get('source', '')} | **入庫**：{dt}")
+        if a.get("source_url"):
+            lines.append(f"**連結**：{a['source_url']}")
+        if a.get("content"):
+            lines.append(f"\n{a['content'][:300]}")
+        lines.append("")
     return "\n".join(lines)
 
 
-async def _run_news_analysis(alerts: list[dict], cutoff: datetime, requests_mod) -> str | None:
-    """新聞分析：匯入文章 URL（失敗則抓內文）→ 建立分析師團隊報告。"""
+async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mod) -> str | None:
+    """新聞分析：匯入文章 URL（失敗則抓內文）→ 建立分析師團隊報告。
+    articles: 直接來自 /api/news/articles 的 Article dict 清單。
+    """
     try:
         from notebooklm import NotebookLMClient
         from notebooklm.rpc.types import ReportFormat
@@ -236,21 +228,21 @@ async def _run_news_analysis(alerts: list[dict], cutoff: datetime, requests_mod)
         print("[ERROR] 缺少 notebooklm-py 套件", file=sys.stderr)
         return None
 
-    min_rank = _SEV_RANK.get(MIN_SEVERITY, 2)
-    article_data: list[dict] = []
+    # 去重（相同 URL 只保留一篇）
     seen_urls: set[str] = set()
-    for alert in alerts:
-        for a in _parse_alert_articles(alert):
-            if _SEV_RANK.get(a["severity"], 0) < min_rank:
-                continue
-            if a["url"] and a["url"] not in seen_urls:
-                seen_urls.add(a["url"])
-                article_data.append(a)
+    article_data: list[dict] = []
+    for a in articles:
+        url = a.get("source_url", "")
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            article_data.append({"title": a.get("title", ""), "url": url, "source": a.get("source", "")})
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞：{len(alerts)} 則警報，{len(article_data)} 個文章 URL")
+    MAX_URLS = 30
+    overflow = max(0, len(article_data) - MAX_URLS)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞：{len(articles)} 篇文章，{len(article_data)} 個唯一 URL"
+          + (f"（前 {MAX_URLS} 篇匯入，另 {overflow} 篇收入摘要文字）" if overflow else ""))
 
-    source_title = f"緊急新聞_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    MAX_URLS = 20
+    source_title = f"金融新聞_{datetime.now().strftime('%Y%m%d_%H%M')}"
     reports_dir = os.path.join(_script_dir, "nlm_reports")
     os.makedirs(reports_dir, exist_ok=True)
     report_file = os.path.join(reports_dir, f"{datetime.now().strftime('%Y%m%d_%H%M')}.md")
@@ -279,21 +271,23 @@ async def _run_news_analysis(alerts: list[dict], cutoff: datetime, requests_mod)
                 result = await _add_source_with_fallback(client, NOTEBOOK_ID, url, a["title"], requests_mod)
                 if result == "url":
                     added_url += 1
-                    print(f"  [+URL ] [{a['severity']}] {a['title'][:55]}")
+                    print(f"  [+URL ] [{a.get('source','')}] {a['title'][:55]}")
                 elif result == "text":
                     added_text += 1
-                    print(f"  [+TEXT] [{a['severity']}] {a['title'][:55]}")
+                    print(f"  [+TEXT] [{a.get('source','')}] {a['title'][:55]}")
                 else:
                     skipped += 1
                     print(f"  [skip ] {a['title'][:55]}")
 
-            # Step B：附上警報摘要
+            # Step B：附上文章摘要（含超出 MAX_URLS 的文章完整列表）
             total_added = added_url + added_text
-            summary_text = _build_news_summary(alerts, cutoff)
+            summary_text = _build_news_summary(articles, cutoff)
             if total_added == 0:
                 print("[WARNING] 所有 URL 均失敗，改以完整文字 source 匯入")
             await client.sources.add_text(NOTEBOOK_ID, title=source_title, content=summary_text, wait=True)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped} + 1份摘要")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped}"
+                  + (f"（另 {overflow} 篇超出上限，已收入摘要）" if overflow else "")
+                  + " + 1份摘要")
 
             # Step C：建立分析師團隊報告
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告...")
@@ -356,7 +350,7 @@ async def _run_news_analysis(alerts: list[dict], cutoff: datetime, requests_mod)
             payload = {
                 "content": answer,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
-                "alert_ids": [a.get("id") for a in alerts if a.get("id")],
+                "alert_ids": [],
                 "source_title": source_title,
             }
             resp = requests_mod.post(
@@ -575,46 +569,67 @@ def main():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] --yt-only：跳過新聞分析")
     else:
         news_cutoff = _resolve_cutoff("news_last_run")
-        if manual_override:
-            tw_str = news_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [手動] 抓取新聞警報（自 {tw_str} 台灣時間）...")
-        else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓取新聞警報（自 {news_cutoff.strftime('%m/%d %H:%M')} UTC）...")
+        tw_str = news_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
+        label = "[手動] " if manual_override else ""
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}抓取新聞文章（自 {tw_str} 台灣時間，嚴重度 {MIN_SEVERITY}+）...")
 
-    try:
-        resp = requests.get(
-            f"{API_BASE_URL}/api/radar/alerts",
-            params={"type": "news", "limit": 100},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        all_alerts = resp.json()
-    except Exception as e:
-        print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
-        sys.exit(1)
-
-    min_rank = _SEV_RANK.get(MIN_SEVERITY, 2)
-    alerts = []
-    for a in all_alerts:
-        if _SEV_RANK.get(a.get("severity", ""), 0) < min_rank:
-            continue
+        # 直接從 Article 資料表抓取，用 fetched_at 過濾（比 Alerts 完整）
         try:
-            created = datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))
-            if created >= news_cutoff:
-                alerts.append(a)
-        except Exception:
-            pass
+            resp = requests.get(
+                f"{API_BASE_URL}/api/news/articles",
+                params={"limit": 300},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            all_articles = resp.json().get("articles", [])
+        except Exception as e:
+            print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
+            sys.exit(1)
 
-    if alerts:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(alerts)} 則警報")
-        asyncio.run(_run_news_analysis(alerts, news_cutoff, requests))
-        if not args.no_save_state and not manual_override:
-            state["news_last_run"] = now_iso
-            _save_state(state)
-        elif args.no_save_state:
-            print("  [--no-save-state] 不更新 state，排程時間記錄保持不變")
-    else:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 無符合條件的新聞警報，跳過")
+        # 用 fetched_at 過濾時間窗（入庫時間，非發布時間）
+        _crit_kws = {"崩盤","暴跌","暴漲","危機","緊急","衝擊","崩潰","戰爭","制裁","封鎖","違約","破產"}
+        _high_kws = {"下跌","上漲","升息","降息","通膨","衰退","波動","警告","風險","貶值","升值",
+                     "利率","匯率","油價","黃金","股市","台積","輝達","聯準"}
+        min_sev = MIN_SEVERITY
+
+        def _article_severity(title: str) -> str:
+            t = title
+            if any(k in t for k in _crit_kws):
+                return "critical"
+            if any(k in t for k in _high_kws):
+                return "high"
+            return "low"
+
+        articles = []
+        for a in all_articles:
+            fetched = a.get("fetched_at")
+            if not fetched:
+                continue
+            try:
+                ft = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+                if ft.tzinfo is None:
+                    ft = ft.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            if ft < news_cutoff:
+                continue
+            sev = _article_severity(a.get("title", ""))
+            if min_sev == "critical" and sev != "critical":
+                continue
+            if min_sev == "high" and sev == "low":
+                continue
+            articles.append(a)
+
+        if articles:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(articles)} 篇文章")
+            asyncio.run(_run_news_analysis(articles, news_cutoff, requests))
+            if not args.no_save_state and not manual_override:
+                state["news_last_run"] = now_iso
+                _save_state(state)
+            elif args.no_save_state:
+                print("  [--no-save-state] 不更新 state，排程時間記錄保持不變")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 無符合條件的新聞文章，跳過")
 
     # ── YouTube 分析 ──────────────────────────────────────────────────────────
     if args.news_only:
@@ -642,13 +657,21 @@ def main():
             all_videos = []
 
         videos = []
-        for v in all_videos:
-            try:
-                pub = datetime.fromisoformat((v.get("published_at") or "").replace("Z", "+00:00"))
-                if pub >= yt_cutoff:
-                    videos.append(v)
-            except Exception:
-                pass
+        if manual_override:
+            # 手動指定時間：用 fetched_at（系統入庫時間）過濾，忽略 is_new 狀態
+            for v in all_videos:
+                try:
+                    ts_str = v.get("fetched_at") or v.get("published_at") or ""
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts >= yt_cutoff:
+                        videos.append(v)
+                except Exception:
+                    pass
+        else:
+            # 自動排程：用 is_new=True（與 LINE yt 指令相同邏輯，確保抓到真正的新影片）
+            videos = [v for v in all_videos if v.get("is_new")]
 
         if videos:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(videos)} 支新影片")
