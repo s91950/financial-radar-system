@@ -422,6 +422,44 @@ async def get_nlm_report(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/notebooklm-yt-report")
+async def save_nlm_yt_report(payload: dict, db: Session = Depends(get_db)):
+    """接收並儲存 NotebookLM YouTube 分析報告（由本機 notebooklm_hourly.py 推送）。"""
+    content = payload.get("content", "")
+    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
+    source_title = payload.get("source_title", "")
+
+    for key, value in [
+        ("nlm_yt_latest_report", content),
+        ("nlm_yt_report_generated_at", generated_at),
+        ("nlm_yt_report_source_title", source_title),
+    ]:
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        if row:
+            row.value = value
+        else:
+            db.add(SystemConfig(key=key, value=value))
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/notebooklm-yt-report")
+async def get_nlm_yt_report(db: Session = Depends(get_db)):
+    """取得最新 NotebookLM YouTube 分析報告。"""
+    def _val(key):
+        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        return row.value if row else None
+
+    content = _val("nlm_yt_latest_report")
+    if not content:
+        return {"content": None, "generated_at": None, "source_title": None}
+    return {
+        "content": content,
+        "generated_at": _val("nlm_yt_report_generated_at"),
+        "source_title": _val("nlm_yt_report_source_title"),
+    }
+
+
 @router.post("/scan")
 async def manual_scan(background_tasks: BackgroundTasks):
     """Manually trigger a radar scan immediately (bypasses cross-process lock)."""

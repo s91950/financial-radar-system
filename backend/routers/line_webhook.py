@@ -6,8 +6,10 @@ Reply API 完全免費，不計入每月 200 則 Messaging API 配額。
 支援指令：
   通知          → 未讀緊急新聞警報（自上次查詢後）
   通知 + 時間   → 指定時間範圍的緊急新聞（如：通知1天、通知今日、通知3小時）
+  分析          → 最新 NotebookLM 新聞分析報告
   yt / YT       → 未讀 YouTube 影片
   yt + 時間     → 指定時間範圍的 YouTube 影片（如：yt1天、yt今日、yt通知）
+  yt分析        → 最新 NotebookLM YouTube 頻道分析報告
   其他訊息       → 不回應
 
 設定步驟：
@@ -136,7 +138,11 @@ def _md_to_plain(text: str) -> str:
     return text.strip()
 
 
-def _build_analysis_reply(content: str | None, generated_at: str | None) -> list[str]:
+def _build_analysis_reply(
+    content: str | None,
+    generated_at: str | None,
+    title: str = "📊 金融風險分析報告",
+) -> list[str]:
     """格式化 NLM 分析報告為 LINE 訊息（最多 5 則）。"""
     if not content:
         return ["目前尚無分析報告，請稍後再試或先執行 notebooklm_hourly.py。"]
@@ -149,7 +155,7 @@ def _build_analysis_reply(content: str | None, generated_at: str | None) -> list
         except Exception:
             time_str = generated_at[:16]
 
-    header = f"📊 金融風險分析報告 {time_str}\n{'─' * 22}\n\n"
+    header = f"{title} {time_str}\n{'─' * 22}\n\n"
     plain = _md_to_plain(content)
 
     messages: list[str] = []
@@ -249,11 +255,12 @@ async def line_webhook(request: Request):
     """接收 LINE Webhook 事件並用 Reply API 回覆（免費無月額限制）。
 
     指令：
-      分析        → 最新 NotebookLM 分析報告
+      分析        → 最新 NotebookLM 新聞分析報告
       通知        → 未讀緊急新聞
       通知 + 時間  → 指定時間範圍新聞
       yt/YT       → 未讀 YouTube 影片
       yt + 時間   → 指定時間範圍 YouTube 影片
+      yt分析      → 最新 NotebookLM YouTube 頻道分析報告
       其他        → 不回應
     """
     body = await request.body()
@@ -293,7 +300,7 @@ async def line_webhook(request: Request):
         db = SessionLocal()
         try:
             if is_analysis:
-                # ── 分析報告模式 ──
+                # ── 新聞分析報告模式 ──
                 def _cfg(key):
                     row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
                     return row.value if row else None
@@ -306,34 +313,48 @@ async def line_webhook(request: Request):
             elif is_yt:
                 # ── YouTube 模式 ──
                 remainder = user_text[2:].strip()  # 去掉 "yt" 前綴
-                time_range = _parse_time_range(remainder)
 
-                if time_range:
-                    # 時間範圍查詢
-                    since_dt = datetime.utcnow() - time_range
-                    videos = (
-                        db.query(YoutubeVideo)
-                        .filter(YoutubeVideo.published_at >= since_dt)
-                        .order_by(YoutubeVideo.published_at.desc())
-                        .all()
+                if "分析" in remainder:
+                    # yt分析 → YT 頻道分析報告
+                    def _cfg_yt(key):
+                        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+                        return row.value if row else None
+
+                    reply_text = _build_analysis_reply(
+                        _cfg_yt("nlm_yt_latest_report"),
+                        _cfg_yt("nlm_yt_report_generated_at"),
+                        title="📺 YouTube 頻道分析報告",
                     )
-                    total_seconds = int(time_range.total_seconds())
-                    if total_seconds <= 3600:
-                        range_label = f"{max(1, total_seconds // 3600)} 小時"
-                    elif total_seconds < 86400:
-                        range_label = f"{total_seconds // 3600} 小時"
-                    else:
-                        range_label = f"{time_range.days} 天"
-                    reply_text = _build_yt_reply(videos, since_dt, label=range_label)
                 else:
-                    # 未讀模式（yt 或 yt通知）
-                    since = _get_config(db, "line_last_yt_reply_at")
-                    query = db.query(YoutubeVideo).filter(YoutubeVideo.is_new == True)
-                    if since:
-                        query = query.filter(YoutubeVideo.fetched_at > since)
-                    videos = query.order_by(YoutubeVideo.published_at.desc()).all()
-                    reply_text = _build_yt_reply(videos, since)
-                    _set_config(db, "line_last_yt_reply_at", datetime.utcnow())
+                    # yt 影片清單（yt / yt通知 / yt1天 等）
+                    time_range = _parse_time_range(remainder)
+
+                    if time_range:
+                        # 時間範圍查詢
+                        since_dt = datetime.utcnow() - time_range
+                        videos = (
+                            db.query(YoutubeVideo)
+                            .filter(YoutubeVideo.published_at >= since_dt)
+                            .order_by(YoutubeVideo.published_at.desc())
+                            .all()
+                        )
+                        total_seconds = int(time_range.total_seconds())
+                        if total_seconds <= 3600:
+                            range_label = f"{max(1, total_seconds // 3600)} 小時"
+                        elif total_seconds < 86400:
+                            range_label = f"{total_seconds // 3600} 小時"
+                        else:
+                            range_label = f"{time_range.days} 天"
+                        reply_text = _build_yt_reply(videos, since_dt, label=range_label)
+                    else:
+                        # 未讀模式（yt 或 yt通知）
+                        since = _get_config(db, "line_last_yt_reply_at")
+                        query = db.query(YoutubeVideo).filter(YoutubeVideo.is_new == True)
+                        if since:
+                            query = query.filter(YoutubeVideo.fetched_at > since)
+                        videos = query.order_by(YoutubeVideo.published_at.desc()).all()
+                        reply_text = _build_yt_reply(videos, since)
+                        _set_config(db, "line_last_yt_reply_at", datetime.utcnow())
 
             else:  # is_news
                 # ── 新聞通知模式 ──
