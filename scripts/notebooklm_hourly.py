@@ -518,6 +518,40 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
 # 主程式
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _auto_login():
+    """
+    執行 notebooklm login 並自動按 Enter。
+    - 認證有效：瀏覽器載入 NLM 首頁後自動送出換行，無需人工介入。
+    - 認證過期：瀏覽器開啟真正登入畫面，換行會立即送出（太早），
+      此時腳本會在後面的 API 呼叫失敗並提示手動執行 notebooklm login。
+    - 逾時（30 秒）或找不到 notebooklm 執行檔時，靜默略過不影響後續流程。
+    """
+    import subprocess, shutil
+    nlm_bin = shutil.which("notebooklm")
+    if not nlm_bin:
+        # 嘗試 Python Scripts 目錄
+        import sysconfig
+        scripts = sysconfig.get_path("scripts")
+        candidate = os.path.join(scripts, "notebooklm.exe" if sys.platform == "win32" else "notebooklm")
+        nlm_bin = candidate if os.path.exists(candidate) else None
+    if not nlm_bin:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] 找不到 notebooklm 執行檔，跳過自動登入")
+        return
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 自動刷新 NotebookLM 認證...")
+        subprocess.run(
+            [nlm_bin, "login"],
+            input=b"\n",       # 模擬按 Enter（認證有效時瀏覽器載完即自動繼續）
+            timeout=30,
+            capture_output=True,
+        )
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] NotebookLM 認證已刷新")
+    except subprocess.TimeoutExpired:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] notebooklm login 逾時（30s），略過")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] notebooklm login 失敗（非致命）：{e}")
+
+
 def main():
     import argparse
 
@@ -560,6 +594,9 @@ def main():
     if not NOTEBOOK_ID:
         print("[ERROR] 請設定環境變數 NOTEBOOK_ID", file=sys.stderr)
         sys.exit(1)
+
+    # ── 自動刷新 NotebookLM 認證 ──────────────────────────────────────────────
+    _auto_login()
 
     # ── 決定時間起點 ──────────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
