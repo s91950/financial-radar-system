@@ -169,6 +169,19 @@ async def _run_notebooklm(alerts: list[dict], content_md: str, requests_mod) -> 
     try:
         async with await NotebookLMClient.from_storage() as client:
 
+            # ── Step 0：清除 notebook 內所有舊 sources（每次從空白開始）────────
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 清除舊 sources...")
+            try:
+                existing_sources = await client.sources.list(NOTEBOOK_ID)
+                if existing_sources:
+                    for _src in existing_sources:
+                        await client.sources.delete(NOTEBOOK_ID, _src.id)
+                    print(f"  已刪除 {len(existing_sources)} 個舊 source")
+                else:
+                    print("  無舊 source 需清除")
+            except Exception as _del_err:
+                print(f"  [WARNING] 清除舊 sources 失敗（非致命）：{_del_err}")
+
             # ── Step A：逐一匯入文章 URL ─────────────────────────────────────
             for a in article_data[:MAX_URLS]:
                 url = a["url"]
@@ -214,18 +227,29 @@ async def _run_notebooklm(alerts: list[dict], content_md: str, requests_mod) -> 
             )
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 {added_urls} 個 URL + 1 份摘要 source")
 
-            # ── Step C：建立報告（自訂格式，繁體中文金融分析）─────────────────
+            # ── Step C：建立報告（分析師團隊框架，繁體中文金融分析）──────────
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立報告中...")
             gen_status = await client.artifacts.generate_report(
                 NOTEBOOK_ID,
                 report_format=ReportFormat.CUSTOM,
                 language="zh-TW",
                 custom_prompt=(
-                    "請針對本時段最重要的金融風險事件撰寫簡明分析報告，內容包含：\n"
-                    "1. 核心事件摘要（2-3 句）\n"
-                    "2. 對台灣金融市場（股市、匯市、銀行業）的潛在影響\n"
-                    "3. 建議關注的後續指標與時間點\n"
-                    "請以繁體中文撰寫，格式清晰適合高階主管快速閱讀。"
+                    "你是一個由資深金融分析師組成的研究小組，負責分析本批次匯入的金融新聞。\n\n"
+                    "【團隊架構】\n"
+                    "• 組長（35 年市場經歷）：宏觀掌握全局，分配任務並負責最終彙整\n"
+                    "• 台股分析師：深耕台灣上市櫃、法人動向、半導體供應鏈脈動\n"
+                    "• 總經／匯市分析師：專精利率、通膨、各國央行政策與主要貨幣走勢\n"
+                    "• 國際市場分析師：覆蓋美歐股市、地緣政治風險、制裁與資金流向\n"
+                    "• 商品能源分析師：追蹤油氣、原物料、OPEC 動態與供應鏈影響\n\n"
+                    "【執行流程】\n"
+                    "1. 組長先將本批新聞依主題分類（例如：地緣政治、央行政策、台股個股、能源商品等）\n"
+                    "2. 對應分析師結合數十年市場底蘊與當前時事背景，提出核心觀點\n"
+                    "3. 組長考量各市場交叉影響與市場參與者互動行為，彙整輸出最終報告\n\n"
+                    "【報告格式要求】\n"
+                    "- 每個新聞類別輸出 3 條分析要點，每點約 100 字，該類別合計不超過 350 字\n"
+                    "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與參與者行為因素\n"
+                    "- 報告最末統一列出「來源網址」區塊，完整羅列本次所有分析引用的新聞連結\n"
+                    "- 全程使用繁體中文撰寫"
                 ),
             )
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 報告生成中（task={gen_status.task_id[:16]}...）")
