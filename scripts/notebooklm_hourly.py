@@ -237,10 +237,7 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             seen_urls.add(url)
             article_data.append({"title": a.get("title", ""), "url": url, "source": a.get("source", "")})
 
-    MAX_URLS = 30
-    overflow = max(0, len(article_data) - MAX_URLS)
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞：{len(articles)} 篇文章，{len(article_data)} 個唯一 URL"
-          + (f"（前 {MAX_URLS} 篇匯入，另 {overflow} 篇收入摘要文字）" if overflow else ""))
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞：{len(articles)} 篇文章，{len(article_data)} 個唯一 URL（全部嘗試匯入）")
 
     source_title = f"金融新聞_{datetime.now().strftime('%Y%m%d_%H%M')}"
     reports_dir = os.path.join(_script_dir, "nlm_reports")
@@ -257,8 +254,8 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [新聞] 清除舊 sources...")
             await _cleanup_sources(client, NOTEBOOK_ID)
 
-            # Step A：逐一匯入文章（URL 優先，失敗則抓內文）
-            for a in article_data[:MAX_URLS]:
+            # Step A：逐一匯入所有文章（URL 優先，失敗則抓內文），不設上限
+            for a in article_data:
                 url = a["url"]
                 if "news.google.com" in url:
                     try:
@@ -285,9 +282,7 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             if total_added == 0:
                 print("[WARNING] 所有 URL 均失敗，改以完整文字 source 匯入")
             await client.sources.add_text(NOTEBOOK_ID, title=source_title, content=summary_text, wait=True)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped}"
-                  + (f"（另 {overflow} 篇超出上限，已收入摘要）" if overflow else "")
-                  + " + 1份摘要")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped} + 1份摘要")
 
             # Step C：建立分析師團隊報告
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告...")
@@ -658,10 +653,10 @@ def main():
 
         videos = []
         if manual_override:
-            # 手動指定時間：用 fetched_at（系統入庫時間）過濾，忽略 is_new 狀態
+            # 手動指定時間：用 published_at（YouTube 原始上傳時間）過濾，忽略 is_new 狀態
             for v in all_videos:
                 try:
-                    ts_str = v.get("fetched_at") or v.get("published_at") or ""
+                    ts_str = v.get("published_at") or ""
                     ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
