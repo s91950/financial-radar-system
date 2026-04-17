@@ -30,6 +30,8 @@ export const radarAPI = {
   toggleSaveAlert: (id) => api.put(`/radar/alerts/${id}/save`),
   analyzeAlert: (id) => api.post(`/radar/alerts/${id}/analyze`),
   triggerScan: () => api.post('/radar/scan'),
+  getNlmReport: () => api.get('/radar/notebooklm-report'),
+  getNlmYtReport: () => api.get('/radar/notebooklm-yt-report'),
 }
 
 // --- Search APIs ---

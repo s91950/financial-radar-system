@@ -28,6 +28,7 @@ class SourceUpdate(BaseModel):
     keywords: list[str] | None = None
     is_active: bool | None = None
     fetch_all: bool | None = None
+    fixed_severity: str | None = None  # '' = 清除（動態評估）; 'critical'|'high'|'low' = 強制覆寫
 
 
 @router.get("/sources")
@@ -88,6 +89,8 @@ async def update_source(
         source.is_active = update.is_active
     if update.fetch_all is not None:
         source.fetch_all = update.fetch_all
+    if update.fixed_severity is not None:
+        source.fixed_severity = update.fixed_severity or None  # '' → None（清除）
 
     db.commit()
     return _source_to_dict(source)
@@ -292,6 +295,7 @@ def _source_to_dict(source: MonitorSource) -> dict:
         "is_active": source.is_active,
         "fetch_all": bool(source.fetch_all),
         "sort_order": source.sort_order or 0,
+        "fixed_severity": source.fixed_severity or None,
     }
 
 

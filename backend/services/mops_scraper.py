@@ -63,9 +63,13 @@ def _parse_item(item: dict, market_kind: str) -> dict | None:
     pub_dt = _parse_roc_datetime(date_str, time_str)
 
     title = f"【{company_id} {company_name}】{subject}"
+    # 加入日期+時間確保同一公司多筆揭露的 URL 不重複（避免 dedup 誤判）
+    date_compact = date_str.replace("/", "")
+    time_compact = time_str.replace(":", "")
     source_url = (
         f"https://mops.twse.com.tw/mops/#/web/t05sr01_1"
         f"?TYPEK={market_kind}&co_id={company_id}"
+        + (f"&d={date_compact}&t={time_compact}" if date_compact else "")
     )
     return {
         "title": title,

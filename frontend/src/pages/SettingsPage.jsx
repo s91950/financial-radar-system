@@ -1049,6 +1049,13 @@ export default function SettingsPage() {
                       {source.fetch_all && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30 shrink-0" title="全文讀取：所有文章皆納入，關鍵字僅用於標記與風險評估">全文讀取</span>
                       )}
+                      {source.fixed_severity && (
+                        <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${
+                          source.fixed_severity === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                          source.fixed_severity === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
+                          'bg-green-500/20 text-green-400 border-green-500/30'
+                        }`}>{source.fixed_severity === 'critical' ? '固定緊急' : source.fixed_severity === 'high' ? '固定高風險' : '固定低風險'}</span>
+                      )}
                       {source.keywords && source.keywords.length > 0
                         ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
                         : !source.fetch_all && (
@@ -1192,6 +1199,40 @@ export default function SettingsPage() {
                             source.fetch_all ? 'translate-x-5' : 'translate-x-1'
                           }`} />
                         </button>
+                    </div>
+                    {/* 固定風險等級 */}
+                    <div className="flex items-center justify-between py-1">
+                      <div>
+                        <span className="text-xs text-dark-300 font-medium">固定風險等級</span>
+                        <span className="text-xs text-dark-500 ml-2">
+                          {source.fixed_severity ? `所有文章強制設為「${
+                            source.fixed_severity === 'critical' ? '緊急' :
+                            source.fixed_severity === 'high' ? '高風險' : '低風險'
+                          }」，忽略關鍵字評估` : '依關鍵字動態評估'}
+                        </span>
+                      </div>
+                      <select
+                        value={source.fixed_severity || ''}
+                        onChange={async (e) => {
+                          const val = e.target.value
+                          try {
+                            await settingsAPI.updateSource(source.id, { fixed_severity: val })
+                            setSources(prev => prev.map(s => s.id === source.id
+                              ? { ...s, fixed_severity: val || null }
+                              : s
+                            ))
+                            toast.success(val ? `已設為${val === 'critical' ? '緊急' : val === 'high' ? '高風險' : '低風險'}` : '已恢復動態評估')
+                          } catch {
+                            toast.error('更新失敗')
+                          }
+                        }}
+                        className="text-xs bg-dark-700 border border-dark-600 rounded px-2 py-1 text-dark-300"
+                      >
+                        <option value="">動態評估</option>
+                        <option value="critical">🔴 緊急</option>
+                        <option value="high">🟠 高風險</option>
+                        <option value="low">🟢 低風險</option>
+                      </select>
                     </div>
                     {/* 連線測試按鈕（RSS / social / website / mops 均支援）*/}
                     {(source.type === 'rss' || source.type === 'social' || source.type === 'website' || source.type === 'mops') && (

@@ -120,6 +120,7 @@ class MonitorSource(Base):
     is_active = Column(Boolean, default=True)
     fetch_all = Column(Boolean, default=False)  # 全文讀取：跳過關鍵字過濾，但仍標記匹配關鍵字
     sort_order = Column(Integer, default=0)     # 使用者自訂排序（越小越前）
+    fixed_severity = Column(String, nullable=True)  # None=動態評估 | 'critical'|'high'|'low'=強制覆寫
 
 
 class NotificationSetting(Base):
@@ -1049,6 +1050,13 @@ def _migrate_db():
         # 新增 MonitorSource.fetch_all（全文讀取：跳過關鍵字過濾）
         try:
             conn.execute(text("ALTER TABLE monitor_sources ADD COLUMN fetch_all BOOLEAN DEFAULT 0"))
+            conn.commit()
+        except Exception:
+            pass  # 欄位已存在，略過
+
+        # 新增 MonitorSource.fixed_severity（來源級別強制風險等級）
+        try:
+            conn.execute(text("ALTER TABLE monitor_sources ADD COLUMN fixed_severity VARCHAR"))
             conn.commit()
         except Exception:
             pass  # 欄位已存在，略過

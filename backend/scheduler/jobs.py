@@ -266,15 +266,25 @@ async def _radar_scan_inner(force: bool = False):
             _fin_threshold = 0.15
 
         # 建立已知來源名稱集合（用於 GN 文章可信度懲罰：來源不在此清單者 weight=0.65）
+        # 同時建立固定風險等級 map（source_name → fixed_severity）
         _all_ms = db.query(MonitorSource).filter(MonitorSource.is_active == True).all()
         _ksn: set = set()
+        _source_fixed_sev: dict = {}
         for _ms in _all_ms:
             if _ms.name:
-                # 去除括號內備註（如「Bloomberg Markets」→「bloomberg markets」）
                 _clean = re.sub(r'\s*[\(（].*?[\)）]', '', _ms.name).strip().lower()
                 if _clean:
                     _ksn.add(_clean)
+            if _ms.fixed_severity and _ms.name:
+                _source_fixed_sev[_ms.name] = _ms.fixed_severity
         _known_source_names: frozenset = frozenset(_ksn)
+
+        def _article_severity(a: dict) -> str:
+            """取得文章風險等級：優先使用來源固定等級，否則動態評估。"""
+            src = a.get("source", "")
+            if src and src in _source_fixed_sev:
+                return _source_fixed_sev[src]
+            return _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
 
         # 1. Fetch from active RSS sources (includes social type = Nitter/RSS mirrors)
         sources = db.query(MonitorSource).filter(
@@ -367,7 +377,10 @@ async def _radar_scan_inner(force: bool = False):
                     url = article_data.get("source_url", "")
                     title = article_data.get("title", "").strip()
                     if url and title and url not in seen_urls and title not in seen_titles:
-                        if force or (not db.query(Article).filter(Article.title == title).first()):
+                        if force or (
+                            not db.query(Article).filter(Article.source_url == url).first() and
+                            not db.query(Article).filter(Article.title == title).first()
+                        ):
                             seen_urls.add(url)
                             seen_titles.add(title)
                             new_articles.append(article_data)
@@ -487,7 +500,7 @@ async def _radar_scan_inner(force: bool = False):
                             article_data['origin'] = 'gn'
                             # GN 僅緊急模式：預先評估嚴重度，非緊急文章丟棄
                             if _gn_critical_only:
-                                _pre_sev = _assess_severity_single(article_data, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+                                _pre_sev = _article_severity(article_data)
                                 if _pre_sev != "critical":
                                     seen_urls.discard(url)
                                     seen_titles.discard(title)
@@ -599,7 +612,7 @@ async def _radar_scan_inner(force: bool = False):
                             a_copy['origin'] = 'gn'
                             # GN 僅緊急模式：預先評估嚴重度，非緊急文章不進雷達（仍存入主題頁）
                             if _gn_critical_only:
-                                _pre_sev = _assess_severity_single(a_copy, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+                                _pre_sev = _article_severity(a_copy)
                                 if _pre_sev != "critical":
                                     seen_urls.discard(url)
                                     seen_titles.discard(title)
@@ -717,7 +730,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # 預先建立 article line formatter 與 source_urls（供去重合併與建立告警共用）
         def _fmt_article_line(a: dict) -> str:
-            sev = _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+            sev = _article_severity(a)
             kw = a.get('matched_keyword', '')
             base = f"[{a.get('source', '')}] {a.get('title', '')}"
             line = f"{base} (關鍵字：{kw})" if kw else base
@@ -725,7 +738,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # Store source_urls with severity prefix so frontend can filter them
         source_urls = [
-            f"{{{_assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)}}}{a.get('source_url', '')}"
+            f"{{{_article_severity(a)}}}{a.get('source_url', '')}"
             for a in new_articles if a.get("source_url")
         ]
 
@@ -810,7 +823,7 @@ async def _radar_scan_inner(force: bool = False):
             if _cfg.GOOGLE_APPS_SCRIPT_URL:
                 _urgent_rows = []
                 for _a in new_articles:
-                    _sev = _assess_severity_single(_a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+                    _sev = _article_severity(_a)
                     if _sev in ("critical", "high"):
                         _urgent_rows.append({
                             "date":    datetime.utcnow().strftime("%Y-%m-%d %H:%M"),

@@ -11,6 +11,7 @@ import SettingsPage from './pages/SettingsPage'
 import DashboardPage from './pages/DashboardPage'
 import ReportsPage from './pages/ReportsPage'
 import YouTubePage from './pages/YouTubePage'
+import AnalysisPage from './pages/AnalysisPage'
 import useWebSocket from './hooks/useWebSocket'
 import { radarAPI } from './services/api'
 
@@ -21,6 +22,7 @@ const pageConfig = {
   '/news': { title: '新聞資料庫', subtitle: '自動蒐集與管理新聞、報告與聲明' },
   '/reports': { title: '研究報告', subtitle: 'IMF · BIS · Fed · ECB · BOJ · BOE 研究報告蒐集' },
   '/youtube': { title: 'YouTube 頻道監控', subtitle: '定期偵測頻道新影片，即時通知' },
+  '/analysis': { title: '分析結果', subtitle: 'NotebookLM AI 深度分析報告' },
   '/settings': { title: '系統設定', subtitle: '管理資料來源、通知與偏好設定' },
 }
 
@@ -122,6 +124,12 @@ export default function App() {
               <PageWrapper path="/youtube" wsConnected={isConnected} alertStats={alertStats}
                 onToggleNotifications={() => setNotificationsOpen(true)}>
                 <YouTubePage wsSubscribe={subscribe} />
+              </PageWrapper>
+            } />
+            <Route path="/analysis" element={
+              <PageWrapper path="/analysis" wsConnected={isConnected} alertStats={alertStats}
+                onToggleNotifications={() => setNotificationsOpen(true)}>
+                <AnalysisPage />
               </PageWrapper>
             } />
             <Route path="/settings" element={
