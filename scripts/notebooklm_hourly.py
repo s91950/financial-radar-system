@@ -34,7 +34,6 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
 
 # ── 讀取 .env.local ────────────────────────────────────────────────────────
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -56,15 +55,6 @@ MIN_SEVERITY     = os.environ.get("MIN_SEVERITY", "high")
 
 _SEV_RANK   = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 _STATE_FILE = os.path.join(_script_dir, ".nlm_state.json")
-
-# 已知 SPA / 動態渲染網站：add_url 雖不報錯，但 NotebookLM 拿到空殼 HTML
-# 對這些網域直接改用 DB 儲存的 content 以 add_text 方式匯入
-_SPA_DOMAINS = frozenset({
-    "news.cnyes.com",
-    "www.cnyes.com",
-    "money.udn.com",
-    "udn.com",
-})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -245,12 +235,7 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
         url = a.get("source_url", "")
         if url and url not in seen_urls:
             seen_urls.add(url)
-            article_data.append({
-                "title": a.get("title", ""),
-                "url": url,
-                "source": a.get("source", ""),
-                "content": a.get("content", ""),  # 供 SPA 域名 text fallback 使用
-            })
+            article_data.append({"title": a.get("title", ""), "url": url, "source": a.get("source", "")})
 
     print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞：{len(articles)} 篇文章，{len(article_data)} 個唯一 URL（全部嘗試匯入）")
 
@@ -269,7 +254,7 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             print(f"[{datetime.now().strftime('%H:%M:%S')}] [新聞] 清除舊 sources...")
             await _cleanup_sources(client, NOTEBOOK_ID)
 
-            # Step A：逐一匯入所有文章（URL 優先，失敗則抓內文），不設上限
+            # Step A：逐一匯入所有文章（URL 優先，例外才用抓內文的 text 備援），不設上限
             for a in article_data:
                 url = a["url"]
                 if "news.google.com" in url:
@@ -279,24 +264,6 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
                         url = r.url
                     except Exception:
                         pass
-
-                # 已知 SPA 域名：直接用 DB content 以 text 匯入，避免 NLM 拿到空殼 HTML
-                try:
-                    domain = urlparse(url).netloc
-                except Exception:
-                    domain = ""
-                if any(spa in domain for spa in _SPA_DOMAINS) and a.get("content"):
-                    try:
-                        text_content = f"# {a['title']}\n\n來源：{url}\n\n{a['content'][:8000]}"
-                        await client.sources.add_text(
-                            NOTEBOOK_ID, title=a["title"][:100], content=text_content, wait=False
-                        )
-                        added_text += 1
-                        print(f"  [+TEXT] [{a.get('source','')}] {a['title'][:55]}")
-                    except Exception:
-                        skipped += 1
-                        print(f"  [skip ] {a['title'][:55]}")
-                    continue
 
                 result = await _add_source_with_fallback(client, NOTEBOOK_ID, url, a["title"], requests_mod)
                 if result == "url":
