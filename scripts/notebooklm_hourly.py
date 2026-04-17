@@ -507,6 +507,38 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="NotebookLM 金融分析腳本（手動執行時可覆蓋時間範圍）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+範例：
+  python notebooklm_hourly.py                    # 標準排程執行（依 state 補分析）
+  python notebooklm_hourly.py --hours 6          # 分析最近 6 小時
+  python notebooklm_hourly.py --since "04/15 09:00"  # 從指定時間點起（台灣時間）
+  python notebooklm_hourly.py --hours 3 --news-only  # 只跑新聞，最近 3 小時
+  python notebooklm_hourly.py --severity critical    # 只分析緊急警報
+  python notebooklm_hourly.py --hours 2 --no-save-state  # 補看不影響自動排程狀態
+        """,
+    )
+    parser.add_argument("--hours", type=float, default=None,
+                        help="回溯小時數（覆蓋 .env.local 的 HOURS_BACK 與 state 補分析邏輯）")
+    parser.add_argument("--since", type=str, default=None,
+                        help='分析起始時間，台灣時間格式 "MM/DD HH:MM"，例如 "04/15 09:00"')
+    parser.add_argument("--severity", choices=["critical", "high"], default=None,
+                        help="覆蓋最低嚴重度門檻（critical / high）")
+    parser.add_argument("--news-only", action="store_true", help="只執行新聞分析，跳過 YT")
+    parser.add_argument("--yt-only", action="store_true", help="只執行 YT 分析，跳過新聞")
+    parser.add_argument("--no-save-state", action="store_true",
+                        help="執行完不更新 state（手動補看時不影響自動排程的時間記錄）")
+    args = parser.parse_args()
+
+    # 套用 CLI 覆蓋
+    global MIN_SEVERITY
+    if args.severity:
+        MIN_SEVERITY = args.severity
+
     try:
         import requests
     except ImportError:
@@ -517,12 +549,37 @@ def main():
         print("[ERROR] 請設定環境變數 NOTEBOOK_ID", file=sys.stderr)
         sys.exit(1)
 
+    # ── 決定時間起點 ──────────────────────────────────────────────────────────
+    now = datetime.now(timezone.utc)
     state = _load_state()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = now.isoformat()
+
+    def _resolve_cutoff(state_key: str) -> datetime:
+        """根據 CLI 參數決定此次分析起點，優先序：--since > --hours > state 補分析。"""
+        if args.since:
+            try:
+                tw = timezone(timedelta(hours=8))
+                dt = datetime.strptime(f"{now.year}/{args.since}", "%Y/%m/%d %H:%M")
+                return dt.replace(tzinfo=tw).astimezone(timezone.utc)
+            except ValueError:
+                print(f"[ERROR] --since 格式錯誤，請用 MM/DD HH:MM，例如 04/15 09:00", file=sys.stderr)
+                sys.exit(1)
+        if args.hours is not None:
+            return now - timedelta(hours=args.hours)
+        return _get_cutoff(state, state_key)
+
+    manual_override = args.hours is not None or args.since is not None
 
     # ── 新聞分析 ──────────────────────────────────────────────────────────────
-    news_cutoff = _get_cutoff(state, "news_last_run")
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓取新聞警報（自 {news_cutoff.strftime('%m/%d %H:%M')} UTC）...")
+    if args.yt_only:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] --yt-only：跳過新聞分析")
+    else:
+        news_cutoff = _resolve_cutoff("news_last_run")
+        if manual_override:
+            tw_str = news_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [手動] 抓取新聞警報（自 {tw_str} 台灣時間）...")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓取新聞警報（自 {news_cutoff.strftime('%m/%d %H:%M')} UTC）...")
 
     try:
         resp = requests.get(
@@ -551,17 +608,26 @@ def main():
     if alerts:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(alerts)} 則警報")
         asyncio.run(_run_news_analysis(alerts, news_cutoff, requests))
-        state["news_last_run"] = now_iso
-        _save_state(state)
+        if not args.no_save_state and not manual_override:
+            state["news_last_run"] = now_iso
+            _save_state(state)
+        elif args.no_save_state:
+            print("  [--no-save-state] 不更新 state，排程時間記錄保持不變")
     else:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 無符合條件的新聞警報，跳過")
 
     # ── YouTube 分析 ──────────────────────────────────────────────────────────
-    if not NOTEBOOK_ID_YT:
+    if args.news_only:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] --news-only：跳過 YouTube 分析")
+    elif not NOTEBOOK_ID_YT:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] NOTEBOOK_ID_YT 未設定，略過 YouTube 分析")
     else:
-        yt_cutoff = _get_cutoff(state, "yt_last_run")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓取 YouTube 影片（自 {yt_cutoff.strftime('%m/%d %H:%M')} UTC）...")
+        yt_cutoff = _resolve_cutoff("yt_last_run")
+        if manual_override:
+            tw_str = yt_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [手動] 抓取 YouTube 影片（自 {tw_str} 台灣時間）...")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 抓取 YouTube 影片（自 {yt_cutoff.strftime('%m/%d %H:%M')} UTC）...")
 
         try:
             resp = requests.get(
@@ -587,8 +653,9 @@ def main():
         if videos:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(videos)} 支新影片")
             asyncio.run(_run_yt_analysis(videos, yt_cutoff, requests))
-            state["yt_last_run"] = now_iso
-            _save_state(state)
+            if not args.no_save_state and not manual_override:
+                state["yt_last_run"] = now_iso
+                _save_state(state)
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 無新 YouTube 影片，跳過")
 
