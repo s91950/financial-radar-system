@@ -58,7 +58,7 @@ NOTEBOOK_ID      = os.environ.get("NOTEBOOK_ID", "")
 NOTEBOOK_ID_YT   = os.environ.get("NOTEBOOK_ID_YT", "")
 RESULT_PUSH_LINE = os.environ.get("RESULT_PUSH_LINE", "false").lower() == "true"
 HOURS_BACK       = int(os.environ.get("HOURS_BACK", "1"))
-MIN_SEVERITY     = os.environ.get("MIN_SEVERITY", "high")
+MIN_SEVERITY     = os.environ.get("MIN_SEVERITY", "low")
 
 _SEV_RANK   = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 _STATE_FILE = os.path.join(_script_dir, ".nlm_state.json")
