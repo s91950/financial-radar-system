@@ -669,7 +669,7 @@ async def _radar_scan_inner(force: bool = False):
                         source=data.get("source", ""),
                         source_url=data.get("source_url", ""),
                         published_at=_parse_datetime(data.get("published_at")),
-                        category="radar",  # 雷達自動存檔統一標記，不繼承 article data（避免 GN 文章混入新聞資料庫）
+                        category=data.get("category", "radar"),
                         composite_score=_scores["composite"],
                         finance_relevance=_scores["finance_relevance"],
                         novelty_score=_scores["novelty"],
@@ -1040,7 +1040,7 @@ async def daily_news_fetch():
                 source=data.get("source", ""),
                 source_url=url,
                 published_at=_parse_datetime(data.get("published_at")),
-                category="radar",  # daily fetch 也標記為 radar，避免混入新聞資料庫
+                category=data.get("category", "daily"),
             )
             db.add(article)
             saved += 1
