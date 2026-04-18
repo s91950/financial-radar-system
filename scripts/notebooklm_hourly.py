@@ -677,20 +677,7 @@ def main():
         label = "[手動] " if manual_override else ""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}抓取新聞文章（自 {tw_str} 台灣時間，嚴重度 {MIN_SEVERITY}+）...")
 
-        # 直接從 Article 資料表抓取，用 fetched_at 過濾（比 Alerts 完整）
-        try:
-            resp = requests.get(
-                f"{API_BASE_URL}/api/news/articles",
-                params={"limit": 300},
-                timeout=20,
-            )
-            resp.raise_for_status()
-            all_articles = resp.json().get("articles", [])
-        except Exception as e:
-            print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
-            sys.exit(1)
-
-        # 用 fetched_at 過濾時間窗（入庫時間，非發布時間）
+        # 從新聞資料庫抓取指定時間起點之後入庫的文章（server-side fetched_at 過濾）
         _crit_kws = {"崩盤","暴跌","暴漲","危機","緊急","衝擊","崩潰","戰爭","制裁","封鎖","違約","破產"}
         _high_kws = {"下跌","上漲","升息","降息","通膨","衰退","波動","警告","風險","貶值","升值",
                      "利率","匯率","油價","黃金","股市","台積","輝達","聯準"}
@@ -704,19 +691,24 @@ def main():
                 return "high"
             return "low"
 
+        try:
+            resp = requests.get(
+                f"{API_BASE_URL}/api/news/articles",
+                params={
+                    "limit": 500,
+                    "fetched_after": news_cutoff.isoformat(),  # server-side 過濾，取時間窗內所有文章
+                },
+                timeout=20,
+            )
+            resp.raise_for_status()
+            all_articles = resp.json().get("articles", [])
+        except Exception as e:
+            print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
+            sys.exit(1)
+
+        # 依嚴重度過濾（client-side，因 API 無嚴重度欄位）
         articles = []
         for a in all_articles:
-            fetched = a.get("fetched_at")
-            if not fetched:
-                continue
-            try:
-                ft = datetime.fromisoformat(fetched.replace("Z", "+00:00"))
-                if ft.tzinfo is None:
-                    ft = ft.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-            if ft < news_cutoff:
-                continue
             sev = _article_severity(a.get("title", ""))
             if min_sev == "critical" and sev != "critical":
                 continue

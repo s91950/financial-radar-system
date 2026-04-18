@@ -54,6 +54,7 @@ async def get_articles(
     severity: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    fetched_after: str | None = Query(None, description="只回傳 fetched_at 晚於此時間的文章（ISO 8601，供 NLM 腳本使用）"),
     db: Session = Depends(get_db),
 ):
     """Get articles from the news database."""
@@ -89,6 +90,11 @@ async def get_articles(
             dt_to = datetime.fromisoformat(date_to)
             from datetime import timedelta
             query = query.filter(Article.published_at < dt_to + timedelta(days=1))
+        except ValueError:
+            pass
+    if fetched_after:
+        try:
+            query = query.filter(Article.fetched_at >= datetime.fromisoformat(fetched_after.replace("Z", "+00:00")))
         except ValueError:
             pass
 
