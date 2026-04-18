@@ -681,7 +681,7 @@ def main():
         try:
             resp = requests.get(
                 f"{API_BASE_URL}/api/news/articles",
-                params={"limit": 300},
+                params={"limit": 300, "include_radar": "true"},
                 timeout=20,
             )
             resp.raise_for_status()

@@ -54,12 +54,21 @@ async def get_articles(
     severity: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    include_radar: bool = Query(False, description="是否包含雷達自動存檔（category=radar）的文章"),
     db: Session = Depends(get_db),
 ):
-    """Get articles from the news database."""
+    """Get articles from the news database.
+
+    預設排除雷達自動存檔（category='radar'）的文章，只顯示使用者手動儲存的文章。
+    傳入 include_radar=true 可取得全部文章（NLM 腳本使用）。
+    """
     from datetime import datetime
     from sqlalchemy import not_
     query = db.query(Article).order_by(Article.fetched_at.desc())
+
+    # 預設排除雷達自動存檔（避免 GN 來源如 MEXC、MSN 混入新聞資料庫）
+    if not include_radar:
+        query = query.filter(Article.category != "radar")
 
     if saved_only:
         query = query.filter(Article.is_saved == True)
