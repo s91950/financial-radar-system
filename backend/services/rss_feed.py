@@ -18,6 +18,7 @@ _REDIRECT_PATTERNS = (
     "feeds.bloomberg.com",
     "feeds.a.dj.com",
     "feeds.marketwatch.com",
+    "news.google.com",
 )
 
 

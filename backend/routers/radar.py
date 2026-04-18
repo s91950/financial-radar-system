@@ -384,6 +384,17 @@ def _condition_to_dict(cond: SignalCondition) -> dict:
     }
 
 
+def _iso_utc(dt) -> str | None:
+    """Return datetime as ISO string with UTC timezone marker.
+    SQLite stores naive datetimes; without 'Z' JavaScript treats them as local time."""
+    if dt is None:
+        return None
+    s = dt.isoformat()
+    if "+" not in s and not s.endswith("Z"):
+        s += "Z"
+    return s
+
+
 def _upsert_config(db, key, value):
     row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
     if row:
@@ -427,7 +438,7 @@ async def get_nlm_report(db: Session = Depends(get_db)):
         return {
             "id": row.id,
             "content": row.content,
-            "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+            "generated_at": _iso_utc(row.generated_at),
             "source_title": row.source_title,
         }
     # 向下相容：從 SystemConfig 取舊資料
@@ -457,7 +468,7 @@ async def list_nlm_reports(
     return [
         {
             "id": r.id,
-            "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+            "generated_at": _iso_utc(r.generated_at),
             "source_title": r.source_title,
         }
         for r in rows
@@ -475,7 +486,7 @@ async def get_nlm_report_by_id(report_id: int, db: Session = Depends(get_db)):
         "id": row.id,
         "report_type": row.report_type,
         "content": row.content,
-        "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+        "generated_at": _iso_utc(row.generated_at),
         "source_title": row.source_title,
     }
 
@@ -515,7 +526,7 @@ async def get_nlm_yt_report(db: Session = Depends(get_db)):
         return {
             "id": row.id,
             "content": row.content,
-            "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+            "generated_at": _iso_utc(row.generated_at),
             "source_title": row.source_title,
         }
     # 向下相容：從 SystemConfig 取舊資料
