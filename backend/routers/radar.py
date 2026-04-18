@@ -8,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.database import Alert, MarketWatchItem, SignalCondition, SystemConfig, get_db
+from backend.database import Alert, MarketWatchItem, NlmReport, SignalCondition, SystemConfig, get_db
 from backend.services import market_data
 
 router = APIRouter()
@@ -384,61 +384,125 @@ def _condition_to_dict(cond: SignalCondition) -> dict:
     }
 
 
+def _upsert_config(db, key, value):
+    row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(SystemConfig(key=key, value=value))
+
+
 @router.post("/notebooklm-report")
 async def save_nlm_report(payload: dict, db: Session = Depends(get_db)):
-    """接收並儲存 NotebookLM 分析報告（由本機 notebooklm_hourly.py 推送）。"""
+    """接收並儲存 NotebookLM 分析報告（由本機 notebooklm_hourly.py 推送）。
+    累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
+    """
     content = payload.get("content", "")
     generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
     source_title = payload.get("source_title", "")
 
+    # 累積寫入歷史表
+    try:
+        gen_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except Exception:
+        gen_dt = datetime.utcnow()
+    db.add(NlmReport(report_type="news", content=content, generated_at=gen_dt, source_title=source_title))
+
+    # 更新 SystemConfig（LINE bot 取最新報告用）
     for key, value in [
         ("nlm_latest_report", content),
         ("nlm_report_generated_at", generated_at),
         ("nlm_report_source_title", source_title),
     ]:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row:
-            row.value = value
-        else:
-            db.add(SystemConfig(key=key, value=value))
+        _upsert_config(db, key, value)
     db.commit()
     return {"status": "ok"}
 
 
 @router.get("/notebooklm-report")
 async def get_nlm_report(db: Session = Depends(get_db)):
-    """取得最新 NotebookLM 分析報告。"""
+    """取得最新 NotebookLM 新聞分析報告。"""
+    row = db.query(NlmReport).filter(NlmReport.report_type == "news").order_by(NlmReport.id.desc()).first()
+    if row:
+        return {
+            "id": row.id,
+            "content": row.content,
+            "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+            "source_title": row.source_title,
+        }
+    # 向下相容：從 SystemConfig 取舊資料
     def _val(key):
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        return row.value if row else None
-
+        r = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        return r.value if r else None
     content = _val("nlm_latest_report")
     if not content:
         return {"content": None, "generated_at": None, "source_title": None}
+    return {"content": content, "generated_at": _val("nlm_report_generated_at"), "source_title": _val("nlm_report_source_title")}
+
+
+@router.get("/notebooklm-reports")
+async def list_nlm_reports(
+    report_type: str = "news",
+    limit: int = 30,
+    db: Session = Depends(get_db),
+):
+    """列出歷史 NLM 分析報告清單（最新在前，預設最多 30 筆）。"""
+    rows = (
+        db.query(NlmReport)
+        .filter(NlmReport.report_type == report_type)
+        .order_by(NlmReport.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+            "source_title": r.source_title,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/notebooklm-reports/{report_id}")
+async def get_nlm_report_by_id(report_id: int, db: Session = Depends(get_db)):
+    """取得指定 ID 的 NLM 報告完整內容。"""
+    row = db.query(NlmReport).filter(NlmReport.id == report_id).first()
+    if not row:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="報告不存在")
     return {
-        "content": content,
-        "generated_at": _val("nlm_report_generated_at"),
-        "source_title": _val("nlm_report_source_title"),
+        "id": row.id,
+        "report_type": row.report_type,
+        "content": row.content,
+        "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+        "source_title": row.source_title,
     }
 
 
 @router.post("/notebooklm-yt-report")
 async def save_nlm_yt_report(payload: dict, db: Session = Depends(get_db)):
-    """接收並儲存 NotebookLM YouTube 分析報告（由本機 notebooklm_hourly.py 推送）。"""
+    """接收並儲存 NotebookLM YouTube 分析報告（由本機 notebooklm_hourly.py 推送）。
+    累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
+    """
     content = payload.get("content", "")
     generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
     source_title = payload.get("source_title", "")
 
+    # 累積寫入歷史表
+    try:
+        gen_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except Exception:
+        gen_dt = datetime.utcnow()
+    db.add(NlmReport(report_type="yt", content=content, generated_at=gen_dt, source_title=source_title))
+
+    # 更新 SystemConfig（LINE bot 取最新報告用）
     for key, value in [
         ("nlm_yt_latest_report", content),
         ("nlm_yt_report_generated_at", generated_at),
         ("nlm_yt_report_source_title", source_title),
     ]:
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        if row:
-            row.value = value
-        else:
-            db.add(SystemConfig(key=key, value=value))
+        _upsert_config(db, key, value)
     db.commit()
     return {"status": "ok"}
 
@@ -446,18 +510,22 @@ async def save_nlm_yt_report(payload: dict, db: Session = Depends(get_db)):
 @router.get("/notebooklm-yt-report")
 async def get_nlm_yt_report(db: Session = Depends(get_db)):
     """取得最新 NotebookLM YouTube 分析報告。"""
+    row = db.query(NlmReport).filter(NlmReport.report_type == "yt").order_by(NlmReport.id.desc()).first()
+    if row:
+        return {
+            "id": row.id,
+            "content": row.content,
+            "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+            "source_title": row.source_title,
+        }
+    # 向下相容：從 SystemConfig 取舊資料
     def _val(key):
-        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-        return row.value if row else None
-
+        r = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+        return r.value if r else None
     content = _val("nlm_yt_latest_report")
     if not content:
         return {"content": None, "generated_at": None, "source_title": None}
-    return {
-        "content": content,
-        "generated_at": _val("nlm_yt_report_generated_at"),
-        "source_title": _val("nlm_yt_report_source_title"),
-    }
+    return {"content": content, "generated_at": _val("nlm_yt_report_generated_at"), "source_title": _val("nlm_yt_report_source_title")}
 
 
 @router.post("/scan")

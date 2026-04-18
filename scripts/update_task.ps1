@@ -14,14 +14,16 @@ $action = New-ScheduledTaskAction `
     -Argument "-X utf8 `"$script`""
 
 if ($task) {
-    Set-ScheduledTask -TaskName $task.TaskName -Action $action
-    Write-Host "已更新工作 Action：$($task.TaskName)"
+    # 同時更新 Action 與 Trigger（改為每 3 小時）
+    $trigger = New-ScheduledTaskTrigger -Daily -At "09:00" -RepetitionInterval (New-TimeSpan -Hours 3)
+    Set-ScheduledTask -TaskName $task.TaskName -Action $action -Trigger $trigger
+    Write-Host "已更新工作 Action + Trigger（每3小時）：$($task.TaskName)"
 } else {
-    # 重新建立（每小時從 12:00 起）
-    $trigger = New-ScheduledTaskTrigger -Daily -At "12:00" -RepetitionInterval (New-TimeSpan -Hours 1)
+    # 重新建立（每 3 小時從 09:00 起）
+    $trigger = New-ScheduledTaskTrigger -Daily -At "09:00" -RepetitionInterval (New-TimeSpan -Hours 3)
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2)
     Register-ScheduledTask `
-        -TaskName "NotebookLM 每小時執行" `
+        -TaskName "NotebookLM 每3小時執行" `
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `

@@ -32,6 +32,8 @@ export const radarAPI = {
   triggerScan: () => api.post('/radar/scan'),
   getNlmReport: () => api.get('/radar/notebooklm-report'),
   getNlmYtReport: () => api.get('/radar/notebooklm-yt-report'),
+  listNlmReports: (type = 'news') => api.get('/radar/notebooklm-reports', { params: { report_type: type } }),
+  getNlmReportById: (id) => api.get(`/radar/notebooklm-reports/${id}`),
 }
 
 // --- Search APIs ---

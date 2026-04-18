@@ -24,7 +24,7 @@ NotebookLM 每小時自動化腳本（本機執行）。
 
 Windows Task Scheduler 設定：
   動作：wscript D:/即時偵測系統claude/scripts/run_nlm_silent.vbs
-  觸發：每小時，從整點開始
+  觸發：每 3 小時，從 09:00 開始（09:00 / 12:00 / 15:00 / 18:00 / 21:00 / 00:00 / 03:00 / 06:00）
   設定：只在連接網路時執行
 """
 
@@ -315,7 +315,7 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
                     "- 每個類別內的分析要點用「1.」「2.」「3.」阿拉伯數字條列，共 3 點\n"
                     "- 每點約 100 字，該類別合計不超過 350 字\n"
                     "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與參與者行為因素\n"
-                    "- 報告最末統一列出「關鍵來源」區塊；每個分析要點各選出最具代表性的 1 篇新聞，格式為「一-1. 標題（URL）」，總數等於分析要點數（例如 3 個主題 × 3 點 = 9 條），切勿省略此區塊\n"
+                    "- 報告最末統一列出「關鍵來源」區塊；只能引用本次確實匯入、你確實看到內容的新聞，不得虛構或引用未在本批次中出現的來源；每個分析要點標注最相關的 1 篇，格式「一-1. 標題（URL）」，同一篇新聞若同時支撐多個要點可重複出現（一-1 與 二-2 可相同），不必強求每條都不同，切勿省略此區塊\n"
                     "- 全程使用繁體中文撰寫"
                 ),
             )
@@ -371,6 +371,26 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
 # YouTube 分析
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _is_youtube_short(video_id: str, requests_mod) -> bool:
+    """
+    判斷影片是否為 YouTube Shorts（片長通常不到 2 分鐘）。
+    原理：對 /shorts/{id} 發送 HEAD 請求（不跟蹤重定向）：
+      - 200 → 是 Short（YouTube 不轉址）
+      - 3xx → 一般影片（YouTube 轉址到 /watch?v=...）
+    逾時或例外時保守返回 False（不過濾）。
+    """
+    try:
+        resp = requests_mod.head(
+            f"https://www.youtube.com/shorts/{video_id}",
+            allow_redirects=False,
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -> str | None:
     """YouTube 影片分析：匯入 YT URL → 建立頻道洞察報告。"""
     if not NOTEBOOK_ID_YT:
@@ -384,7 +404,21 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
         print("[ERROR] 缺少 notebooklm-py 套件", file=sys.stderr)
         return None
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] YouTube：{len(videos)} 支影片")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] YouTube：{len(videos)} 支影片（偵測 Shorts 中...）")
+
+    # 偵測 Shorts（片長不到 2 分鐘）：HEAD /shorts/{id} 回 200 → 是 Short，標記後仍保留分析
+    shorts_ids: set[str] = set()
+    for v in videos:
+        vid_id = v.get("video_id") or ""
+        if not vid_id:
+            m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", v.get("url", "") or "")
+            if m:
+                vid_id = m.group(1)
+        if vid_id and _is_youtube_short(vid_id, requests_mod):
+            shorts_ids.add(vid_id)
+            print(f"  [Shorts] {v.get('title', '')[:60]}")
+    if shorts_ids:
+        print(f"  偵測到 {len(shorts_ids)} 支 Shorts（列入分析，僅寫 1 點）")
 
     source_title = f"YT影片_{datetime.now().strftime('%Y%m%d_%H%M')}"
     MAX_VIDEOS = 15
@@ -437,7 +471,14 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
                     ).strftime("%m/%d %H:%M")
                 except Exception:
                     pass
-                summary_lines.append(f"- [{v.get('channel_name','')}] {v.get('title','')} ({pub})")
+                # 標記 Shorts
+                vid_id = v.get("video_id") or ""
+                if not vid_id:
+                    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", v.get("url", "") or "")
+                    if m:
+                        vid_id = m.group(1)
+                short_tag = " [Shorts]" if vid_id in shorts_ids else ""
+                summary_lines.append(f"- [{v.get('channel_name','')}] {v.get('title','')}{short_tag} ({pub})")
                 if v.get("description"):
                     summary_lines.append(f"  {v['description'][:120]}")
                 if v.get("url"):
@@ -464,14 +505,14 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
                     "• 商品能源分析師：追蹤油氣、原物料、OPEC 動態與供應鏈影響\n\n"
                     "【執行流程】\n"
                     "1. 組長為每支影片指派最適合的分析師\n"
-                    "2. 分析師結合數十年市場底蘊，針對該影片提出 3 個核心洞察\n"
+                    "2. 分析師結合數十年市場底蘊，針對該影片提出核心洞察（一般影片 3 點，Shorts 1 點）\n"
                     "3. 每個洞察須點出市場意涵或對投資人的實際影響\n\n"
                     "【報告格式要求】\n"
                     "- 每支影片獨立一個段落，標題格式：「一、【頻道名稱】影片標題」（依影片清單順序編號）\n"
-                    "- 每支影片下方列「1.」「2.」「3.」共 3 個分析要點\n"
-                    "- 每點約 80～100 字，聚焦該影片的核心論點與市場意涵\n"
+                    "- 影片清單中標注 [Shorts] 的影片：只列「1.」共 1 個分析要點（約 60～80 字）\n"
+                    "- 未標注 [Shorts] 的一般影片：列「1.」「2.」「3.」共 3 個分析要點，每點約 80～100 字\n"
                     "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與投資人行為因素\n"
-                    "- 報告最末統一列出「影片來源」區塊；每支影片各列 1 行，格式為「一. 【頻道名稱】標題（URL）」，切勿省略此區塊\n"
+                    "- 報告最末統一列出「影片來源」區塊；只列本次確實匯入的影片，格式「一. 【頻道名稱】標題（URL）」，不得引用未在本批次中出現的影片，切勿省略此區塊\n"
                     "- 全程使用繁體中文撰寫"
                 ),
             )

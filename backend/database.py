@@ -217,6 +217,17 @@ class YoutubeVideo(Base):
     channel = relationship("YoutubeChannel", back_populates="videos")
 
 
+class NlmReport(Base):
+    """累積保存每次 NotebookLM 生成的分析報告（不覆蓋）。"""
+    __tablename__ = "nlm_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_type = Column(String, default="news")   # "news" | "yt"
+    content = Column(Text)
+    generated_at = Column(DateTime, default=datetime.utcnow)
+    source_title = Column(String)
+
+
 # --- Database Helpers ---
 
 def init_db():
@@ -1117,6 +1128,15 @@ def _migrate_db():
                 "('財新 Caixin Global', 'website', 'https://www.caixinglobal.com/news/', "
                 "'[\"China\",\"PBOC\",\"yuan\",\"economy\",\"trade\",\"regulation\",\"GDP\",\"property\",\"debt\"]', 1, 1)"
             ))
+        conn.commit()
+
+        # ── NLM 分析報告歷史記錄表（累積保存，不覆蓋）──
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS nlm_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT DEFAULT 'news',
+            content TEXT,
+            generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            source_title TEXT)"""))
         conn.commit()
 
 

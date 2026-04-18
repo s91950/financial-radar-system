@@ -34,31 +34,64 @@ function renderReport(content) {
 
 export default function AnalysisPage() {
   const [tab, setTab] = useState('news')
-  const [newsReport, setNewsReport] = useState(null)
-  const [ytReport, setYtReport] = useState(null)
+  const [historyNews, setHistoryNews] = useState([])
+  const [historyYt, setHistoryYt] = useState([])
+  const [selectedIdNews, setSelectedIdNews] = useState(null)
+  const [selectedIdYt, setSelectedIdYt] = useState(null)
+  const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [reportLoading, setReportLoading] = useState(false)
 
+  // 載入歷史清單
   useEffect(() => {
-    const load = async () => {
-      setLoading(true)
+    const loadHistory = async () => {
       try {
-        const [nRes, yRes] = await Promise.all([
-          radarAPI.getNlmReport(),
-          radarAPI.getNlmYtReport(),
+        const [nList, yList] = await Promise.all([
+          radarAPI.listNlmReports('news'),
+          radarAPI.listNlmReports('yt'),
         ])
-        setNewsReport(nRes.data)
-        setYtReport(yRes.data)
+        setHistoryNews(nList.data || [])
+        setHistoryYt(yList.data || [])
       } catch {
         // 靜默失敗
+      }
+    }
+    loadHistory()
+  }, [])
+
+  // 載入選定報告內容（或最新報告）
+  useEffect(() => {
+    const loadReport = async () => {
+      setLoading(true)
+      try {
+        const selectedId = tab === 'news' ? selectedIdNews : selectedIdYt
+        let res
+        if (selectedId) {
+          res = await radarAPI.getNlmReportById(selectedId)
+        } else {
+          res = tab === 'news'
+            ? await radarAPI.getNlmReport()
+            : await radarAPI.getNlmYtReport()
+        }
+        setReport(res.data)
+      } catch {
+        setReport(null)
       } finally {
         setLoading(false)
       }
     }
-    load()
-  }, [])
+    loadReport()
+  }, [tab, selectedIdNews, selectedIdYt])
 
-  const report = tab === 'news' ? newsReport : ytReport
+  const history = tab === 'news' ? historyNews : historyYt
+  const selectedId = tab === 'news' ? selectedIdNews : selectedIdYt
+  const setSelectedId = tab === 'news' ? setSelectedIdNews : setSelectedIdYt
   const emptyMsg = tab === 'news' ? '尚無新聞分析報告' : '尚無 YouTube 分析報告'
+
+  const fmtDate = (iso) => {
+    if (!iso) return '—'
+    return new Date(iso).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-4">
@@ -80,37 +113,65 @@ export default function AnalysisPage() {
         ))}
       </div>
 
-      {/* 報告內容 */}
-      <div className="card">
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
-          </div>
-        ) : !report?.content ? (
-          <div className="text-center py-16 text-dark-500">
-            <div className="text-4xl mb-3">📋</div>
-            <div className="text-sm">{emptyMsg}</div>
-            <div className="text-xs text-dark-600 mt-1">NotebookLM 腳本執行後報告將自動同步至此</div>
-          </div>
-        ) : (
-          <div>
-            {/* 報告 meta */}
-            <div className="flex items-center justify-between pb-4 mb-4 border-b border-dark-700">
-              <div className="text-xs text-dark-500 space-y-0.5">
-                <div>生成時間：<span className="text-dark-400">
-                  {report.generated_at ? new Date(report.generated_at).toLocaleString('zh-TW') : '—'}
-                </span></div>
-                {report.source_title && (
-                  <div>來源批次：<span className="text-dark-400">{report.source_title}</span></div>
+      <div className="flex gap-4 items-start">
+        {/* 歷史清單（側欄） */}
+        {history.length > 1 && (
+          <div className="w-44 flex-shrink-0 space-y-1">
+            <div className="text-xs text-dark-500 px-1 mb-2">歷史報告（{history.length}）</div>
+            {history.map((h) => (
+              <button
+                key={h.id}
+                onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
+                className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
+                  (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
+                    ? 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
+                    : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800'
+                }`}
+              >
+                <div className="font-medium">{fmtDate(h.generated_at)}</div>
+                {h.source_title && (
+                  <div className="text-dark-500 truncate mt-0.5">{h.source_title}</div>
                 )}
-              </div>
-            </div>
-            {/* 報告本文 */}
-            <div className="space-y-0">
-              {renderReport(report.content)}
-            </div>
+              </button>
+            ))}
           </div>
         )}
+
+        {/* 報告內容 */}
+        <div className="card flex-1 min-w-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-16">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
+            </div>
+          ) : !report?.content ? (
+            <div className="text-center py-16 text-dark-500">
+              <div className="text-4xl mb-3">📋</div>
+              <div className="text-sm">{emptyMsg}</div>
+              <div className="text-xs text-dark-600 mt-1">NotebookLM 腳本執行後報告將自動同步至此</div>
+            </div>
+          ) : (
+            <div>
+              {/* 報告 meta */}
+              <div className="flex items-center justify-between pb-4 mb-4 border-b border-dark-700">
+                <div className="text-xs text-dark-500 space-y-0.5">
+                  <div>生成時間：<span className="text-dark-400">
+                    {report.generated_at ? new Date(report.generated_at).toLocaleString('zh-TW') : '—'}
+                  </span></div>
+                  {report.source_title && (
+                    <div>來源批次：<span className="text-dark-400">{report.source_title}</span></div>
+                  )}
+                </div>
+                {history.length > 0 && (
+                  <div className="text-xs text-dark-600">共 {history.length} 份歷史報告</div>
+                )}
+              </div>
+              {/* 報告本文 */}
+              <div className="space-y-0">
+                {renderReport(report.content)}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
