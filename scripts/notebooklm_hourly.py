@@ -218,8 +218,6 @@ def _build_news_summary(articles: list[dict], cutoff: datetime) -> str:
         lines.append(f"**來源**：{a.get('source', '')} | **入庫**：{dt}")
         if a.get("source_url"):
             lines.append(f"**連結**：{a['source_url']}")
-        if a.get("content"):
-            lines.append(f"\n{a['content'][:300]}")
         lines.append("")
     return "\n".join(lines)
 
@@ -479,8 +477,6 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
                         vid_id = m.group(1)
                 short_tag = " [Shorts]" if vid_id in shorts_ids else ""
                 summary_lines.append(f"- [{v.get('channel_name','')}] {v.get('title','')}{short_tag} ({pub})")
-                if v.get("description"):
-                    summary_lines.append(f"  {v['description'][:120]}")
                 if v.get("url"):
                     summary_lines.append(f"  {v['url']}")
             await client.sources.add_text(
