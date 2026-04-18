@@ -7,8 +7,8 @@ Returns the 15 most recent videos.
 
 import logging
 import re
+from calendar import timegm
 from datetime import datetime
-from time import mktime
 from typing import Optional
 
 import feedparser
@@ -20,9 +20,12 @@ _FEED_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
 
 def _parse_published(entry) -> Optional[datetime]:
+    """Parse published date from RSS entry as UTC datetime.
+    feedparser returns published_parsed as a UTC time_struct;
+    must use timegm (not mktime) to avoid treating it as local time."""
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         try:
-            return datetime.fromtimestamp(mktime(entry.published_parsed))
+            return datetime.utcfromtimestamp(timegm(entry.published_parsed))
         except Exception:
             pass
     return None

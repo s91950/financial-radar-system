@@ -18,7 +18,6 @@ _REDIRECT_PATTERNS = (
     "feeds.bloomberg.com",
     "feeds.a.dj.com",
     "feeds.marketwatch.com",
-    "news.google.com",
 )
 
 
@@ -43,6 +42,44 @@ async def _resolve_redirect(url: str, client: httpx.AsyncClient) -> str:
     except Exception:
         pass
     return url
+
+
+async def _resolve_gn_article_urls(articles: list[dict]) -> list[dict]:
+    """Decode news.google.com/rss/articles/... URLs to actual article URLs.
+
+    Uses the same batchexecute decode as google_news.py.
+    Articles without GN URLs are returned unchanged.
+    Falls back to original URL on any decode failure.
+    """
+    from backend.services.google_news import _resolve_google_news_urls
+
+    gn_indices = []
+    gn_ids = []
+    for i, a in enumerate(articles):
+        url = a.get("source_url", "")
+        if "news.google.com" in url and "/articles/" in url:
+            art_id = url.split("/articles/")[-1].split("?")[0]
+            if art_id:
+                gn_indices.append(i)
+                gn_ids.append(art_id)
+
+    if not gn_ids:
+        return articles
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=15, verify=False, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            decoded = await _resolve_google_news_urls(client, gn_ids)
+        for pos, idx in enumerate(gn_indices):
+            resolved = decoded[pos] if pos < len(decoded) else None
+            if resolved and resolved.startswith("http"):
+                articles[idx]["source_url"] = resolved
+    except Exception as e:
+        logger.warning(f"GN batchexecute decode failed: {e}")
+
+    return articles
 
 
 async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
@@ -88,6 +125,9 @@ async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
             for i, r in enumerate(resolved):
                 if isinstance(r, str):
                     articles[i]["source_url"] = r
+
+            # Decode Google News article URLs (batchexecute API)
+            articles = await _resolve_gn_article_urls(articles)
 
         return articles
     except Exception as e:

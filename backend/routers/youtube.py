@@ -235,7 +235,7 @@ def _video_dict(video: YoutubeVideo) -> dict:
         "description": video.description,
         "url": video.url,
         "thumbnail_url": video.thumbnail_url,
-        "published_at": video.published_at.isoformat() if video.published_at else None,
-        "fetched_at": video.fetched_at.isoformat() if video.fetched_at else None,
+        "published_at": (video.published_at.isoformat() + "Z") if video.published_at else None,
+        "fetched_at": (video.fetched_at.isoformat() + "Z") if video.fetched_at else None,
         "is_new": video.is_new,
     }
