@@ -113,32 +113,28 @@ export default function AnalysisPage() {
         ))}
       </div>
 
-      <div className="flex gap-4 items-start">
-        {/* 歷史清單（側欄） */}
-        {history.length > 1 && (
-          <div className="w-44 flex-shrink-0 space-y-1">
-            <div className="text-xs text-dark-500 px-1 mb-2">歷史報告（{history.length}）</div>
-            {history.map((h) => (
-              <button
-                key={h.id}
-                onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
-                className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
-                  (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
-                    ? 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
-                    : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800'
-                }`}
-              >
-                <div className="font-medium">{fmtDate(h.generated_at)}</div>
-                {h.source_title && (
-                  <div className="text-dark-500 truncate mt-0.5">{h.source_title}</div>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
+      {/* 歷史清單（橫列） */}
+      {history.length > 1 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <span className="text-xs text-dark-500 whitespace-nowrap shrink-0">歷史（{history.length}）</span>
+          {history.map((h) => (
+            <button
+              key={h.id}
+              onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
+              className={`shrink-0 px-3 py-1.5 rounded-lg text-xs transition-colors whitespace-nowrap ${
+                (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
+                  ? 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
+                  : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800 border border-dark-700'
+              }`}
+            >
+              {fmtDate(h.generated_at)}
+            </button>
+          ))}
+        </div>
+      )}
 
-        {/* 報告內容 */}
-        <div className="card flex-1 min-w-0">
+      {/* 報告內容 */}
+      <div className="card">
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
@@ -172,7 +168,6 @@ export default function AnalysisPage() {
             </div>
           )}
         </div>
-      </div>
     </div>
   )
 }
