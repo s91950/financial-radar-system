@@ -151,18 +151,64 @@ def _html_to_text(html: str) -> str:
         return re.sub(r'\s+', ' ', text).strip()
 
 
-async def _cleanup_sources(client, notebook_id: str):
-    """清除 notebook 內所有舊 sources（每次從空白開始）。"""
+_SKILLS_DIR = os.path.join(_script_dir, "skills")
+_SKILL_PREFIX = "[SKILL] "
+
+
+async def _ensure_skill_sources(client, notebook_id: str):
+    """確保所有 skills/ 目錄內的 .md 檔已匯入指定 NLM notebook。
+    以標題 '[SKILL] 檔名（不含副檔名）' 識別；已存在的跳過，缺少的補匯入。
+    """
+    if not os.path.isdir(_SKILLS_DIR):
+        print(f"  [Skills] 找不到 skills/ 目錄（{_SKILLS_DIR}），跳過")
+        return
+
+    skill_files = sorted(f for f in os.listdir(_SKILLS_DIR) if f.lower().endswith(".md"))
+    if not skill_files:
+        print("  [Skills] skills/ 目錄內無 .md 檔，跳過")
+        return
+
     try:
         existing = await client.sources.list(notebook_id)
-        if existing:
-            for src in existing:
-                await client.sources.delete(notebook_id, src.id)
-            print(f"  已刪除 {len(existing)} 個舊 source")
-        else:
-            print("  無舊 source 需清除")
+        existing_titles = {s.title for s in existing if s.title and s.title.startswith(_SKILL_PREFIX)}
     except Exception as e:
-        print(f"  [WARNING] 清除舊 sources 失敗（非致命）：{e}")
+        print(f"  [Skills] 無法取得現有 sources：{e}")
+        existing_titles = set()
+
+    added = skipped = 0
+    for filename in skill_files:
+        title = f"{_SKILL_PREFIX}{os.path.splitext(filename)[0]}"
+        if title in existing_titles:
+            skipped += 1
+            continue
+        filepath = os.path.join(_SKILLS_DIR, filename)
+        try:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+            await client.sources.add_text(notebook_id, title=title, content=content, wait=False)
+            added += 1
+            print(f"  [Skills] 匯入：{filename}")
+        except Exception as e:
+            print(f"  [Skills] 匯入失敗 {filename}：{e}")
+
+    status = f"新增 {added}" if added else "全部已存在"
+    print(f"  [Skills] 完成（{status}，共 {len(skill_files)} 個 skill 檔）")
+
+
+async def _cleanup_news_sources(client, notebook_id: str):
+    """清除 notebook 內的新聞 / YT sources，保留 [SKILL] 開頭的永久 sources。"""
+    try:
+        existing = await client.sources.list(notebook_id)
+        to_delete = [s for s in existing if not (s.title or "").startswith(_SKILL_PREFIX)]
+        skill_count = len(existing) - len(to_delete)
+        if to_delete:
+            for src in to_delete:
+                await client.sources.delete(notebook_id, src.id)
+            print(f"  已刪除 {len(to_delete)} 個新聞 sources（保留 {skill_count} 個 skill sources）")
+        else:
+            print(f"  無新聞 sources 需清除（保留 {skill_count} 個 skill sources）")
+    except Exception as e:
+        print(f"  [WARNING] 清除新聞 sources 失敗（非致命）：{e}")
 
 
 async def _add_source_with_fallback(
@@ -224,17 +270,35 @@ def _build_news_summary(articles: list[dict], cutoff: datetime) -> str:
 
 def _build_news_prompt(article_count: int) -> str:
     """
-    依文章數量選擇分析提示詞版本。
-    < 10 篇 → 精簡版：3 點市場觀察（現有模式）
+    依文章數量選擇分析提示詞版本，兩版均使用完整分析團隊框架。
+    < 10 篇 → 精簡版：全部新聞 3 點市場觀察
     ≥ 10 篇 → 分類版：依主題分類，每類 1-3 點分析，每點附關鍵來源
     """
+    # ── 分析團隊前導（兩版共用）──────────────────────────────────────────
+    team_preamble = (
+        "你是由多名頂尖金融專業人士組成的分析團隊，團隊架構、各分析師專業底蘊、"
+        "六層分析流程及全體禁止行為，詳見已上傳的 [SKILL] PROJECT_INSTRUCTIONS_v2 "
+        "與各 [SKILL] SKILL_* 檔案，請以這些檔案作為分析框架與視角依據。\n\n"
+        "分析時必須：\n"
+        "• 由最適合的分析師角色主導（宏觀/債市/股市/匯率/商品/地緣政治等），"
+        "並以跨角色視角交叉驗證\n"
+        "• 每個觀察點追蹤至少三層因果鏈（直接影響 → 市場反應 → 結構性影響）\n"
+        "• 點出不同市場參與者的立場分歧（外資、央行、散戶至少涵蓋一組）\n"
+        "• 若有反證條件（「若___發生，此判斷不成立」），請在相關段落中標示\n\n"
+    )
+
+    # ── 來源規則（兩版共用）──────────────────────────────────────────────
+    source_rule = (
+        "【來源規則】\n"
+        "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
+        "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
+    )
+
     if article_count < 10:
         return (
-            "你是一位擁有 35 年市場經歷的資深金融分析師，負責對本批次匯入的金融新聞進行深度分析。\n\n"
-            "【分析規則】\n"
-            "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
-            "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
-            "【報告格式】\n"
+            team_preamble
+            + source_rule
+            + "【報告格式】\n"
             "- 針對本批次所有新聞，統整出 3 個最重要的市場觀察，用「1.」「2.」「3.」條列\n"
             "- 每點約 100 字，三點合計不超過 350 字，須點出跨市場連動與參與者行為影響\n"
             "- 報告最末統一列出「關鍵來源」區塊：只列本次確實匯入且你確實看到內容的文章，"
@@ -243,13 +307,11 @@ def _build_news_prompt(article_count: int) -> str:
         )
     else:
         return (
-            "你是一位擁有 35 年市場經歷的資深金融分析師，負責對本批次匯入的大量金融新聞進行分類深度分析。\n\n"
-            "【分析規則】\n"
-            "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
-            "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
-            "【報告格式】\n"
-            "第一步：將本批次新聞依市場主題分類（例如：地緣政治、貨幣政策、台股供應鏈、能源市場、"
-            "總體經濟等）。分類名稱由你根據實際內容決定，不需套用固定分類。\n\n"
+            team_preamble
+            + source_rule
+            + "【報告格式】\n"
+            "第一步：將本批次新聞依市場主題分類（如：地緣政治、貨幣政策、台股供應鏈、"
+            "能源市場、總體經濟等）。分類名稱由你根據實際內容決定，不需套用固定分類。\n\n"
             "第二步：每個類別下條列分析要點，格式如下：\n\n"
             "### 一、[類別名稱]\n"
             "1. [分析內容，約 100 字，須點出跨市場連動與參與者行為影響]\n"
@@ -261,7 +323,7 @@ def _build_news_prompt(article_count: int) -> str:
             "- 該類別僅 1 篇新聞 → 列出 1 點\n\n"
             "【來源引用規則】\n"
             "- 每點末尾用「**來源**：標題（URL）」格式列出該點最關鍵的 1 篇文章\n"
-            "- 每篇文章優先作為一個點的關鍵來源；若某篇已被前面某點引用為關鍵來源，"
+            "- 每篇文章優先作為一個點的關鍵來源；若某篇已被前面某點引用，"
             "後續改引用次關鍵來源（重要性次高的未被引用文章）\n"
             "- 若某點確實無其他可用來源，可重複引用，但須是確實匯入的文章，禁止虛構\n\n"
             "全程使用繁體中文撰寫。"
@@ -301,9 +363,11 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
     try:
         async with await NotebookLMClient.from_storage() as client:
 
-            # Step 0：清除舊 sources
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [新聞] 清除舊 sources...")
-            await _cleanup_sources(client, NOTEBOOK_ID)
+            # Step 0：確保 skill sources 存在，再清除舊新聞 sources
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [新聞] 確認 skill sources...")
+            await _ensure_skill_sources(client, NOTEBOOK_ID)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [新聞] 清除舊新聞 sources...")
+            await _cleanup_news_sources(client, NOTEBOOK_ID)
 
             # Step A：逐一匯入所有文章（URL 優先，例外才用抓內文的 text 備援），不設上限
             for a in article_data:
@@ -457,9 +521,11 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
     try:
         async with await NotebookLMClient.from_storage() as client:
 
-            # Step 0：清除舊 sources
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] [YT] 清除舊 sources...")
-            await _cleanup_sources(client, NOTEBOOK_ID_YT)
+            # Step 0：確保 skill sources 存在，再清除舊 YT sources
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [YT] 確認 skill sources...")
+            await _ensure_skill_sources(client, NOTEBOOK_ID_YT)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] [YT] 清除舊影片 sources...")
+            await _cleanup_news_sources(client, NOTEBOOK_ID_YT)
 
             # Step A：匯入 YouTube URL（失敗則以標題+簡介 text 補救）
             for v in videos[:MAX_VIDEOS]:
@@ -518,24 +584,23 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
                 report_format=ReportFormat.CUSTOM,
                 language="zh-TW",
                 custom_prompt=(
-                    "你是一個由資深金融分析師組成的研究小組，負責解析本批次金融 YouTube 頻道的最新影片內容。\n\n"
-                    "【團隊架構】\n"
-                    "• 組長（35 年市場經歷）：宏觀掌握全局，分配任務並負責最終彙整\n"
-                    "• 台股分析師：深耕台灣上市櫃、法人動向、半導體供應鏈脈動\n"
-                    "• 總經分析師：專精利率、通膨、各國央行政策與全球資金循環\n"
-                    "• 地緣政治分析師：專精地緣政治風險、制裁、外交關係對市場的結構性影響\n"
-                    "• 國際市場分析師：覆蓋美歐股市、匯市走勢與跨市場資金流向\n"
-                    "• 商品能源分析師：追蹤油氣、原物料、OPEC 動態與供應鏈影響\n\n"
-                    "【執行流程】\n"
-                    "1. 組長為每支影片指派最適合的分析師\n"
-                    "2. 分析師結合數十年市場底蘊，針對該影片提出核心洞察（一般影片 3 點，Shorts 1 點）\n"
-                    "3. 每個洞察須點出市場意涵或對投資人的實際影響\n\n"
-                    "【報告格式要求】\n"
+                    "你是由多名頂尖金融專業人士組成的分析團隊，團隊架構、各分析師專業底蘊、"
+                    "六層分析流程及全體禁止行為，詳見已上傳的 [SKILL] PROJECT_INSTRUCTIONS_v2 "
+                    "與各 [SKILL] SKILL_* 檔案，請以這些檔案作為分析框架與視角依據。\n\n"
+                    "【執行方式】\n"
+                    "• 由首席分析師（CHIEF-01）為每支影片指派最適合的分析師角色\n"
+                    "• 各分析師依其專業（宏觀/債市/股市/匯率/商品/地緣政治等）提出核心洞察\n"
+                    "• 每個洞察追蹤至少三層因果鏈，並點出跨市場連動與投資人行為因素\n"
+                    "• 若有反證條件（「若___發生，此判斷不成立」），請在相關要點中標示\n\n"
+                    "【來源規則】\n"
+                    "• 只能根據本次實際匯入的影片內容進行分析，禁止引用或虛構未匯入的影片\n\n"
+                    "【報告格式要求（嚴格遵守）】\n"
                     "- 每支影片獨立一個段落，標題格式：「一、【頻道名稱】影片標題」（依影片清單順序編號）\n"
                     "- 影片清單中標注 [Shorts] 的影片：只列「1.」共 1 個分析要點（約 60～80 字）\n"
                     "- 未標注 [Shorts] 的一般影片：列「1.」「2.」「3.」共 3 個分析要點，每點約 80～100 字\n"
                     "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與投資人行為因素\n"
-                    "- 報告最末統一列出「影片來源」區塊；只列本次確實匯入的影片，格式「一. 【頻道名稱】標題（URL）」，不得引用未在本批次中出現的影片，切勿省略此區塊\n"
+                    "- 報告最末統一列出「影片來源」區塊；只列本次確實匯入的影片，"
+                    "格式「一. 【頻道名稱】標題（URL）」，不得引用未在本批次中出現的影片，切勿省略此區塊\n"
                     "- 全程使用繁體中文撰寫"
                 ),
             )
