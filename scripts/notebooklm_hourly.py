@@ -15,7 +15,7 @@ NotebookLM 每小時自動化腳本（本機執行）。
   NOTEBOOK_ID          新聞分析用 NotebookLM Notebook ID
   NOTEBOOK_ID_YT       YouTube 分析用 NotebookLM Notebook ID（留空則跳過 YT 分析）
   RESULT_PUSH_LINE     true = 同時推播 LINE（需 VM LINE_TARGET_ID 已設定）
-  HOURS_BACK           回溯小時數，預設 1（超過此時間未執行時自動補分析）
+  HOURS_BACK           回溯小時數，預設 3（配合每 3 小時排程；超過此時間未執行時自動補分析）
   MIN_SEVERITY         最低嚴重度（critical / high），預設 high
 
 斷線補分析邏輯：
@@ -222,6 +222,52 @@ def _build_news_summary(articles: list[dict], cutoff: datetime) -> str:
     return "\n".join(lines)
 
 
+def _build_news_prompt(article_count: int) -> str:
+    """
+    依文章數量選擇分析提示詞版本。
+    < 10 篇 → 精簡版：3 點市場觀察（現有模式）
+    ≥ 10 篇 → 分類版：依主題分類，每類 1-3 點分析，每點附關鍵來源
+    """
+    if article_count < 10:
+        return (
+            "你是一位擁有 35 年市場經歷的資深金融分析師，負責對本批次匯入的金融新聞進行深度分析。\n\n"
+            "【分析規則】\n"
+            "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
+            "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
+            "【報告格式】\n"
+            "- 針對本批次所有新聞，統整出 3 個最重要的市場觀察，用「1.」「2.」「3.」條列\n"
+            "- 每點約 100 字，三點合計不超過 350 字，須點出跨市場連動與參與者行為影響\n"
+            "- 報告最末統一列出「關鍵來源」區塊：只列本次確實匯入且你確實看到內容的文章，"
+            "格式「1. 標題（URL）」，可重複引用同一篇，禁止虛構未匯入的來源\n"
+            "- 全程使用繁體中文撰寫"
+        )
+    else:
+        return (
+            "你是一位擁有 35 年市場經歷的資深金融分析師，負責對本批次匯入的大量金融新聞進行分類深度分析。\n\n"
+            "【分析規則】\n"
+            "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
+            "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
+            "【報告格式】\n"
+            "第一步：將本批次新聞依市場主題分類（例如：地緣政治、貨幣政策、台股供應鏈、能源市場、"
+            "總體經濟等）。分類名稱由你根據實際內容決定，不需套用固定分類。\n\n"
+            "第二步：每個類別下條列分析要點，格式如下：\n\n"
+            "### 一、[類別名稱]\n"
+            "1. [分析內容，約 100 字，須點出跨市場連動與參與者行為影響]\n"
+            "   **來源**：標題（URL）\n"
+            "2. ...\n\n"
+            "【分析點數規則】\n"
+            "- 該類別涵蓋 3 篇以上新聞 → 列出 3 點\n"
+            "- 該類別涵蓋 2 篇新聞 → 列出 2 點\n"
+            "- 該類別僅 1 篇新聞 → 列出 1 點\n\n"
+            "【來源引用規則】\n"
+            "- 每點末尾用「**來源**：標題（URL）」格式列出該點最關鍵的 1 篇文章\n"
+            "- 每篇文章優先作為一個點的關鍵來源；若某篇已被前面某點引用為關鍵來源，"
+            "後續改引用次關鍵來源（重要性次高的未被引用文章）\n"
+            "- 若某點確實無其他可用來源，可重複引用，但須是確實匯入的文章，禁止虛構\n\n"
+            "全程使用繁體中文撰寫。"
+        )
+
+
 async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mod) -> str | None:
     """新聞分析：匯入文章 URL（失敗則抓內文）→ 建立分析師團隊報告。
     articles: 直接來自 /api/news/articles 的 Article dict 清單。
@@ -289,33 +335,14 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             await client.sources.add_text(NOTEBOOK_ID, title=source_title, content=summary_text, wait=True)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped} + 1份摘要")
 
-            # Step C：建立分析師團隊報告
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告...")
+            # Step C：建立分析師團隊報告（依文章數量選擇提示詞版本）
+            prompt_version = "分類版" if len(articles) >= 10 else "精簡版"
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告（{prompt_version}，共 {len(articles)} 篇）...")
             gen_status = await client.artifacts.generate_report(
                 NOTEBOOK_ID,
                 report_format=ReportFormat.CUSTOM,
                 language="zh-TW",
-                custom_prompt=(
-                    "你是一個由資深金融分析師組成的研究小組，負責分析本批次匯入的金融新聞。\n\n"
-                    "【團隊架構】\n"
-                    "• 組長（35 年市場經歷）：宏觀掌握全局，分配任務並負責最終彙整\n"
-                    "• 台股分析師：深耕台灣上市櫃、法人動向、半導體供應鏈脈動\n"
-                    "• 總經分析師：專精利率、通膨、各國央行政策與全球資金循環\n"
-                    "• 地緣政治分析師：專精地緣政治風險、制裁、外交關係對市場的結構性影響\n"
-                    "• 國際市場分析師：覆蓋美歐股市、匯市走勢與跨市場資金流向\n"
-                    "• 商品能源分析師：追蹤油氣、原物料、OPEC 動態與供應鏈影響\n\n"
-                    "【執行流程】\n"
-                    "1. 組長先將本批新聞依主題分類（例如：地緣政治、央行政策、台股個股、能源商品等）\n"
-                    "2. 對應分析師結合數十年市場底蘊與當前時事背景，提出核心觀點\n"
-                    "3. 組長考量各市場交叉影響與市場參與者互動行為，彙整輸出最終報告\n\n"
-                    "【報告格式要求】\n"
-                    "- 新聞類別標題用「一、」「二、」「三、」等中文數字編號\n"
-                    "- 每個類別內的分析要點用「1.」「2.」「3.」阿拉伯數字條列，共 3 點\n"
-                    "- 每點約 100 字，該類別合計不超過 350 字\n"
-                    "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與參與者行為因素\n"
-                    "- 報告最末統一列出「關鍵來源」區塊；只能引用本次確實匯入、你確實看到內容的新聞，不得虛構或引用未在本批次中出現的來源；每個分析要點標注最相關的 1 篇，格式「一-1. 標題（URL）」，同一篇新聞若同時支撐多個要點可重複出現（一-1 與 二-2 可相同），不必強求每條都不同，切勿省略此區塊\n"
-                    "- 全程使用繁體中文撰寫"
-                ),
+                custom_prompt=_build_news_prompt(len(articles)),
             )
 
             # Step D：等待完成

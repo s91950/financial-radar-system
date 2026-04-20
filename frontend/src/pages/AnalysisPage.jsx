@@ -1,32 +1,60 @@
 import { useEffect, useState } from 'react'
 import { radarAPI } from '../services/api'
 
+// 將文字片段中的 URL 轉成可點擊的 <a> 連結
+function linkify(text, keyPrefix) {
+  const URL_RE = /https?:\/\/[^\s）)】\]]+/g
+  const parts = []
+  let last = 0, m
+  while ((m = URL_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    parts.push(
+      <a key={`${keyPrefix}-u${m.index}`} href={m[0]} target="_blank" rel="noopener noreferrer"
+        className="text-primary-400 hover:text-primary-300 underline break-all">
+        {m[0]}
+      </a>
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return parts.length === 1 && typeof parts[0] === 'string' ? text : parts
+}
+
+// 將行內 **bold** 與 URL 都渲染出來
+function renderInline(line, lineKey) {
+  const segments = line.split(/(\*\*[^*]+\*\*)/)
+  return segments.map((seg, j) => {
+    const bold = seg.match(/^\*\*(.+)\*\*$/)
+    if (bold) return <strong key={`${lineKey}-b${j}`} className="text-dark-200 font-semibold">{bold[1]}</strong>
+    return <span key={`${lineKey}-s${j}`}>{linkify(seg, `${lineKey}-s${j}`)}</span>
+  })
+}
+
 function renderReport(content) {
   if (!content) return null
   return content.split('\n').map((line, i) => {
-    if (/^#{1,3}\s/.test(line)) {
-      const level = line.match(/^(#{1,3})\s/)[1].length
-      const text = line.replace(/^#{1,3}\s/, '')
+    if (/^#{1,4}\s/.test(line)) {
+      const level = line.match(/^(#{1,4})\s/)[1].length
+      const text = line.replace(/^#{1,4}\s/, '')
       const cls = level === 1
         ? 'text-base font-bold text-dark-100 mt-6 mb-2'
         : level === 2
         ? 'text-sm font-semibold text-dark-200 mt-5 mb-1'
-        : 'text-sm font-medium text-dark-300 mt-3 mb-1'
+        : level === 3
+        ? 'text-sm font-medium text-primary-400 mt-4 mb-1'
+        : 'text-sm font-medium text-dark-300 mt-3 mb-0.5'
       return <div key={i} className={cls}>{text}</div>
     }
     if (/^---+$/.test(line.trim())) return <hr key={i} className="border-dark-700 my-3" />
-    // Bold line: **text**
+    // Whole-line bold: **text**
     const boldMatch = line.match(/^\*\*(.+)\*\*$/)
     if (boldMatch) return <div key={i} className="text-sm font-semibold text-dark-200 mt-2">{boldMatch[1]}</div>
     if (line.trim() === '') return <div key={i} className="h-1.5" />
-    // Inline bold rendering
-    const parts = line.split(/(\*\*[^*]+\*\*)/)
+    // Source indent lines starting with spaces (分類版 **來源**: ...)
+    const isIndented = /^\s{2,}/.test(line)
     return (
-      <div key={i} className="text-sm text-dark-400 leading-relaxed">
-        {parts.map((p, j) => {
-          const m = p.match(/^\*\*(.+)\*\*$/)
-          return m ? <strong key={j} className="text-dark-200 font-semibold">{m[1]}</strong> : p
-        })}
+      <div key={i} className={`text-sm leading-relaxed ${isIndented ? 'text-dark-500 pl-4 mt-0.5' : 'text-dark-400'}`}>
+        {renderInline(line.trimStart(), i)}
       </div>
     )
   })
