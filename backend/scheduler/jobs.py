@@ -193,6 +193,8 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
     from backend.services.worldbank_scraper import is_worldbank_api_url, fetch_worldbank_news
     from backend.services.fsc_scraper import is_fsc_url, fetch_fsc_news
     from backend.services.caixin_scraper import is_caixin_url, fetch_caixin_news
+    from backend.services.storm_scraper import is_storm_url, fetch_storm_news
+    from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
     from backend.services.web_scraper import scrape_page
 
     if is_cnyes_api_url(url):
@@ -203,6 +205,10 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
         return await fetch_fsc_news(hours_back)
     if is_caixin_url(url):
         return await fetch_caixin_news(hours_back)
+    if is_storm_url(url):
+        return await fetch_storm_news(hours_back)
+    if is_taisounds_url(url):
+        return await fetch_taisounds_news(hours_back)
 
     # Generic HTML scraping — returns at most one article (the page itself)
     result = await scrape_page(url)

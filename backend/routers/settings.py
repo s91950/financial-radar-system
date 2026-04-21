@@ -570,6 +570,8 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
         from backend.services.worldbank_scraper import is_worldbank_api_url, fetch_worldbank_news
         from backend.services.fsc_scraper import is_fsc_url, fetch_fsc_news
         from backend.services.caixin_scraper import is_caixin_url, fetch_caixin_news
+        from backend.services.storm_scraper import is_storm_url, fetch_storm_news
+        from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
 
         # 路由到對應爬蟲
         scraper_map = [
@@ -577,6 +579,8 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
             (is_worldbank_api_url, lambda: fetch_worldbank_news(source.url, hours_back=48), "World Bank API"),
             (is_fsc_url, lambda: fetch_fsc_news(hours_back=48), "金管會新聞稿"),
             (is_caixin_url, lambda: fetch_caixin_news(hours_back=48), "財新 Caixin Global"),
+            (is_storm_url, lambda: fetch_storm_news(hours_back=24), "風傳媒 News Sitemap"),
+            (is_taisounds_url, lambda: fetch_taisounds_news(hours_back=24), "太報 Sitemap"),
         ]
         for check_fn, fetch_fn, label in scraper_map:
             if check_fn(source.url):
