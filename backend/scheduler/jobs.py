@@ -675,6 +675,7 @@ async def _radar_scan_inner(force: bool = False):
                         novelty_score=_scores["novelty"],
                         decay_factor=_scores["decay"],
                         intensity_score=_scores["intensity"],
+                        severity=_article_severity(data),
                     ))
             except IntegrityError:
                 pass  # 已存在，略過
@@ -756,7 +757,7 @@ async def _radar_scan_inner(force: bool = False):
             title=alert_title,
             content="\n".join(_fmt_article_line(a) for a in new_articles),
             analysis=None,
-            severity=_assess_severity(new_articles, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names),
+            severity=(max((_article_severity(a) for a in new_articles), key=lambda s: _SEVERITY_ORDER.get(s, 0)) if new_articles else "low"),
             source="Radar Scan",
             exposure_summary=exposure_summary or None,
             source_urls=json.dumps(source_urls) if source_urls else None,
@@ -1759,9 +1760,19 @@ def _build_topic_gn_query(keywords: list[str]) -> str:
 
 
 def _parse_datetime(dt_str: str | None) -> datetime | None:
+    """Parse datetime string and normalize to naive UTC for consistent DB storage.
+
+    RSS feeds may publish in various timezones (+08:00, +00:00 etc.).
+    We convert all to naive UTC so the API can append "Z" and JavaScript
+    displays times correctly in local timezone.
+    """
     if not dt_str:
         return None
     try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        from datetime import timezone
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except (ValueError, AttributeError):
         return None

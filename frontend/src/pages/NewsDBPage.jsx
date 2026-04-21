@@ -675,7 +675,7 @@ export default function NewsDBPage() {
             </div>
           ) : (
             sortedArticles.map(article => {
-              const sev = assessSeverity(article.title, article.content)
+              const sev = article.severity || assessSeverity(article.title, article.content)
               const isSelected = selectedDbIds.has(article.id)
               return (
                 <div

@@ -71,15 +71,24 @@ async def get_articles(
             (Article.title.contains(search)) | (Article.content.contains(search))
         )
     if severity == 'critical':
-        query = query.filter(_kw_filter(_CRITICAL_KWS))
+        # 優先使用掃描時存入的 severity 欄位（含 fixed_severity）；舊資料（severity=NULL）fallback 關鍵字比對
+        from sqlalchemy import or_, not_
+        query = query.filter(or_(
+            Article.severity == 'critical',
+            (Article.severity == None) & _kw_filter(_CRITICAL_KWS),
+        ))
     elif severity == 'high':
-        query = query.filter(
-            _kw_filter(_HIGH_KWS) & not_(_kw_filter(_CRITICAL_KWS))
-        )
+        from sqlalchemy import or_, not_
+        query = query.filter(or_(
+            Article.severity == 'high',
+            (Article.severity == None) & _kw_filter(_HIGH_KWS) & not_(_kw_filter(_CRITICAL_KWS)),
+        ))
     elif severity == 'low':
-        query = query.filter(
-            not_(_kw_filter(_CRITICAL_KWS)) & not_(_kw_filter(_HIGH_KWS))
-        )
+        from sqlalchemy import or_, not_
+        query = query.filter(or_(
+            Article.severity == 'low',
+            (Article.severity == None) & not_(_kw_filter(_CRITICAL_KWS)) & not_(_kw_filter(_HIGH_KWS)),
+        ))
     if date_from:
         try:
             query = query.filter(Article.published_at >= datetime.fromisoformat(date_from))
@@ -436,12 +445,13 @@ def _article_to_dict(article: Article) -> dict:
         "source": article.source,
         "source_url": article.source_url,
         "category": article.category,
-        "published_at": article.published_at.isoformat() if article.published_at else None,
-        "fetched_at": article.fetched_at.isoformat() if article.fetched_at else None,
+        "published_at": (article.published_at.isoformat() + "Z") if article.published_at else None,
+        "fetched_at": (article.fetched_at.isoformat() + "Z") if article.fetched_at else None,
         "is_saved": article.is_saved,
         "user_notes": article.user_notes,
         "tags": tags,
         "matched_keyword": article.matched_keyword or None,
+        "severity": article.severity or None,
     }
 
 
@@ -449,6 +459,10 @@ def _parse_datetime(dt_str: str | None) -> datetime | None:
     if not dt_str:
         return None
     try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        from datetime import timezone
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
     except (ValueError, AttributeError):
         return None

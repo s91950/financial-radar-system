@@ -49,6 +49,7 @@ class Article(Base):
     decay_factor      = Column(Float, nullable=True)  # 時間衰減 exp(-0.1×hours)
     intensity_score   = Column(Float, nullable=True)  # 情緒強度 abs(sentiment)
     matched_keyword   = Column(String, nullable=True)  # 符合的關鍵字（儲存時帶入）
+    severity          = Column(String, nullable=True)  # 掃描時評估的文章風險等級（含 fixed_severity）
 
 
 class Alert(Base):
@@ -1051,6 +1052,7 @@ def _migrate_db():
             "decay_factor REAL",
             "intensity_score REAL",
             "matched_keyword VARCHAR",
+            "severity VARCHAR",
         ]:
             try:
                 conn.execute(text(f"ALTER TABLE articles ADD COLUMN {_col}"))
