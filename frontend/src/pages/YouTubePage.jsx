@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { youtubeAPI } from '../services/api'
+import { youtubeAPI, copyToClipboard } from '../services/api'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -336,7 +336,7 @@ export default function YouTubePage({ wsSubscribe }) {
   function handleCopySelected() {
     const urls = videos.filter(v => selectedVideos.has(v.id)).map(v => v.url).join('\n')
     if (!urls) return
-    navigator.clipboard.writeText(urls).then(() => {
+    copyToClipboard(urls).then(() => {
       toast.success(`已複製 ${selectedVideos.size} 個連結`)
     }).catch(() => toast.error('複製失敗'))
   }

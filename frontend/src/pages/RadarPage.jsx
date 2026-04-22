@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { radarAPI, resolveUrl, settingsAPI } from '../services/api'
+import { radarAPI, resolveUrl, settingsAPI, copyToClipboard } from '../services/api'
 
 export default function RadarPage({ wsSubscribe }) {
   const [alerts, setAlerts] = useState([])
@@ -203,7 +203,7 @@ export default function RadarPage({ wsSubscribe }) {
     e.stopPropagation()
     try {
       const finalUrl = await resolveUrl(url)
-      await navigator.clipboard.writeText(finalUrl)
+      await copyToClipboard(finalUrl)
       setCopiedUrl(url)
       toast.success('已複製連結')
       setTimeout(() => setCopiedUrl(null), 2000)
@@ -244,7 +244,7 @@ export default function RadarPage({ wsSubscribe }) {
     const toastId = toast.loading('解析連結中...')
     const resolved = await Promise.all([...selectedSourceUrls].map(u => resolveUrl(parseSourceUrl(u).url)))
     const text = resolved.join('\n')
-    await navigator.clipboard.writeText(text)
+    await copyToClipboard(text)
     toast.dismiss(toastId)
     toast.success(`已複製 ${selectedSourceUrls.size} 個連結`)
   }

@@ -143,4 +143,31 @@ export async function resolveUrl(url) {
   }
 }
 
+/**
+ * Copy text to clipboard.
+ * Uses navigator.clipboard when available (HTTPS / localhost).
+ * Falls back to document.execCommand('copy') for HTTP environments (e.g. VM on port 80).
+ */
+export function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text)
+  }
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('textarea')
+    el.value = text
+    el.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0'
+    document.body.appendChild(el)
+    el.focus()
+    el.select()
+    try {
+      const ok = document.execCommand('copy')
+      document.body.removeChild(el)
+      ok ? resolve() : reject(new Error('execCommand failed'))
+    } catch (err) {
+      document.body.removeChild(el)
+      reject(err)
+    }
+  })
+}
+
 export default api

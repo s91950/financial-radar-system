@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { newsAPI, resolveUrl } from '../services/api'
+import { newsAPI, resolveUrl, copyToClipboard } from '../services/api'
 
 // Severity assessment — mirrors backend _assess_severity_single logic
 const CRITICAL_KWS = ['崩盤', '暴跌', '危機', 'crash', 'crisis', 'emergency',
@@ -174,7 +174,7 @@ export default function NewsDBPage() {
     if (urls.length === 0) return
     const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
     const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
-    navigator.clipboard.writeText(resolved.join('\n'))
+    copyToClipboard(resolved.join('\n'))
     toast.dismiss(toastId)
     toast.success(`已複製 ${resolved.length} 個連結`)
   }
@@ -246,7 +246,7 @@ export default function NewsDBPage() {
 
   const handleCopyUrl = async (url) => {
     const finalUrl = await resolveUrl(url)
-    navigator.clipboard.writeText(finalUrl)
+    copyToClipboard(finalUrl)
     toast.success('已複製連結')
   }
 
@@ -278,7 +278,7 @@ export default function NewsDBPage() {
     if (!urls.length) { toast.error('選取的文章無來源連結'); return }
     const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
     const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
-    await navigator.clipboard.writeText(resolved.filter(Boolean).join('\n'))
+    await copyToClipboard(resolved.filter(Boolean).join('\n'))
     toast.dismiss(toastId)
     toast.success(`已複製 ${resolved.length} 個連結`)
   }

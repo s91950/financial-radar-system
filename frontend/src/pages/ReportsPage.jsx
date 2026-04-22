@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { reportsAPI, resolveUrl } from '../services/api'
+import { reportsAPI, resolveUrl, copyToClipboard } from '../services/api'
 
 const INSTITUTION_COLORS = {
   'IMF Working Papers': 'bg-blue-500/15 text-blue-400 border-blue-500/25',
@@ -118,7 +118,7 @@ export default function ReportsPage() {
     if (!urls.length) return
     const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
     const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
-    navigator.clipboard.writeText(resolved.join('\n'))
+    copyToClipboard(resolved.join('\n'))
     toast.dismiss(toastId)
     toast.success(`已複製 ${resolved.length} 個連結`)
   }
@@ -158,7 +158,7 @@ export default function ReportsPage() {
 
   const handleCopyUrl = async (url) => {
     const final = await resolveUrl(url)
-    navigator.clipboard.writeText(final)
+    copyToClipboard(final)
     toast.success('已複製連結')
   }
 

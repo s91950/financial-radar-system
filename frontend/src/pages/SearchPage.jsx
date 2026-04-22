@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'react-hot-toast'
-import { topicsAPI, resolveUrl, settingsAPI } from '../services/api'
+import { topicsAPI, resolveUrl, settingsAPI, copyToClipboard } from '../services/api'
 
 // --- Severity helpers ---
 const SEV_LABELS = { critical: '緊急', high: '高', medium: '中', low: '低' }
@@ -506,7 +506,7 @@ export default function SearchPage() {
 
   const handleCopy = async (url) => {
     const finalUrl = await resolveUrl(url)
-    navigator.clipboard.writeText(finalUrl)
+    copyToClipboard(finalUrl)
     setCopiedUrl(url)
     toast.success('已複製連結')
     setTimeout(() => setCopiedUrl(null), 2000)
@@ -545,7 +545,7 @@ export default function SearchPage() {
     const urls = [...selectedUrls]
     const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
     const resolved = await Promise.all(urls.map(u => resolveUrl(u)))
-    navigator.clipboard.writeText(resolved.join('\n'))
+    copyToClipboard(resolved.join('\n'))
     toast.dismiss(toastId)
     toast.success(`已複製 ${urls.length} 個連結`)
   }
