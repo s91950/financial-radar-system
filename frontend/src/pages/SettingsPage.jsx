@@ -1118,6 +1118,30 @@ export default function SettingsPage() {
                         )}
                       </div>
                     )}
+                    {/* 來源類型 */}
+                    {source.type !== 'mops' && source.type !== 'research' && (
+                      <div className="flex items-center gap-2 py-0.5">
+                        <span className="text-xs text-dark-500 shrink-0">類型</span>
+                        <select
+                          value={source.type}
+                          onChange={async (e) => {
+                            const newType = e.target.value
+                            try {
+                              await settingsAPI.updateSource(source.id, { type: newType })
+                              setSources(prev => prev.map(s => s.id === source.id ? { ...s, type: newType } : s))
+                              toast.success('類型已更新')
+                            } catch {
+                              toast.error('更新失敗')
+                            }
+                          }}
+                          className="text-xs bg-dark-700 border border-dark-600 rounded px-2 py-1 text-dark-300"
+                        >
+                          <option value="rss">RSS</option>
+                          <option value="website">網頁爬蟲</option>
+                          <option value="social">社群</option>
+                        </select>
+                      </div>
+                    )}
                     {/* Keywords row */}
                     {editingKwSources.has(source.id) ? (
                       <div className="space-y-1.5">
