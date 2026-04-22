@@ -548,7 +548,7 @@ export default function RadarPage({ wsSubscribe }) {
                         {alert.type !== 'news' && severityBadge(alert.severity)}
                         {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
                       </div>
-                      <h4 className="font-medium text-gray-200">{alert.title}</h4>
+                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
 
                       {articleLines.length > 0 && (
                         <div className="mt-1.5 space-y-0.5">
