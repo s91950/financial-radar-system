@@ -196,6 +196,7 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
     from backend.services.storm_scraper import is_storm_url, fetch_storm_news
     from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
     from backend.services.linetoday_scraper import is_linetoday_url, fetch_linetoday_news
+    from backend.services.udn_scraper import is_udn_cate_url, fetch_udn_cate_news
     from backend.services.web_scraper import scrape_page
 
     if is_cnyes_api_url(url):
@@ -212,6 +213,8 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
         return await fetch_taisounds_news(hours_back)
     if is_linetoday_url(url):
         return await fetch_linetoday_news(hours_back)
+    if is_udn_cate_url(url):
+        return await fetch_udn_cate_news(url, hours_back)
 
     # Generic HTML scraping — returns at most one article (the page itself)
     result = await scrape_page(url)

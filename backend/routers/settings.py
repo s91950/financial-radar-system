@@ -573,6 +573,7 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
         from backend.services.storm_scraper import is_storm_url, fetch_storm_news
         from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
         from backend.services.linetoday_scraper import is_linetoday_url, fetch_linetoday_news
+        from backend.services.udn_scraper import is_udn_cate_url, fetch_udn_cate_news
 
         # 路由到對應爬蟲
         scraper_map = [
@@ -583,6 +584,7 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
             (is_storm_url, lambda: fetch_storm_news(hours_back=24), "風傳媒 News Sitemap"),
             (is_taisounds_url, lambda: fetch_taisounds_news(hours_back=24), "太報 Sitemap"),
             (is_linetoday_url, lambda: fetch_linetoday_news(hours_back=24), "LINE Today 國際"),
+            (is_udn_cate_url, lambda: fetch_udn_cate_news(source.url, hours_back=24), "聯合新聞網分類頁"),
         ]
         for check_fn, fetch_fn, label in scraper_map:
             if check_fn(source.url):
