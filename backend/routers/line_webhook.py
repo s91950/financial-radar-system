@@ -73,6 +73,9 @@ def _parse_articles(alert, only_severity: str = "critical") -> list[tuple[str, s
         t = re.sub(r'^\[[^\]]+\]\s*', '', t).strip()
         t = re.sub(r'\s*[（(]關鍵字[：:][^)）]*[)）]', '', t).strip()
         if t:
+            # 社群貼文（如 Trump 推文）標題即為全文，截短避免 LINE 過長
+            if len(t) > 80:
+                t = t[:78] + '…'
             url = url_at_index[i] if i < len(url_at_index) else ""
             results.append((t, url))
     return results
