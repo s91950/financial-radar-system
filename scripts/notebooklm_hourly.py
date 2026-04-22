@@ -793,15 +793,31 @@ def main():
             print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
             sys.exit(1)
 
-        # 依嚴重度過濾（client-side，因 API 無嚴重度欄位）
+        # 依嚴重度過濾（優先使用 DB 的 severity 欄位，無則用 keyword 推估）
+        def _effective_sev(a: dict) -> str:
+            db_sev = a.get("severity")
+            if db_sev in ("critical", "high", "low"):
+                return db_sev
+            return _article_severity(a.get("title", ""))
+
         articles = []
         for a in all_articles:
-            sev = _article_severity(a.get("title", ""))
+            sev = _effective_sev(a)
             if min_sev == "critical" and sev != "critical":
                 continue
             if min_sev == "high" and sev == "low":
                 continue
             articles.append(a)
+
+        # 超過 120 篇時自動將門檻升至 high+（避免 NLM source 過多）
+        _AUTO_HIGH_THRESHOLD = 120
+        if len(articles) > _AUTO_HIGH_THRESHOLD:
+            articles_high = [a for a in articles if _effective_sev(a) in ("critical", "high")]
+            print(
+                f"  [自動篩選] 文章數 {len(articles)} 篇超過門檻 {_AUTO_HIGH_THRESHOLD}，"
+                f"縮減至 high 以上共 {len(articles_high)} 篇"
+            )
+            articles = articles_high
 
         if articles:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(articles)} 篇文章")
