@@ -2,7 +2,7 @@
 
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from pydantic import BaseModel
@@ -66,7 +66,8 @@ class ConditionUpdateRequest(BaseModel):
 
 @router.get("/alerts")
 async def get_alerts(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=500),
+    hours_back: int | None = Query(None, ge=1, le=168),
     unread_only: bool = False,
     saved_only: bool = False,
     severity: str | None = None,
@@ -74,6 +75,9 @@ async def get_alerts(
 ):
     """Get recent alerts from the radar."""
     query = db.query(Alert).order_by(Alert.created_at.desc())
+    if hours_back is not None:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours_back)
+        query = query.filter(Alert.created_at >= cutoff)
     if unread_only:
         query = query.filter(Alert.is_read == False)
     if saved_only:

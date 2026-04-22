@@ -148,9 +148,18 @@ function ChannelCard({ channel, isSelected, onClick, onDelete, onToggle }) {
 
 // ─── Video Card ──────────────────────────────────────────────────────────────
 
-function VideoCard({ video, onMarkSeen }) {
+function VideoCard({ video, onMarkSeen, isSelected, onToggleSelect }) {
   return (
-    <div className={`card card-hover relative group ${video.is_new ? 'border-red-500/40' : ''}`}>
+    <div className={`card relative group ${video.is_new ? 'border-red-500/40' : ''} ${isSelected ? 'ring-2 ring-primary-500/60' : ''}`}>
+      {/* Selection checkbox */}
+      <div className="absolute top-2 left-2 z-10" onClick={e => { e.stopPropagation(); onToggleSelect(video.id) }}>
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={() => {}}
+          className="w-4 h-4 rounded cursor-pointer accent-primary-500"
+        />
+      </div>
       {video.is_new && (
         <span className="absolute top-2 right-2 text-[10px] bg-red-500 text-white font-bold px-1.5 py-0.5 rounded z-10">
           NEW
@@ -205,6 +214,7 @@ export default function YouTubePage({ wsSubscribe }) {
   const [showAddModal, setShowAddModal] = useState(false)
   const [loadingCheck, setLoadingCheck] = useState(false)
   const [loadingVideos, setLoadingVideos] = useState(false)
+  const [selectedVideos, setSelectedVideos] = useState(new Set())
   const pollRef = useRef(null)
 
   const loadChannels = useCallback(async () => {
@@ -216,6 +226,7 @@ export default function YouTubePage({ wsSubscribe }) {
 
   const loadVideos = useCallback(async () => {
     setLoadingVideos(true)
+    setSelectedVideos(new Set())
     try {
       const params = { limit: 60 }
       if (selectedChannel) params.channel_id = selectedChannel
@@ -303,6 +314,31 @@ export default function YouTubePage({ wsSubscribe }) {
           : c
       ))
     } catch { /* silent */ }
+  }
+
+  function handleToggleSelect(videoId) {
+    setSelectedVideos(prev => {
+      const next = new Set(prev)
+      if (next.has(videoId)) next.delete(videoId)
+      else next.add(videoId)
+      return next
+    })
+  }
+
+  function handleSelectAll() {
+    if (selectedVideos.size === videos.length) {
+      setSelectedVideos(new Set())
+    } else {
+      setSelectedVideos(new Set(videos.map(v => v.id)))
+    }
+  }
+
+  function handleCopySelected() {
+    const urls = videos.filter(v => selectedVideos.has(v.id)).map(v => v.url).join('\n')
+    if (!urls) return
+    navigator.clipboard.writeText(urls).then(() => {
+      toast.success(`已複製 ${selectedVideos.size} 個連結`)
+    }).catch(() => toast.error('複製失敗'))
   }
 
   async function handleMarkAllSeen() {
@@ -411,7 +447,7 @@ export default function YouTubePage({ wsSubscribe }) {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <label className="flex items-center gap-1.5 text-sm text-dark-300 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -421,6 +457,26 @@ export default function YouTubePage({ wsSubscribe }) {
               />
               只顯示新影片
             </label>
+            {videos.length > 0 && (
+              <button
+                className="btn-secondary text-xs px-3 py-1.5"
+                onClick={handleSelectAll}
+              >
+                {selectedVideos.size === videos.length ? '取消全選' : '全選'}
+              </button>
+            )}
+            {selectedVideos.size > 0 && (
+              <button
+                className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1"
+                onClick={handleCopySelected}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                複製連結（{selectedVideos.size}）
+              </button>
+            )}
             {displayedNew > 0 && (
               <button className="btn-secondary text-xs px-3 py-1.5" onClick={handleMarkAllSeen}>
                 全部標記已看
@@ -464,7 +520,13 @@ export default function YouTubePage({ wsSubscribe }) {
           <div className="flex-1 overflow-y-auto">
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {videos.map(v => (
-                <VideoCard key={v.id} video={v} onMarkSeen={handleMarkSeen} />
+                <VideoCard
+                  key={v.id}
+                  video={v}
+                  onMarkSeen={handleMarkSeen}
+                  isSelected={selectedVideos.has(v.id)}
+                  onToggleSelect={handleToggleSelect}
+                />
               ))}
             </div>
           </div>

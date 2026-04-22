@@ -29,7 +29,7 @@ export default function RadarPage({ wsSubscribe }) {
 
   const loadAlerts = useCallback(async () => {
     try {
-      const params = { limit: 50 }
+      const params = { hours_back: 24 }
       if (filterUnread) params.unread_only = true
       const { data } = await radarAPI.getAlerts(params)
       setAlerts(data)
@@ -124,7 +124,7 @@ export default function RadarPage({ wsSubscribe }) {
       const poll = setInterval(async () => {
         elapsed += 3
         try {
-          const params = { limit: 50 }
+          const params = { hours_back: 24 }
           if (filterUnread) params.unread_only = true
           const { data } = await radarAPI.getAlerts(params)
           if (data.length > beforeCount) {
@@ -564,7 +564,7 @@ export default function RadarPage({ wsSubscribe }) {
                                   <p key={i} className="text-sm text-dark-400 flex items-center gap-1.5">
                                     {line.severity && lineSeverityBadge(line.severity)}
                                     <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                    <span className={`min-w-0 flex-1 ${selectedAlert?.id === alert.id ? '' : 'truncate'}`}>{line.displayLine}</span>
+                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
                                     {line.kw && (
                                       <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
                                         {line.kw}
