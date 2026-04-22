@@ -23,10 +23,24 @@ function getBrowseUrl(url) {
   }
 }
 
+// Extract "NOT term" / "NOT \"multi word\"" from a keyword string
+function stripNotTerms(kw) {
+  const notTerms = []
+  const regex = /\bNOT\s+(?:"([^"]+)"|(\S+))/gi
+  let m
+  while ((m = regex.exec(kw)) !== null) {
+    notTerms.push(m[1] !== undefined ? m[1] : m[2])
+  }
+  const cleaned = kw.replace(/\bNOT\s+(?:"[^"]+"|\S+)\s*/gi, '').trim()
+  return { cleaned, notTerms }
+}
+
 // Parse "(A OR B) (C OR D)" → [[A,B],[C,D]]; simple keyword → null
+// Strips NOT terms before parsing so they don't interfere.
 function parseGroupedKeyword(kw) {
-  if (!kw.includes('(')) return null
-  const matches = kw.match(/\(([^)]+)\)/g)
+  const { cleaned } = stripNotTerms(kw)
+  if (!cleaned.includes('(')) return null
+  const matches = cleaned.match(/\(([^)]+)\)/g)
   if (!matches) return null
   return matches.map(m => {
     const inner = m.slice(1, -1)
@@ -38,8 +52,10 @@ function computeCombinations(groups) {
   return groups.reduce((acc, g) => acc * g.length, 1)
 }
 
-function serializeGroups(groups) {
-  return groups.filter(g => g.length > 0).map(g => `(${g.map(t => `"${t}"`).join(' OR ')})`).join(' ')
+function serializeGroups(groups, notTerms = []) {
+  const base = groups.filter(g => g.length > 0).map(g => `(${g.map(t => `"${t}"`).join(' OR ')})`).join(' ')
+  const notPart = notTerms.map(t => t.includes(' ') ? `NOT "${t}"` : `NOT ${t}`).join(' ')
+  return notPart ? `${base} ${notPart}` : base
 }
 
 // Parse a severity rule condition string into [[term,...], [term,...]] groups
@@ -124,9 +140,14 @@ function GroupEditor({ draft, newTerms, setNewTerms, addTerm, removeTerm, addGro
   )
 }
 
-function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {}, onAddToSeverity }) {
+function GroupedKeywordCard({ topicStr, onSave, onRemove, onSplit, severityKws = {}, onAddToSeverity }) {
+  const { cleaned: cleanedStr, notTerms: parsedNotTerms } = stripNotTerms(topicStr)
+  const groups = parseGroupedKeyword(cleanedStr) || [[]]
+
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => groups.map(g => [...g]))
+  const [notTermsDraft, setNotTermsDraft] = useState(() => [...parsedNotTerms])
+  const [newNotTerm, setNewNotTerm] = useState('')
   const [newTerms, setNewTerms] = useState(() => groups.map(() => ''))
   const [activePickerTerm, setActivePickerTerm] = useState(null)
 
@@ -137,7 +158,13 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
     return () => document.removeEventListener('click', handler)
   }, [activePickerTerm])
 
-  const startEdit = () => { setDraft(groups.map(g => [...g])); setNewTerms(groups.map(() => '')); setEditing(true) }
+  const startEdit = () => {
+    setDraft(groups.map(g => [...g]))
+    setNewTerms(groups.map(() => ''))
+    setNotTermsDraft([...parsedNotTerms])
+    setNewNotTerm('')
+    setEditing(true)
+  }
   const cancel = () => setEditing(false)
 
   const addTerm = (gi) => {
@@ -150,10 +177,17 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
   const addGroup = () => { setDraft(prev => [...prev, []]); setNewTerms(prev => [...prev, '']) }
   const removeGroup = (gi) => { setDraft(prev => prev.filter((_, i) => i !== gi)); setNewTerms(prev => prev.filter((_, i) => i !== gi)) }
 
+  const addNotTerm = () => {
+    const t = newNotTerm.trim()
+    if (!t || notTermsDraft.includes(t)) return
+    setNotTermsDraft(prev => [...prev, t])
+    setNewNotTerm('')
+  }
+
   const handleSave = () => {
     const cleaned = draft.filter(g => g.length > 0)
     if (cleaned.length === 0) { onRemove(); return }
-    onSave(cleaned)
+    onSave(serializeGroups(cleaned, notTermsDraft))
     setEditing(false)
   }
 
@@ -209,6 +243,11 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
                 </div>
               )
             })}
+            {parsedNotTerms.map((t, ti) => (
+              <span key={`not-${ti}`} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 whitespace-nowrap" title="排除詞：包含此詞的文章不抓取">
+                <span className="text-[9px] font-bold opacity-70">NOT</span>{t}
+              </span>
+            ))}
           </div>
         ))}
         <div className="flex flex-col items-end justify-between px-2 py-1.5 shrink-0 border-l border-dark-600 min-w-[40px]">
@@ -228,10 +267,33 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
   }
 
   return (
-    <div className="bg-dark-800 border border-primary-500/40 rounded-lg p-3 w-full">
+    <div className="bg-dark-800 border border-primary-500/40 rounded-lg p-3 w-full space-y-3">
       <GroupEditor draft={draft} newTerms={newTerms} setNewTerms={setNewTerms}
         addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
-      <div className="flex gap-2 justify-end mt-3">
+      {/* NOT terms (exclusion within this boolean group) */}
+      <div>
+        <div className="text-[10px] text-dark-500 mb-1.5 font-medium">排除詞（NOT）— 包含以下任一詞的文章不抓取</div>
+        <div className="flex flex-wrap gap-1 mb-1.5 min-h-5">
+          {notTermsDraft.map((t, ti) => (
+            <span key={ti} className="flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+              {t}
+              <button type="button" onClick={() => setNotTermsDraft(prev => prev.filter((_, i) => i !== ti))} className="hover:text-red-300 ml-0.5 leading-none">×</button>
+            </span>
+          ))}
+          {notTermsDraft.length === 0 && <span className="text-xs text-dark-600">（無）</span>}
+        </div>
+        <div className="flex gap-1">
+          <input
+            value={newNotTerm}
+            onChange={e => setNewNotTerm(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addNotTerm() } }}
+            placeholder="新增排除詞..."
+            className="input text-xs py-0.5 px-1.5 flex-1 min-w-0 w-24 border-red-500/30 focus:border-red-500/60"
+          />
+          <button type="button" onClick={addNotTerm} className="text-red-500 hover:text-red-400 text-sm px-1">+</button>
+        </div>
+      </div>
+      <div className="flex gap-2 justify-end">
         <button type="button" onClick={cancel} className="btn-secondary text-xs py-1 px-3">取消</button>
         <button type="button" onClick={handleSave} className="btn-primary text-xs py-1 px-3">儲存</button>
       </div>
@@ -242,6 +304,8 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
 function NewGroupedBuilder({ onAdd, onClose }) {
   const [draft, setDraft] = useState([[]])
   const [newTerms, setNewTerms] = useState([''])
+  const [notTerms, setNotTerms] = useState([])
+  const [newNotTerm, setNewNotTerm] = useState('')
 
   const addTerm = (gi) => {
     const t = (newTerms[gi] || '').trim()
@@ -253,18 +317,48 @@ function NewGroupedBuilder({ onAdd, onClose }) {
   const addGroup = () => { setDraft(prev => [...prev, []]); setNewTerms(prev => [...prev, '']) }
   const removeGroup = (gi) => { setDraft(prev => prev.filter((_, i) => i !== gi)); setNewTerms(prev => prev.filter((_, i) => i !== gi)) }
 
+  const addNotTerm = () => {
+    const t = newNotTerm.trim()
+    if (!t || notTerms.includes(t)) return
+    setNotTerms(prev => [...prev, t])
+    setNewNotTerm('')
+  }
+
   const handleAdd = () => {
     const cleaned = draft.filter(g => g.length > 0)
     if (cleaned.length === 0) { onClose(); return }
-    onAdd(cleaned)
+    onAdd(serializeGroups(cleaned, notTerms))
   }
 
   return (
-    <div className="bg-dark-800 border border-primary-500/40 rounded-lg p-3 w-full">
-      <div className="text-xs text-dark-400 mb-2 font-medium">新增布林組合</div>
+    <div className="bg-dark-800 border border-primary-500/40 rounded-lg p-3 w-full space-y-3">
+      <div className="text-xs text-dark-400 font-medium">新增布林組合</div>
       <GroupEditor draft={draft} newTerms={newTerms} setNewTerms={setNewTerms}
         addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
-      <div className="flex gap-2 justify-end mt-3">
+      {/* NOT terms */}
+      <div>
+        <div className="text-[10px] text-dark-500 mb-1.5 font-medium">排除詞（NOT）— 包含以下任一詞的文章不抓取</div>
+        <div className="flex flex-wrap gap-1 mb-1.5 min-h-5">
+          {notTerms.map((t, ti) => (
+            <span key={ti} className="flex items-center gap-0.5 text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+              {t}
+              <button type="button" onClick={() => setNotTerms(prev => prev.filter((_, i) => i !== ti))} className="hover:text-red-300 ml-0.5 leading-none">×</button>
+            </span>
+          ))}
+          {notTerms.length === 0 && <span className="text-xs text-dark-600">（選填）</span>}
+        </div>
+        <div className="flex gap-1">
+          <input
+            value={newNotTerm}
+            onChange={e => setNewNotTerm(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addNotTerm() } }}
+            placeholder="新增排除詞..."
+            className="input text-xs py-0.5 px-1.5 flex-1 min-w-0 w-24 border-red-500/30 focus:border-red-500/60"
+          />
+          <button type="button" onClick={addNotTerm} className="text-red-500 hover:text-red-400 text-sm px-1">+</button>
+        </div>
+      </div>
+      <div className="flex gap-2 justify-end">
         <button type="button" onClick={onClose} className="btn-secondary text-xs py-1 px-3">取消</button>
         <button type="button" onClick={handleAdd} className="btn-primary text-xs py-1 px-3">新增</button>
       </div>
@@ -444,6 +538,9 @@ export default function SettingsPage() {
   const [radarTopicsUs, setRadarTopicsUs] = useState([])
   const [showGroupBuilderUs, setShowGroupBuilderUs] = useState(false)
   const [savingTopics, setSavingTopics] = useState(false)
+  const [exclusionKeywords, setExclusionKeywords] = useState([])
+  const [newExclusionKw, setNewExclusionKw] = useState('')
+  const [kwTab, setKwTab] = useState('tw')
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const [expandedSources, setExpandedSources] = useState(new Set())
   const [severityKws, setSeverityKws] = useState({ critical: [], high: [], default_critical: [], default_high: [] })
@@ -535,6 +632,7 @@ export default function SettingsPage() {
       setRadarHoursBack(topicsRes.data.hours_back ?? 24)
       setRadarIntervalMinutes(topicsRes.data.interval_minutes ?? 5)
       setRadarRssOnly(topicsRes.data.rss_only ?? false)
+      setExclusionKeywords(topicsRes.data.exclusion_keywords || [])
       setSeverityKws(sevRes.data)
       setTopicCategories(catsRes.data.categories || {})
       setSeverityRules(rulesRes.data.rules || [])
@@ -817,7 +915,7 @@ export default function SettingsPage() {
   const handleSaveTopics = async () => {
     setSavingTopics(true)
     try {
-      await settingsAPI.updateRadarTopics(radarTopics, radarHoursBack, radarIntervalMinutes, radarTopicsUs, radarRssOnly)
+      await settingsAPI.updateRadarTopics(radarTopics, radarHoursBack, radarIntervalMinutes, radarTopicsUs, radarRssOnly, exclusionKeywords)
       toast.success('設定已儲存，掃描頻率立即生效')
     } catch {
       toast.error('儲存失敗')
@@ -1337,8 +1435,20 @@ export default function SettingsPage() {
           </button>
         </div>
 
+        {/* TW / EN Tabs */}
+        <div className="flex rounded-lg bg-dark-800 p-0.5 w-fit">
+          <button
+            onClick={() => setKwTab('tw')}
+            className={`px-4 py-1 text-sm rounded-md transition-colors ${kwTab === 'tw' ? 'bg-blue-600 text-white' : 'text-dark-400 hover:text-white'}`}
+          >🇹🇼 中文關鍵字 ({radarTopics.length})</button>
+          <button
+            onClick={() => setKwTab('en')}
+            className={`px-4 py-1 text-sm rounded-md transition-colors ${kwTab === 'en' ? 'bg-amber-600 text-white' : 'text-dark-400 hover:text-white'}`}
+          >🇺🇸 英文關鍵字 ({radarTopicsUs.length})</button>
+        </div>
+
         {/* TW Region */}
-        {(() => {
+        {kwTab === 'tw' && (() => {
           const simpleTopics = radarTopics.filter(t => !t.includes('('))
           const groupedTopics = radarTopics.filter(t => t.includes('('))
           return (
@@ -1381,18 +1491,14 @@ export default function SettingsPage() {
                   <div>
                     <div className="text-xs text-dark-500 mb-1.5">布林組合</div>
                     <div className="flex flex-col gap-2">
-                      {groupedTopics.map(topic => {
-                        const groups = parseGroupedKeyword(topic)
-                        if (!groups) return null
-                        return (
-                          <GroupedKeywordCard key={topic} groups={groups}
-                            onSave={ng => setRadarTopics(prev => prev.map(t => t === topic ? serializeGroups(ng) : t))}
-                            onRemove={() => handleRemoveTopic(topic)}
-                            onSplit={terms => setRadarTopics(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
-                            severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
-                          />
-                        )
-                      })}
+                      {groupedTopics.map(topic => (
+                        <GroupedKeywordCard key={topic} topicStr={topic}
+                          onSave={newStr => setRadarTopics(prev => prev.map(t => t === topic ? newStr : t))}
+                          onRemove={() => handleRemoveTopic(topic)}
+                          onSplit={terms => setRadarTopics(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
+                          severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
+                        />
+                      ))}
                     </div>
                   </div>
                 )}
@@ -1404,14 +1510,14 @@ export default function SettingsPage() {
                 <button type="button" onClick={() => setShowGroupBuilder(v => !v)} className="btn-secondary text-sm px-3 whitespace-nowrap">{showGroupBuilder ? '取消' : '+ 布林'}</button>
               </div>
               {showGroupBuilder && (
-                <NewGroupedBuilder onAdd={groups => { const str = serializeGroups(groups); if (!radarTopics.includes(str)) setRadarTopics(prev => [...prev, str]); setShowGroupBuilder(false) }} onClose={() => setShowGroupBuilder(false)} />
+                <NewGroupedBuilder onAdd={str => { if (!radarTopics.includes(str)) setRadarTopics(prev => [...prev, str]); setShowGroupBuilder(false) }} onClose={() => setShowGroupBuilder(false)} />
               )}
             </div>
           )
         })()}
 
         {/* US/EN Region */}
-        {(() => {
+        {kwTab === 'en' && (() => {
           const simpleTopics = radarTopicsUs.filter(t => !t.includes('('))
           const groupedTopics = radarTopicsUs.filter(t => t.includes('('))
           return (
@@ -1438,18 +1544,14 @@ export default function SettingsPage() {
                   <div>
                     <div className="text-xs text-dark-500 mb-1.5">布林組合</div>
                     <div className="flex flex-col gap-2">
-                      {groupedTopics.map(topic => {
-                        const groups = parseGroupedKeyword(topic)
-                        if (!groups) return null
-                        return (
-                          <GroupedKeywordCard key={topic} groups={groups}
-                            onSave={ng => setRadarTopicsUs(prev => prev.map(t => t === topic ? serializeGroups(ng) : t))}
-                            onRemove={() => handleRemoveTopicUs(topic)}
-                            onSplit={terms => setRadarTopicsUs(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
-                            severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
-                          />
-                        )
-                      })}
+                      {groupedTopics.map(topic => (
+                        <GroupedKeywordCard key={topic} topicStr={topic}
+                          onSave={newStr => setRadarTopicsUs(prev => prev.map(t => t === topic ? newStr : t))}
+                          onRemove={() => handleRemoveTopicUs(topic)}
+                          onSplit={terms => setRadarTopicsUs(prev => { const w = prev.filter(t => t !== topic); return [...w, ...terms.filter(t => !w.includes(t))] })}
+                          severityKws={severityKws} onAddToSeverity={handleAddToSeverity}
+                        />
+                      ))}
                     </div>
                   </div>
                 )}
@@ -1461,7 +1563,7 @@ export default function SettingsPage() {
                 <button type="button" onClick={() => setShowGroupBuilderUs(v => !v)} className="btn-secondary text-sm px-3 whitespace-nowrap">{showGroupBuilderUs ? '取消' : '+ 布林'}</button>
               </div>
               {showGroupBuilderUs && (
-                <NewGroupedBuilder onAdd={groups => { const str = serializeGroups(groups); if (!radarTopicsUs.includes(str)) setRadarTopicsUs(prev => [...prev, str]); setShowGroupBuilderUs(false) }} onClose={() => setShowGroupBuilderUs(false)} />
+                <NewGroupedBuilder onAdd={str => { if (!radarTopicsUs.includes(str)) setRadarTopicsUs(prev => [...prev, str]); setShowGroupBuilderUs(false) }} onClose={() => setShowGroupBuilderUs(false)} />
               )}
             </div>
           )
@@ -1675,6 +1777,51 @@ export default function SettingsPage() {
           )
         })()}
 
+        {/* 全域排除關鍵字 */}
+        <div className="p-3 rounded-lg border border-red-500/20 bg-red-500/5 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-red-400">全域排除關鍵字</span>
+            <span className="text-xs text-dark-500">文章標題或內文包含以下任一詞，即不抓取（適用所有來源）</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5 min-h-6">
+            {exclusionKeywords.map((kw, i) => (
+              <span key={i} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30">
+                {kw}
+                <button
+                  onClick={() => setExclusionKeywords(prev => prev.filter((_, j) => j !== i))}
+                  className="hover:text-red-300 ml-0.5 leading-none">×</button>
+              </span>
+            ))}
+            {exclusionKeywords.length === 0 && <span className="text-xs text-dark-600">尚無排除關鍵字</span>}
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newExclusionKw}
+              onChange={e => setNewExclusionKw(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  const kw = newExclusionKw.trim()
+                  if (!kw || exclusionKeywords.includes(kw)) { setNewExclusionKw(''); return }
+                  setExclusionKeywords(prev => [...prev, kw])
+                  setNewExclusionKw('')
+                }
+              }}
+              placeholder="輸入排除詞後按 Enter"
+              className="input text-sm flex-1 border-red-500/30 focus:border-red-500/60"
+            />
+            <button
+              onClick={() => {
+                const kw = newExclusionKw.trim()
+                if (!kw || exclusionKeywords.includes(kw)) { setNewExclusionKw(''); return }
+                setExclusionKeywords(prev => [...prev, kw])
+                setNewExclusionKw('')
+              }}
+              className="btn-secondary text-sm px-3"
+            >新增</button>
+          </div>
+        </div>
+
         {/* Hours Back + Interval Settings */}
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pt-3 border-t border-dark-700">
           <div className="flex items-center gap-3">
@@ -1704,7 +1851,7 @@ export default function SettingsPage() {
           </div>
         </div>
         <p className="text-xs text-dark-500">
-          支援 Google 搜尋語法：<code className="bg-dark-700 px-1 rounded">OR</code> 聯集 · <code className="bg-dark-700 px-1 rounded">"精確詞"</code> 完全比對 · <code className="bg-dark-700 px-1 rounded">AND</code> 交集（空格即 AND）
+          支援 Google 搜尋語法：<code className="bg-dark-700 px-1 rounded">OR</code> 聯集 · <code className="bg-dark-700 px-1 rounded">"精確詞"</code> 完全比對 · <code className="bg-dark-700 px-1 rounded">AND</code> 交集（空格即 AND）· 布林組合可在「排除詞（NOT）」欄位加入關鍵字排除
         </p>
       </section>
 

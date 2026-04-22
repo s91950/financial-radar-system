@@ -342,12 +342,14 @@ async def get_radar_topics(db: Session = Depends(get_db)):
     hours_raw = _get_config(db, "radar_hours_back", "24")
     interval_raw = _get_config(db, "radar_interval_minutes", str(cfg.RADAR_INTERVAL_MINUTES))
     rss_only_raw = _get_config(db, "radar_rss_only", "false")
+    excl_raw = _get_config(db, "radar_exclusion_keywords", "[]")
     return {
         "topics": json.loads(topics_raw),
         "topics_us": json.loads(topics_us_raw),
         "hours_back": int(hours_raw),
         "interval_minutes": int(interval_raw),
         "rss_only": rss_only_raw == "true",
+        "exclusion_keywords": json.loads(excl_raw),
     }
 
 
@@ -357,6 +359,7 @@ class RadarTopicsUpdate(BaseModel):
     hours_back: int = 24
     interval_minutes: int | None = None
     rss_only: bool = False
+    exclusion_keywords: list[str] = []
 
 
 @router.put("/radar-topics")
@@ -393,6 +396,7 @@ async def update_radar_topics(req: RadarTopicsUpdate, db: Session = Depends(get_
     else:
         interval = current_interval
     _set_config(db, "radar_rss_only", "true" if req.rss_only else "false")
+    _set_config(db, "radar_exclusion_keywords", json.dumps(req.exclusion_keywords, ensure_ascii=False))
     db.commit()
     return {"topics": req.topics, "hours_back": req.hours_back, "interval_minutes": interval, "rss_only": req.rss_only}
 

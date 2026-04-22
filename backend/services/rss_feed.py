@@ -229,6 +229,40 @@ async def fetch_multiple_feeds(
     return all_articles
 
 
+def _term_in_text(term: str, text_lower: str) -> bool:
+    """Check if *term* appears in *text_lower* (caller must pre-lowercase the text).
+
+    Pure-ASCII terms (English words, digits, hyphens) use word-boundary matching so
+    "Coup" does NOT match "Couple" or "Recovery".  Multi-word ASCII phrases like
+    "Trade war" are matched as a phrase (all words must be adjacent / exact phrase).
+    CJK / mixed-script terms use simple substring matching (no word boundaries in Chinese).
+    """
+    t = term.strip().lower()
+    if not t:
+        return False
+    if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9 \-]*$', t):
+        # Word-boundary on left and right: prevents "Coup" matching "Couple"
+        pattern = r'(?<![a-zA-Z0-9\-])' + re.escape(t) + r'(?![a-zA-Z0-9\-])'
+        return bool(re.search(pattern, text_lower))
+    return t in text_lower
+
+
+def _strip_not_terms(topic: str) -> tuple[str, list[str]]:
+    """Extract NOT exclusion terms from a topic string.
+
+    Supports:  '...NOT term'  and  '...NOT "multi word"'
+    Returns (cleaned_topic_without_not_clauses, [not_term, ...])
+    """
+    not_terms: list[str] = []
+    # Quoted multi-word NOT first, then bare-word NOT
+    for m in re.finditer(r'\bNOT\s+"([^"]+)"', topic, re.IGNORECASE):
+        not_terms.append(m.group(1).strip())
+    for m in re.finditer(r'\bNOT\s+(?!")((?:[^\s()"]+))', topic, re.IGNORECASE):
+        not_terms.append(m.group(1).strip())
+    cleaned = re.sub(r'\bNOT\s+(?:"[^"]+"|[^\s()"]+)\s*', '', topic, flags=re.IGNORECASE).strip()
+    return cleaned, not_terms
+
+
 def _parse_topic_groups(topic: str) -> list[list[str]]:
     """Parse a topic string into AND-groups of OR-terms.
 
@@ -273,15 +307,14 @@ def _extract_display_kw(topic: str, text_lower: str, max_terms: int = 4) -> str:
     例：topic="(Fed OR FOMC) (升息 OR 降息)"，text 含 "FOMC" 和 "降息"
       → "FOMC / 降息"
     """
-    groups = _parse_topic_groups(topic)
+    clean_topic, _ = _strip_not_terms(topic)  # strip NOT before group parsing
+    groups = _parse_topic_groups(clean_topic) if clean_topic else []
     seen: set[str] = set()
     result: list[str] = []
 
     # 第 1 批：每個 AND-group 的第一個命中詞
-    group_reps: list[str | None] = []
     for group in groups:
-        rep = next((t for t in group if t.lower() in text_lower), None)
-        group_reps.append(rep)
+        rep = next((t for t in group if _term_in_text(t, text_lower)), None)
         if rep and rep not in seen:
             seen.add(rep)
             result.append(rep)
@@ -292,7 +325,7 @@ def _extract_display_kw(topic: str, text_lower: str, max_terms: int = 4) -> str:
     if len(result) < max_terms:
         for group in groups:
             for term in group:
-                if term.lower() in text_lower and term not in seen:
+                if _term_in_text(term, text_lower) and term not in seen:
                     seen.add(term)
                     result.append(term)
                     if len(result) >= max_terms:
@@ -304,25 +337,31 @@ def _extract_display_kw(topic: str, text_lower: str, max_terms: int = 4) -> str:
 
 
 def _filter_by_topic_strings(articles: list[dict], topics: list[str]) -> list[dict]:
-    """Filter articles against radar topic strings, preserving boolean AND/OR semantics.
+    """Filter articles against radar topic strings, preserving boolean AND/OR/NOT semantics.
 
     Each topic may be:
-      - A plain keyword: "台股"  →  matches if "台股" appears in the text
-      - A boolean group: "(Fed OR FOMC) 升息"  →  matches if (Fed or FOMC) AND 升息 appear
+      - A plain keyword: "台股"       → matches if "台股" appears
+      - A boolean group: "(Fed OR FOMC) 升息" → (Fed or FOMC) AND 升息 both appear
+      - With exclusion:  "(Fed OR FOMC) 升息 NOT 廣告" → above AND "廣告" absent
 
+    ASCII terms use whole-word matching; CJK terms use substring matching.
     An article passes if it matches ANY topic in the list.
     """
-    def _matches_topic(text: str, topic: str) -> bool:
-        groups = _parse_topic_groups(topic)
-        tl = text.lower()
-        return all(any(term.lower() in tl for term in group) for group in groups)
+    def _matches_topic(tl: str, topic: str) -> bool:
+        clean, not_terms = _strip_not_terms(topic)
+        if not_terms and any(_term_in_text(nt, tl) for nt in not_terms):
+            return False
+        if not clean:
+            return True
+        groups = _parse_topic_groups(clean)
+        return all(any(_term_in_text(term, tl) for term in group) for group in groups)
 
     filtered = []
     for article in articles:
-        text = f"{article.get('title', '')} {article.get('content', '')}".lower()
+        tl = f"{article.get('title', '')} {article.get('content', '')}".lower()
         for topic in topics:
-            if _matches_topic(text, topic):
-                display_kw = _extract_display_kw(topic, text) or topic
+            if _matches_topic(tl, topic):
+                display_kw = _extract_display_kw(topic, tl) or topic
                 filtered.append({**article, "matched_keyword": display_kw})
                 break
     return filtered
@@ -370,8 +409,11 @@ def _annotate_matched_terms(article: dict, keywords: list[str], max_total: int =
 
     for kw in keywords:
         # 布林 AND 條件必須所有群組都有命中才標記，避免單邊命中產生誤導性標籤
-        groups = _parse_topic_groups(kw)
-        if not all(any(term.lower() in text for term in group) for group in groups):
+        clean_kw, not_terms = _strip_not_terms(kw)
+        if not_terms and any(_term_in_text(nt, text) for nt in not_terms):
+            continue
+        groups = _parse_topic_groups(clean_kw) if clean_kw else []
+        if groups and not all(any(_term_in_text(term, text) for term in group) for group in groups):
             continue
 
         kw_terms_str = _extract_display_kw(kw, text, max_terms=max_total)

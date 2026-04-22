@@ -268,6 +268,13 @@ async def _radar_scan_inner(force: bool = False):
         _gn_crit_cfg = db.query(SystemConfig).filter(SystemConfig.key == "gn_critical_only").first()
         _gn_critical_only = (_gn_crit_cfg.value == "true") if _gn_crit_cfg else False
 
+        # 全域排除關鍵字（匹配即丟棄文章）
+        _excl_kw_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_exclusion_keywords").first()
+        try:
+            _exclusion_kws = json.loads(_excl_kw_cfg.value) if _excl_kw_cfg else []
+        except Exception:
+            _exclusion_kws = []
+
         # 財經相關性篩選設定
         _fin_filter_cfg = db.query(SystemConfig).filter(SystemConfig.key == "finance_filter_enabled").first()
         _fin_filter_enabled = (_fin_filter_cfg.value == "true") if _fin_filter_cfg else False
@@ -632,6 +639,20 @@ async def _radar_scan_inner(force: bool = False):
                                     continue
                             new_articles.append(a_copy)
                             logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
+
+        # 全域排除關鍵字過濾（匹配任一關鍵字即丟棄）
+        if _exclusion_kws:
+            from backend.services.rss_feed import _term_in_text as _rss_term_in_text
+            _before_excl = len(new_articles)
+            new_articles = [
+                a for a in new_articles
+                if not any(
+                    _rss_term_in_text(kw, f"{a.get('title', '')} {a.get('content', '')}".lower())
+                    for kw in _exclusion_kws
+                )
+            ]
+            if len(new_articles) < _before_excl:
+                _flog(f"[EXCL] 排除關鍵字過濾：{_before_excl} → {len(new_articles)} 篇")
 
         if not new_articles:
             _flog(f"[SCAN] No new articles found (force={force}), exiting")
