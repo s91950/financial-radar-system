@@ -855,36 +855,21 @@ def main():
             print(f"[WARNING] 無法取得 YouTube 影片：{e}")
             all_videos = []
 
+        # 統一以 published_at 過濾（不依賴 is_new），避免標記已看後被跳過
         videos = []
-        if manual_override:
-            # 手動指定時間：用 published_at（YouTube 原始上傳時間）過濾，忽略 is_new 狀態
-            for v in all_videos:
-                try:
-                    ts_str = v.get("published_at") or ""
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    if ts >= yt_cutoff:
-                        videos.append(v)
-                except Exception:
-                    pass
-        else:
-            # 自動排程：is_new=True 且 published_at 在時間窗口內（yt_cutoff 由 state 決定）
-            for v in all_videos:
-                if not v.get("is_new"):
-                    continue
-                ts_str = v.get("published_at") or ""
-                if not ts_str:
-                    videos.append(v)  # 無發布時間則納入（不遺漏）
-                    continue
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    if ts >= yt_cutoff:
-                        videos.append(v)
-                except Exception:
-                    videos.append(v)  # 解析失敗則納入（不遺漏）
+        for v in all_videos:
+            ts_str = v.get("published_at") or ""
+            if not ts_str:
+                videos.append(v)  # 無發布時間則納入（不遺漏）
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= yt_cutoff:
+                    videos.append(v)
+            except Exception:
+                videos.append(v)  # 解析失敗則納入（不遺漏）
 
         if videos:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(videos)} 支新影片")
