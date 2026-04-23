@@ -257,15 +257,18 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
             MonitorSource.type == "rss",
         ).all()
         feeds = [
-            {"name": s.name, "url": s.url, "keywords": json.loads(s.keywords) if s.keywords else []}
+            {"name": s.name, "url": s.url, "keywords": json.loads(s.keywords) if s.keywords else [],
+             "fetch_all": bool(getattr(s, "fetch_all", False))}
             for s in rss_sources
         ]
         if feeds:
             if req.query:
+                # 使用者有輸入關鍵字時，搜尋原始（未經來源關鍵字過濾）的所有文章，
+                # 避免因來源設定了不同的關鍵字而漏掉使用者想找的文章。
                 terms = _split_query_terms(req.query)
-                rss_results, _ = await rss_feed.fetch_multiple_feeds(feeds, hours_back=req.hours_back, return_raw=True)
+                _, raw_articles = await rss_feed.fetch_multiple_feeds(feeds, hours_back=req.hours_back, return_raw=True)
                 articles_data = [
-                    a for a in rss_results
+                    a for a in raw_articles
                     if any(t.lower() in (a.get("title", "") + " " + a.get("content", "")).lower() for t in terms)
                 ]
             else:
@@ -287,15 +290,32 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
                 if req.query:
                     terms = _split_query_terms(req.query)
                     ws_articles = [a for a in ws_articles if any(t.lower() in (a.get("title","") + " " + a.get("content","")).lower() for t in terms)]
-                elif ws_kws:
+                elif ws_kws and not getattr(ws, "fetch_all", False):
                     from backend.services.rss_feed import _filter_by_keywords
                     ws_articles = _filter_by_keywords(ws_articles, ws_kws)
-                elif all_topics:
+                elif all_topics and not getattr(ws, "fetch_all", False):
                     from backend.services.rss_feed import _filter_by_topic_strings
                     ws_articles = _filter_by_topic_strings(ws_articles, all_topics)
                 articles_data.extend(ws_articles)
             except Exception:
                 pass
+
+    # 全域排除關鍵字過濾（與雷達掃描邏輯一致，包含 fetch_all 來源）
+    from backend.database import SystemConfig
+    _excl_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_exclusion_keywords").first()
+    try:
+        _exclusion_kws = json.loads(_excl_cfg.value) if _excl_cfg else []
+    except Exception:
+        _exclusion_kws = []
+    if _exclusion_kws:
+        from backend.services.rss_feed import _term_in_text as _rss_term_in_text
+        articles_data = [
+            a for a in articles_data
+            if not any(
+                _rss_term_in_text(kw, f"{a.get('title', '')} {a.get('content', '')}".lower())
+                for kw in _exclusion_kws
+            )
+        ]
 
     # 加上 matched_keyword 標籤
     _tag_matched_keywords(articles_data, all_topics, req.query)

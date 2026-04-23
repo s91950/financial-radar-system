@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 修改後 VM 同步提示規則
+
+每次完成程式碼修改後，必須執行以下其中一項：
+
+1. **需要更新 VM** — 在回應最後加一行：
+   > 「此修改需要更新到 VM，是否現在執行 `git push` 並在 VM 上 `git pull && sudo systemctl restart financial-radar`？」
+
+2. **不需要更新 VM** — 在回應最後加一行說明原因，例如：
+   > 「此修改僅影響本地腳本（`scripts/`），不需更新 VM。」
+
+**判斷基準：**
+- 需要更新 VM：`backend/`、`frontend/`、`deploy/` 下的任何檔案修改
+- 不需要更新 VM：`scripts/` 下的本地腳本、`CLAUDE.md`、`README.md`、純本地設定檔
+
 ## Project Overview
 
 金融即時偵測系統 (Financial Real-time Detection System) — a multi-module system for monitoring financial markets, aggregating news, tracking research papers, and matching position exposure. Built for senior financial analysts who need real-time alerts via LINE/Email/Web with event summaries, position exposure, and source links.
