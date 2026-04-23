@@ -379,6 +379,10 @@ async def _radar_scan_inner(force: bool = False):
                     _annotate_matched_terms as _ann,
                 )
                 mops_articles = await fetch_mops_material_news(hours_back=gn_hours_back)
+                # 用 MonitorSource.name 覆蓋爬蟲寫死的 source 名稱，
+                # 確保 _source_fixed_sev 查找可命中（與 RSS fetch_multiple_feeds 邏輯一致）
+                for _a in mops_articles:
+                    _a["source"] = mops_source.name
                 mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
                 mops_fetch_all = bool(getattr(mops_source, "fetch_all", False))
                 if mops_fetch_all:
@@ -423,6 +427,10 @@ async def _radar_scan_inner(force: bool = False):
                     # 一般來源：用 max(hours_back, 3h) 作小緩衝，防止短暫中斷造成漏抓
                     ws_hours_back = max(gn_hours_back, 48) if ws_fetch_all else max(gn_hours_back, 3)
                     ws_articles = await _fetch_website_source(ws.url, ws_hours_back)
+                    # 用 MonitorSource.name 覆蓋爬蟲寫死的 source 名稱，
+                    # 確保 _source_fixed_sev 查找可命中（與 RSS fetch_multiple_feeds 一致）
+                    for _a in ws_articles:
+                        _a["source"] = ws.name
                     ws_kws = json.loads(ws.keywords) if ws.keywords else []
                     if ws_fetch_all:
                         # 全文讀取：納入全部，用 _annotate_matched_terms 標記實際出現的所有關鍵詞
