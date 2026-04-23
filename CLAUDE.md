@@ -81,7 +81,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 `vite.config.js` also whitelists `*.ngrok-free.app` / `*.ngrok-free.dev` hosts for remote tunnelling.
 
-### Modules (7 pages)
+### Modules (8 pages)
 
 1. **即時雷達 (Radar)** `/` — Auto-scans RSS + Google News every 5min, creates alerts with position exposure. AI analysis is **on-demand only** (user clicks button) to save API costs.
 2. **主題追蹤 (Topics)** `/search` — User-defined topics with boolean keywords. Radar auto-imports matching articles AND merges them into radar alerts.
@@ -89,7 +89,8 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 4. **研究報告 (Research)** `/reports` — Daily auto-fetch from IMF, BIS, Fed, ECB, BOJ, BOE, NBER. Dual-mode: RSS for working feeds, **RePEc/IDEAS HTML scraping** for institutions with broken RSS (IMF, ECB, NBER). Same preview → select → save flow.
 5. **市場儀表板 (Dashboard)** `/dashboard` — Market indicators, sentiment charts, heat map.
 6. **YouTube 監控** `/youtube` — Monitors YouTube channels for new videos, stores in `YoutubeVideo` table with `is_new` flag.
-7. **系統設定 (Settings)** `/settings` — Sources, notifications, Google Sheets, AI model, radar topics.
+7. **分析結果** `/analysis` — Displays the latest NLM analysis reports (news and YouTube). Two tabs: 📰 新聞分析 / 📺 YouTube 影片分析. Lazy-loads from `GET /api/radar/notebooklm-report` and `GET /api/radar/notebooklm-yt-report`.
+8. **系統設定 (Settings)** `/settings` — Sources, notifications, Google Sheets, AI model, radar topics.
 
 ### Backend Layer Structure
 - **`routers/`** — FastAPI endpoints. Each router has a `/api/{prefix}` path.
@@ -98,20 +99,25 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `exposure.py` — position keyword scoring
   - `finance_filter.py` — local financial relevance scoring (TF-IDF approximation, no API): `compute_finance_relevance(title, content) → float`. Three-tier vocabulary: `FINANCE_CORE` (×3 weight), `FINANCE_CONTEXT` (×1), `NON_FINANCE_INDICATORS` (−2 penalty). Formula: `(core×3 + context − non_fin×2) / sqrt(word_count)`, clipped to [0, 1].
   - `simple_ner.py` — rule-based entity extraction (stock codes, companies, central banks, currencies) used to enrich `exposure_summary` when no position match is found
-  - `mops_scraper.py` — 公開資訊觀測站 material disclosure scraper. MOPS fully migrated to Vue SPA in late 2025; the old AJAX HTML endpoint (`mops/web/ajax_t05sr01`) is blocked by security policy. Uses new JSON API: `POST https://mops.twse.com.tw/mops/api/home_page/t05sr01_1` with `{"count": N, "marketKind": "sii"|"otc"}`. Dates in 民國 format (`115/04/11`). Fetches up to 100 items per market type (sii + otc).
+  - `mops_scraper.py` — 公開資訊觀測站 material disclosure scraper. MOPS fully migrated to Vue SPA in late 2025; the old AJAX HTML endpoint (`mops/web/ajax_t05sr01`) is blocked by security policy. Uses new JSON API: `POST https://mops.twse.com.tw/mops/api/home_page/t05sr01_1` with `{"count": N, "marketKind": "sii"|"otc"}`. Dates in 民國 format (`115/04/11`). Fetches up to 100 items per market type (sii + otc). **URL includes date+time** (`?TYPEK=sii&co_id=2330&d=1150411&t=1050`) so multiple disclosures from the same company each get a unique URL (prevents dedup collision in `seen_urls`).
   - `cnyes_scraper.py` — 鉅亨網 JSON API fetcher. Uses `api.cnyes.com/media/api/v1/newslist/category/{category}`.
   - `worldbank_scraper.py` — World Bank JSON API fetcher. Uses `search.worldbank.org/api/v2/news?format=json`. Fields use `{"cdata!": "..."}` wrapper. Filters English-only in code (API `lang_exact` param is unstable).
   - `fsc_scraper.py` — 金管會 (FSC) HTML scraper. FSC RSS feed is broken (returns HTML), so scrapes `news_list.jsp` page with BeautifulSoup. ~15 news links per page. Dates in 民國 format.
   - `caixin_scraper.py` — 財新 Caixin Global HTML scraper. Caixin RSS returns 403, so scrapes `/news/` page. Article URLs contain date patterns (`/YYYY-MM-DD/`). ~25 articles per page.
-  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
+  - `storm_scraper.py` — 風傳媒 HTML scraper. No public RSS; uses Google News Sitemap (`storm.mg/sitemaps/1/article-news-1.xml`) which includes titles and publish times.
+  - `taisounds_scraper.py` — 太報 HTML scraper. No RSS; uses standard sitemap (`taisounds.com/sitemap.xml` with `lastmod`), then parallel-fetches `og:title` / `og:description` from each article page.
+  - `linetoday_scraper.py` — LINE Today 國際 scraper. Next.js SSR page embeds article data in `__NEXT_DATA__` JSON — walks the object recursively to find dicts with `title + id + publishTimeUnix`. Article URL: `https://today.line.me/tw/v3/article/{id}`.
+  - `udn_scraper.py` — 聯合新聞網分類頁 scraper. `udn.com/news/cate/` pages are server-side rendered HTML; BeautifulSoup finds `<a href="/news/story/...">` links with sibling `<time>` tags (YYYY-MM-DD HH:MM Taiwan time → UTC).
+  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | `storm_scraper` | `taisounds_scraper` | `linetoday_scraper` | `udn_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
   - `research_feed.py` — dual-mode RSS/HTML scraper for research institutions
-  - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` (prevents verbose RSS feed titles like "經濟日報：不僅新聞速度 更有脈絡深度" or Google News query strings from appearing in UI). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied.
+  - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` (prevents verbose RSS feed titles like "經濟日報：不僅新聞速度 更有脈絡深度" or Google News query strings from appearing in UI). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied. `_resolve_gn_article_urls(articles)` — called after standard redirect resolution in `fetch_rss_feed()`; extracts article IDs from `news.google.com/rss/articles/CBMi...` URLs and decodes them via the same batchexecute API as `google_news.py` (simple GET redirect does not work for GN RSS article URLs). **Keyword matching helpers**: `_term_in_text(term, text_lower)` — uses word-boundary regex for pure-ASCII terms so "Coup" does not match "Couple"; CJK terms use substring match. `_strip_not_terms(topic)` — extracts `NOT term` / `NOT "multi word"` clauses from a keyword string before group parsing; returns `(cleaned_topic, [not_terms])`. Used by `_matches_topic()` (fail-fast if any NOT term appears in text), `_extract_display_kw()`, and `_annotate_matched_terms()`.
 - **`scheduler/jobs.py`** — Four async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily 8:00), `daily_research_fetch` (daily 10:00).
 - **`database.py`** — SQLAlchemy ORM models + `_migrate_db()` for idempotent schema migrations + `_seed_defaults()` for initial data. Seeds only run when tables are empty.
 - **`scripts/`** — Auxiliary tools (none are part of the main app runtime):
   - `gas_digest.gs` — Google Apps Script digest
   - `perplexity_digest.py` — Perplexity API integration
-  - `notebooklm_hourly.py` — local Windows Task Scheduler job: pulls critical alerts from API, imports to NotebookLM, saves analysis to `scripts/nlm_reports/`
+  - `notebooklm_hourly.py` — local Windows Task Scheduler job (every 3 hours): pulls news articles and YouTube videos from API, imports to NotebookLM notebooks, saves analysis to `scripts/nlm_reports/`
+  - `skills/` — permanent NLM source files (`PROJECT_INSTRUCTIONS_v2.md`, `SKILL_*.md`). Loaded into each notebook once via `_ensure_skill_sources()` and never deleted. Identified by `[SKILL] ` title prefix.
   - `sync_vm_settings.py` — reads local SQLite DB and pushes all settings (system_config, monitor_sources, topics) to the production VM via REST API. Run: `python scripts/sync_vm_settings.py http://<VM_IP>`. Uses URL alias map to handle sources that changed URLs between local and VM.
   - `check_sources_health.py` — async health check for all monitor sources. Dispatches to the same scraper logic as the backend (rss, cnyes, worldbank, fsc, caixin, mops). Run: `python scripts/check_sources_health.py [http://<VM_IP>] [--active-only] [-v]`. Requires `pip install httpx feedparser beautifulsoup4`.
 
@@ -146,6 +152,8 @@ Four article sources are collected into `new_articles` **before** any saving or 
 
 **Article scoring** (`_compute_article_scores()`): runs before `db.add(Article(...))` and writes five fields: `decay_factor = exp(-0.1 × hours_elapsed)`, `novelty_score = 1/(1 + similar_count)` (Jaccard ≥ 0.5 against `seen_content_fps`), `finance_relevance` (from filter above), `intensity_score = abs((pos−neg)/total)` using sentiment keywords, `composite_score = decay × novelty × max(relevance, 0.05) × (0.5 + 0.5 × intensity)`.
 
+**Global exclusion keywords**: `SystemConfig["radar_exclusion_keywords"]` (JSON array) — applied after all 4 collection steps but before dedup/saving. Any article whose title+content contains an exclusion term (via `_term_in_text`) is dropped. Managed in SettingsPage "全域排除關鍵字" section.
+
 After collection, articles pass through **three dedup layers** before saving:
 1. In-memory exact URL + title match
 2. DB check against `Article` table (URL + title)
@@ -173,6 +181,8 @@ If nothing new, scan exits. Otherwise: save to `Article` DB + `TopicArticle`, th
 The frontend (`RadarPage`) parses these with `parseSourceUrl()` and `splitArticleLines()` to render per-article severity badges and enable filtering by severity level.
 
 ### Severity Assessment
+
+**Source-level override**: `MonitorSource.fixed_severity` (VARCHAR, nullable) — if set to `critical`, `high`, or `low`, all articles from that source use that severity regardless of keywords. At scan start, a `_source_fixed_sev: dict[str, str]` map is built from active sources with this field set. The helper `_article_severity(a)` checks this map first before calling `_assess_severity_single()`. This override applies everywhere severity is assessed: `_fmt_article_line`, `source_urls` construction, GN critical-only pre-filter, and GAS urgent-rows filter. The source list in SettingsPage shows a coloured badge (固定緊急 / 固定高風險 / 固定低風險) and a dropdown in the expanded view.
 
 `_assess_severity_single()` in `scheduler/jobs.py` uses a **multi-dimensional scoring model**:
 
@@ -212,9 +222,13 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `finance_filter_enabled` | `"true"` to drop articles below relevance threshold (default `"false"`) |
 | `finance_relevance_threshold` | Min finance relevance score to keep article (default `"0.15"`) |
 | `gn_critical_only` | `"true"` to pre-filter Google News results to critical severity only; RSS articles unaffected (default `"false"`) |
-| `nlm_latest_report` | Full Markdown text of the latest NotebookLM analysis report (written by `notebooklm_hourly.py` via `POST /api/radar/notebooklm-report`) |
-| `nlm_report_generated_at` | ISO timestamp of when the NLM report was generated |
-| `nlm_report_source_title` | Source title string used when the report was created in NotebookLM |
+| `radar_exclusion_keywords` | JSON array of terms — any article containing one is dropped from all sources after collection |
+| `nlm_latest_report` | Full Markdown text of the latest NotebookLM news analysis report (written by `notebooklm_hourly.py` via `POST /api/radar/notebooklm-report`) |
+| `nlm_report_generated_at` | ISO timestamp of when the NLM news report was generated |
+| `nlm_report_source_title` | Source title string used when the news report was created in NotebookLM |
+| `nlm_yt_latest_report` | Full Markdown text of the latest NotebookLM YouTube analysis report |
+| `nlm_yt_report_generated_at` | ISO timestamp of when the YT report was generated |
+| `nlm_yt_report_source_title` | Source title string used when the YT report was created |
 
 ### LINE Webhook Command System (`routers/line_webhook.py`)
 
@@ -222,14 +236,15 @@ Bot only responds to specific commands — all other messages are silently ignor
 
 | Input pattern | Response |
 |---------------|----------|
-| `分析` / any text containing `分析` | Latest NotebookLM analysis report from `SystemConfig["nlm_latest_report"]` |
+| `分析` / any text containing `分析` | Latest NotebookLM **news** analysis report from `SystemConfig["nlm_latest_report"]` |
 | `通知` | Unread critical news alerts since last query (updates `line_last_reply_at`) |
 | `通知1天` / `通知今日` / `通知3小時` | Critical news from that time range |
 | `yt` / `YT` / `yt通知` | Unread YouTube videos since last query (updates `line_last_yt_reply_at`) |
+| `yt分析` | Latest NotebookLM **YouTube** analysis report from `SystemConfig["nlm_yt_latest_report"]` |
 | `yt1天` / `yt今日` / `yt3小時` | YouTube videos from that time range |
 | anything else | no reply |
 
-Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_news = not is_yt and not is_analysis and "通知" in user_text`. The `分析` command takes priority over `通知` so "分析通知" triggers analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each.
+Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_news = not is_yt and not is_analysis and "通知" in user_text`. Inside the `is_yt` branch, `yt分析` (i.e. `"分析" in remainder`) takes priority over the video list. The `分析` command takes priority over `通知` so "分析通知" triggers news analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each. Article titles in news notifications are capped at 80 characters (truncated to 78 + `…`) in `_parse_articles()` — prevents social media posts (e.g. Trump tweets from Nitter) from flooding the notification with full post text.
 
 ### Database (SQLite)
 
@@ -239,11 +254,13 @@ Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `
 
 `MonitorSource.type` field values: `rss`, `website`, `social`, `newsapi`, `research`, `person`, `mops`. Research sources use `type="research"` and are fetched separately from news RSS sources. `mops` sources are fetched via `services/mops_scraper.py`. `website` sources are routed by `_fetch_website_source()` to specialized scrapers (cnyes, worldbank, fsc, caixin) or a generic web_scraper fallback.
 
-**Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:7d` RSS as proxy. 商周 (`businessweekly.com.tw`) also blocks most pages — uses Google News proxy. UDN financial RSS moved from `udn.com/rssfeed` (broken, returns empty entries) to `money.udn.com/rssfeed`.
+**Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:7d` RSS as proxy. 商周 (`businessweekly.com.tw`) also blocks most pages — uses Google News proxy. UDN financial RSS (`udn.com/rssfeed`) returns valid XML but empty entries — use the category page HTML scraper (`udn.com/news/cate/2/6644` via `udn_scraper.py`) instead. `money.udn.com/rssfeed` works for the finance sub-site.
 
 `MonitorSource.fetch_all` — boolean (default `False`). When `True`, skips keyword filtering so all articles from the source enter the radar; keyword badges are still annotated but only when the full boolean condition matches. Applies to **all source types** including `mops`. Added via `_migrate_db()` `ALTER TABLE`.
 
 `MonitorSource.sort_order` — integer (default `0`). User-controlled display order in SettingsPage; lower = earlier. Initialized from `id` order on first migration. Updated via `PUT /api/settings/sources/reorder` (list of IDs in desired order).
+
+`MonitorSource.fixed_severity` — `VARCHAR`, nullable (default `None`). When set to `"critical"`, `"high"`, or `"low"`, every article from that source is assigned that severity level, bypassing dynamic keyword/rule assessment entirely. Set via dropdown in SettingsPage expanded source view. Checked by `_article_severity()` wrapper in `jobs.py` before falling through to `_assess_severity_single()`.
 
 `TopicArticle.add_source`: `"radar"` (added by scheduler) or `"manual"` (added by user search).
 
@@ -251,12 +268,14 @@ Twelve models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `
 
 ### Frontend Structure
 
-- **Pages:** `RadarPage`, `SearchPage`, `NewsDBPage`, `ReportsPage`, `DashboardPage`, `SettingsPage`
-- **API client:** `frontend/src/services/api.js` — Axios instance with 60s timeout, exports `radarAPI`, `searchAPI`, `newsAPI`, `settingsAPI`, `topicsAPI`, `reportsAPI`, plus `resolveUrl()` utility for Google News redirect resolution.
+- **Pages:** `RadarPage`, `SearchPage`, `NewsDBPage`, `ReportsPage`, `DashboardPage`, `YouTubePage`, `AnalysisPage`, `SettingsPage`
+- **API client:** `frontend/src/services/api.js` — Axios instance with 60s timeout, exports `radarAPI`, `searchAPI`, `newsAPI`, `settingsAPI`, `topicsAPI`, `reportsAPI`, plus `resolveUrl()` utility for Google News redirect resolution. `radarAPI` includes `getNlmReport()` and `getNlmYtReport()` for fetching NLM analysis reports. `copyToClipboard(text)` utility: uses `navigator.clipboard.writeText()` in HTTPS/localhost, falls back to `document.execCommand('copy')` for HTTP (VM) — all copy buttons across pages use this function.
 - **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts.
 - **Styling:** Tailwind CSS dark theme, custom classes `card`, `card-hover`, `btn-primary`, `btn-secondary`, `btn-danger`, `input` defined in `index.css`.
 - **Severity display** (`NewsDBPage`): `assessSeverity(title, content)` runs client-side with the same keyword lists as the backend. `SeverityBadge` renders text pills (緊急/高/低). Not a server field — computed on render.
-- **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle. Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category.
+- **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle and a `fixed_severity` dropdown (動態評估 / 緊急 / 高風險 / 低風險). Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category. Source expanded view includes a type dropdown (RSS / 網頁爬蟲 / 社群) for non-mops/research sources.
+- **SettingsPage radar keywords**: tab bar (🇹🇼 中文關鍵字 / 🇺🇸 英文關鍵字) switches between TW and US keyword sections. `stripNotTerms(kw)` extracts `NOT term` / `NOT "multi word"` clauses from boolean keyword strings; `serializeGroups(groups, notTerms)` appends them at the end. Boolean keyword cards show NOT terms as red chips; the edit panel has a dedicated "排除詞（NOT）" input section. Global exclusion keywords are managed in a red-bordered section below the tabs — saved alongside topics via `updateRadarTopics(..., exclusion_keywords)`. `parseGroupedKeyword(kw)` calls `stripNotTerms` before regex parsing so NOT clauses don't break group detection.
+- **AnalysisPage** (`/analysis`): Two tabs (新聞分析 / YouTube 影片分析). History row (horizontal scroll) lets users select past reports by date. `renderReport()` renders Markdown headings, dividers, bold text; `renderInline()` handles `**bold**` and URLs in the same line; `linkify()` converts bare URLs to `<a>` links. Shows `generated_at` timestamp and `source_title` metadata. Empty state shown when no report exists. All `generated_at` timestamps are tagged with `Z` by `_iso_utc()` in `radar.py` so JavaScript interprets them as UTC, not local time.
 - **Routing constraint**: `PUT /api/settings/sources/reorder` must be declared **before** `PUT /api/settings/sources/{source_id}` in `settings.py` or FastAPI will match `"reorder"` as a source ID.
 
 ## Configuration
@@ -277,38 +296,62 @@ Copy `.env.example` to `.env`. Key variables:
 
 | Prefix | Router | Purpose |
 |--------|--------|---------|
-| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. `POST /notebooklm-report` receives NLM report from local script and stores in SystemConfig; `GET /notebooklm-report` retrieves latest report. |
+| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. `POST /notebooklm-report` receives news NLM report; `GET /notebooklm-report` retrieves it. `POST /notebooklm-yt-report` receives YouTube NLM report; `GET /notebooklm-yt-report` retrieves it. Both stored in SystemConfig. |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
 | `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. `POST /fetch` supports `source_type`: `"sources_only"` (RSS + website sources, default) or `"gn_only"` (Google News). When no query, uses radar_topics + active Topic keywords. Query strings are split via `_split_query_terms()` (spaces + ASCII/CJK boundary) for OR matching. Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. |
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
 | `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
-| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to cnyes/worldbank/fsc/caixin scrapers via same `is_*_url()` routing), and `rss`/`social`. |
+| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle, radar exclusion keywords. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to cnyes/worldbank/fsc/caixin/storm/taisounds/linetoday/udn scrapers via same `is_*_url()` routing), and `rss`/`social`. `GET /radar-topics` response includes `exclusion_keywords` field; `PUT /radar-topics` accepts it. |
 | `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
 | `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |
 | `/ws` | `main.py` | WebSocket for real-time broadcasts |
 
 ## NotebookLM Local Automation (`scripts/notebooklm_hourly.py`)
 
-Runs on the **local Windows machine** via Task Scheduler (not on the VM). Requires `pip install notebooklm-py requests` and `notebooklm login` (browser-based auth, saves to `~/.notebooklm/storage_state.json`; re-run when auth expires).
+Runs on the **local Windows machine** via Task Scheduler (not on the VM). Requires `pip install notebooklm-py requests beautifulsoup4` and `notebooklm login` (browser-based auth, saves to `~/.notebooklm/storage_state.json`; re-run when auth expires).
 
-**Flow**:
-1. Fetch alerts from VM API → filter by time window + per-article severity (not alert-level severity)
-2. Resolve Google News redirect URLs via `requests.head(allow_redirects=True)` before adding
-3. `await client.sources.add_url(NOTEBOOK_ID, url, wait=False)` for each article URL (up to 20)
-4. `await client.sources.add_text(NOTEBOOK_ID, summary_md, wait=True)` for alert overview
-5. `await client.artifacts.generate_report(NOTEBOOK_ID, report_format=ReportFormat.CUSTOM, language="zh-TW", custom_prompt=...)` — uses NotebookLM's built-in report generation, not chat Q&A
-6. `await client.artifacts.wait_for_completion(NOTEBOOK_ID, task_id, timeout=300)`
-7. `await client.artifacts.download_report(NOTEBOOK_ID, output_path, artifact_id)` → saves to `scripts/nlm_reports/YYYYMMDD_HHMM.md`
-8. `POST {API_BASE_URL}/api/radar/notebooklm-report` → pushes report to VM so LINE bot can serve it
+The script handles **two separate notebooks**: news analysis (`NOTEBOOK_ID`) and YouTube analysis (`NOTEBOOK_ID_YT`). Each is an independent flow run sequentially in the same script invocation.
 
-Config in `scripts/.env.local` (copy from `scripts/.env.local.example`): `API_BASE_URL=http://34.23.154.194` (VM IP, no port — nginx handles proxy), `NOTEBOOK_ID`, `HOURS_BACK`, `MIN_SEVERITY`, `RESULT_PUSH_LINE`.
+**Skill sources** (`scripts/skills/`): Permanent `.md` files (analysis team framework) loaded into each notebook once and never deleted. Identified by `[SKILL] ` title prefix. `_ensure_skill_sources(client, notebook_id)` lists existing sources, adds any missing `[SKILL]*` files; `_cleanup_news_sources(client, notebook_id)` deletes all non-`[SKILL]` sources before each run (removes stale news while keeping framework intact).
+
+**State tracking**: `.nlm_state.json` stores `news_last_run` and `yt_last_run` (separate ISO timestamps). On each run, if the gap since last run exceeds `HOURS_BACK`, the script fetches from that timestamp (catchup mode). Manual runs with `--hours`/`--since` flags do NOT update state; all other runs do.
+
+**News analysis flow**:
+1. Step 0: `_ensure_skill_sources()` then `_cleanup_news_sources()` to reset news sources
+2. Fetch articles from `GET /api/news/articles?limit=500&fetched_after=<cutoff>` → client-side severity filter
+3. `_add_source_with_fallback(client, notebook_id, url, title, requests)` for each article: tries `add_url(wait=False)` first; on failure, fetches page HTML and `add_text()` as fallback
+4. `add_text(NOTEBOOK_ID, summary_md, wait=True)` — full article list with metadata
+5. `generate_report(ReportFormat.CUSTOM, language="zh-TW", custom_prompt=_build_news_prompt(len(articles)))`
+6. `wait_for_completion(NOTEBOOK_ID, task_id, timeout=300)`
+7. `download_report(...)` → saves to `scripts/nlm_reports/YYYYMMDD_HHMM.md`
+8. `POST /api/radar/notebooklm-report` → pushes to VM
+
+**`_build_news_prompt(article_count)`** selects one of two prompt versions based on article count. Both versions use the full analysis team framework (references `[SKILL] PROJECT_INSTRUCTIONS_v2` and `[SKILL] SKILL_*`). Output format is identical for both:
+- `< 10` articles → max **1 category**; `≥ 10` articles → max **2 categories**
+- Fixed 3-point structure per category: `1. **事件描述**` / `2. **市場與國別影響**` / `3. **後續分析**`
+- Footer: `### 關鍵來源` with `- 一-1. 標題（URL）` per point
+
+**YouTube analysis flow**:
+1. Step 0: `_ensure_skill_sources()` then `_cleanup_news_sources()` on `NOTEBOOK_ID_YT`
+2. `_is_youtube_short(video_id, requests)` — HEAD `/shorts/{id}`, 200 → Short (add with 1 analysis point only)
+3. Fetch and add video URLs via `_add_source_with_fallback`; max 15 videos
+4. `generate_report(...)` with `custom_prompt`: per-video `一、【頻道名稱】影片標題`; Shorts get 1 point, regular videos get 3; same team framework reference
+5. Download and push to `POST /api/radar/notebooklm-yt-report`
+
+**CLI flags**: `--hours N`, `--since "MM/DD HH:MM"` (Taiwan time), `--severity critical|high`, `--news-only`, `--yt-only`, `--no-save-state`. Manual `--hours`/`--since` use `published_at` filter for YT (not `is_new` flag).
+
+Config in `scripts/.env.local` (copy from `scripts/.env.local.example`): `API_BASE_URL=http://34.23.154.194` (VM IP, no port — nginx proxy), `NOTEBOOK_ID`, `NOTEBOOK_ID_YT`, `HOURS_BACK=3` (matches 3-hour Task Scheduler interval), `MIN_SEVERITY=low`, `RESULT_PUSH_LINE`.
 
 **notebooklm-py 0.3.4 API**: `async with await NotebookLMClient.from_storage() as client:` — note the double `await`. Sub-clients:
-- `client.sources` — `add_text`, `add_url(wait=False for async)`, `add_file`
+- `client.sources` — `add_text`, `add_url(wait=False for async)`, `add_file`, `list(notebook_id)`, `delete(notebook_id, source_id)`
 - `client.artifacts` — `generate_report(report_format, language, custom_prompt)`, `wait_for_completion(notebook_id, task_id, timeout)`, `download_report(notebook_id, output_path, artifact_id)`. `ReportFormat` values: `BRIEFING_DOC`, `STUDY_GUIDE`, `BLOG_POST`, `CUSTOM`.
 - `client.chat` — `ask` → `AskResult.answer` (use for Q&A, not for structured reports)
 - `client.notebooks` — `list`, `create`, `get`
 
-**Important**: `Alert.source_urls` is returned as a Python `list` by the FastAPI endpoint (already deserialized), not a JSON string — do not call `json.loads()` on it again. `_parse_alert_articles()` handles both formats.
+**`_auto_login()`**: runs `notebooklm login` with `input=b"\n"` (simulates Enter) and `timeout=60`. If auth is valid, the browser auto-continues; if expired, the login page opens and the subsequent API call fails with an auth error message prompting manual re-login.
+
+**`_iso_utc()` in `radar.py`**: All NlmReport datetime fields are serialized via `_iso_utc(dt)` which appends `Z` if absent — ensures JavaScript interprets the timestamp as UTC, not local time (SQLite stores naive UTC datetimes that `isoformat()` would return without timezone marker).
+
+**`youtube_feed.py` UTC fix**: `_parse_published()` uses `calendar.timegm()` (not `time.mktime()`) to convert `published_parsed` struct from feedparser — feedparser returns UTC structs, `mktime()` would treat them as local time causing an 8-hour offset. `_video_dict()` in `youtube.py` also appends `Z` to `isoformat()` output for the same reason.
