@@ -578,9 +578,11 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
         from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
         from backend.services.linetoday_scraper import is_linetoday_url, fetch_linetoday_news
         from backend.services.udn_scraper import is_udn_cate_url, fetch_udn_cate_news
+        from backend.services.fed_scraper import is_fed_url, fetch_fed_news
 
         # 路由到對應爬蟲
         scraper_map = [
+            (is_fed_url, lambda: fetch_fed_news(hours_back=48), "聯準會 recentpostings"),
             (is_cnyes_api_url, lambda: fetch_cnyes_from_url(source.url, hours_back=24), "鉅亨網 JSON API"),
             (is_worldbank_api_url, lambda: fetch_worldbank_news(source.url, hours_back=48), "World Bank API"),
             (is_fsc_url, lambda: fetch_fsc_news(hours_back=48), "金管會新聞稿"),

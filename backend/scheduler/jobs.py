@@ -197,8 +197,11 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
     from backend.services.taisounds_scraper import is_taisounds_url, fetch_taisounds_news
     from backend.services.linetoday_scraper import is_linetoday_url, fetch_linetoday_news
     from backend.services.udn_scraper import is_udn_cate_url, fetch_udn_cate_news
+    from backend.services.fed_scraper import is_fed_url, fetch_fed_news
     from backend.services.web_scraper import scrape_page
 
+    if is_fed_url(url):
+        return await fetch_fed_news(hours_back)
     if is_cnyes_api_url(url):
         return await fetch_cnyes_from_url(url, hours_back)
     if is_worldbank_api_url(url):
