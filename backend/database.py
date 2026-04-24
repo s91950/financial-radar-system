@@ -122,6 +122,7 @@ class MonitorSource(Base):
     fetch_all = Column(Boolean, default=False)  # 全文讀取：跳過關鍵字過濾，但仍標記匹配關鍵字
     sort_order = Column(Integer, default=0)     # 使用者自訂排序（越小越前）
     fixed_severity = Column(String, nullable=True)  # None=動態評估 | 'critical'|'high'|'low'=強制覆寫
+    is_deleted = Column(Boolean, default=False)  # 軟刪除：使用者刪除後設為 True，migration 不重新插入
 
 
 class NotificationSetting(Base):
@@ -485,8 +486,8 @@ def _migrate_db():
         ]
         for name, url, kw in new_research:
             exists = conn.execute(
-                text("SELECT id FROM monitor_sources WHERE name = :n AND type = 'research'"),
-                {"n": name}
+                text("SELECT id FROM monitor_sources WHERE url = :u LIMIT 1"),
+                {"u": url}
             ).fetchone()
             if not exists:
                 conn.execute(text(
@@ -1139,6 +1140,36 @@ def _migrate_db():
             content TEXT,
             generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             source_title TEXT)"""))
+        conn.commit()
+
+        # ── v7: 軟刪除支援 + 清理重複來源 ──
+        # 新增 is_deleted 欄位（使用者刪除後設為 True，migration 不重新插入）
+        try:
+            conn.execute(text(
+                "ALTER TABLE monitor_sources ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0"
+            ))
+            conn.commit()
+        except Exception:
+            pass  # 欄位已存在，略過
+
+        # 清理重複 FSC 來源（同 URL 保留 id 最小者）
+        conn.execute(text("""
+            DELETE FROM monitor_sources
+            WHERE url = 'https://www.fsc.gov.tw/ch/home.jsp?id=96&parentpath=0,2&mcustomize=news_list.jsp'
+            AND id NOT IN (
+                SELECT MIN(id) FROM monitor_sources
+                WHERE url = 'https://www.fsc.gov.tw/ch/home.jsp?id=96&parentpath=0,2&mcustomize=news_list.jsp'
+            )
+        """))
+        # 清理重複 Caixin RSS 來源（已停用的舊版）
+        conn.execute(text(
+            "DELETE FROM monitor_sources WHERE url='https://www.caixinglobal.com/rss' AND is_active=0"
+        ))
+        # 停用 trumpstruth.org（第三方鏡像，改用官方 Truth Social）
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0 "
+            "WHERE url LIKE '%trumpstruth.org%'"
+        ))
         conn.commit()
 
 

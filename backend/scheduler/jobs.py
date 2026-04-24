@@ -289,7 +289,7 @@ async def _radar_scan_inner(force: bool = False):
 
         # 建立已知來源名稱集合（用於 GN 文章可信度懲罰：來源不在此清單者 weight=0.65）
         # 同時建立固定風險等級 map（source_name → fixed_severity）
-        _all_ms = db.query(MonitorSource).filter(MonitorSource.is_active == True).all()
+        _all_ms = db.query(MonitorSource).filter(MonitorSource.is_active == True, MonitorSource.is_deleted == False).all()
         _ksn: set = set()
         _source_fixed_sev: dict = {}
         for _ms in _all_ms:
@@ -311,6 +311,7 @@ async def _radar_scan_inner(force: bool = False):
         # 1. Fetch from active RSS sources (includes social type = Nitter/RSS mirrors)
         sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
             MonitorSource.type.in_(["rss", "social"]),
         ).all()
 
@@ -371,6 +372,7 @@ async def _radar_scan_inner(force: bool = False):
         # 1b. Fetch MOPS 公開資訊觀測站重大訊息（type="mops" 來源啟用時）
         mops_source = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
             MonitorSource.type == "mops",
         ).first()
         if mops_source:
@@ -416,6 +418,7 @@ async def _radar_scan_inner(force: bool = False):
         # 1c. Fetch website/API sources (type="website"): JSON API 或 HTML 爬蟲
         website_sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
             MonitorSource.type == "website",
         ).all()
         if website_sources:
@@ -1045,6 +1048,7 @@ async def daily_news_fetch():
         # RSS feeds
         sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
             MonitorSource.type == "rss",
         ).all()
         feeds = [
@@ -1126,6 +1130,7 @@ async def daily_research_fetch():
         sources = db.query(MonitorSource).filter(
             MonitorSource.type == "research",
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
         ).all()
 
         if not sources:

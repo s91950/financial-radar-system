@@ -34,7 +34,7 @@ class SourceUpdate(BaseModel):
 @router.get("/sources")
 async def get_sources(db: Session = Depends(get_db)):
     """Get all monitor sources."""
-    sources = db.query(MonitorSource).order_by(MonitorSource.sort_order, MonitorSource.id).all()
+    sources = db.query(MonitorSource).filter(MonitorSource.is_deleted == False).order_by(MonitorSource.sort_order, MonitorSource.id).all()
     return [_source_to_dict(s) for s in sources]
 
 
@@ -99,10 +99,14 @@ async def update_source(
 @router.delete("/sources/{source_id}")
 async def delete_source(source_id: int, db: Session = Depends(get_db)):
     """Delete a monitor source."""
-    source = db.query(MonitorSource).filter(MonitorSource.id == source_id).first()
+    source = db.query(MonitorSource).filter(
+        MonitorSource.id == source_id, MonitorSource.is_deleted == False
+    ).first()
     if not source:
         return {"error": "Source not found"}
-    db.delete(source)
+    # 軟刪除：保留記錄（URL 仍在 DB 中），migration 不會重新插入此來源
+    source.is_deleted = True
+    source.is_active = False
     db.commit()
     return {"success": True}
 
