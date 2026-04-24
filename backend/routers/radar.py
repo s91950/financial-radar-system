@@ -458,10 +458,10 @@ async def get_nlm_report(db: Session = Depends(get_db)):
 @router.get("/notebooklm-reports")
 async def list_nlm_reports(
     report_type: str = "news",
-    limit: int = 30,
+    limit: int = 500,
     db: Session = Depends(get_db),
 ):
-    """列出歷史 NLM 分析報告清單（最新在前，預設最多 30 筆）。"""
+    """列出歷史 NLM 分析報告清單（最新在前）。"""
     rows = (
         db.query(NlmReport)
         .filter(NlmReport.report_type == report_type)

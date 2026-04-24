@@ -177,12 +177,8 @@ async def fetch_multiple_feeds(
             logger.error(f"RSS gather error ({feed_info['url']}): {articles}")
             articles = []
 
-        # 用 MonitorSource.name 覆蓋 RSS feed 自帶的冗長標題
-        # 同時清理 name 本身（可能被使用者輸入了冗長的 RSS feed 標題）
-        from backend.services.google_news import _clean_source_name
+        # 用 MonitorSource.name 覆蓋 RSS feed 自帶的冗長標題（直接使用，不清洗）
         feed_name = feed_info.get("name")
-        if feed_name:
-            feed_name = _clean_source_name(feed_name)
         if feed_name:
             for a in articles:
                 a["source"] = feed_name
