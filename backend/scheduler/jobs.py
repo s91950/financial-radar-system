@@ -1093,12 +1093,11 @@ async def daily_news_fetch():
         db.commit()
         logger.info(f"Daily news fetch complete: {saved} new articles saved")
 
-        # Auto-append to Google Sheets via GAS
+        # Push to Google Sheets via GAS (instant); pullFromVM() every 30min is backup
         if saved > 0:
             try:
                 from backend.services.google_sheets import append_news_via_gas
                 await append_news_via_gas(articles_data)
-                logger.info(f"Appended {saved} articles to Google Sheets via GAS")
             except Exception as gs_err:
                 logger.warning(f"Google Sheets GAS write failed: {gs_err}")
 

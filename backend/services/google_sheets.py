@@ -163,22 +163,21 @@ async def append_news_via_gas(articles: list[dict]) -> bool:
     """Write articles to Google Sheets via GAS Web App endpoint.
 
     GAS doPost(e) should accept JSON: {action: "appendNews", rows: [...]}
-    Each row: {資料日期, 標題, 分類, 網址, 內容}
+    Each row: {入庫時間, 標題, 嚴重度, 來源, 關鍵字, 網址}
     """
     if not settings.GOOGLE_APPS_SCRIPT_URL or not articles:
         return False
 
+    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = []
     for a in articles:
-        pub = a.get("published_at") or datetime.utcnow().strftime("%Y-%m-%d")
-        if hasattr(pub, "strftime"):
-            pub = pub.strftime("%Y-%m-%d")
         rows.append({
-            "資料日期": str(pub)[:10],
+            "入庫時間": now_iso,
             "標題": a.get("title", ""),
-            "分類": a.get("category", ""),
+            "嚴重度": a.get("severity", ""),
+            "來源": a.get("source", ""),
+            "關鍵字": a.get("matched_keyword") or a.get("category", ""),
             "網址": a.get("source_url", ""),
-            "內容": (a.get("content", "") or "")[:2000],
         })
 
     payload = {"action": "appendNews", "rows": rows}

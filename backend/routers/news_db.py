@@ -348,8 +348,6 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
 @router.post("/save-selected")
 async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db)):
     """Save user-selected articles to SQLite + Google Sheets."""
-    from backend.services.google_sheets import append_news, append_news_via_gas
-
     saved_count = 0
     saved_articles = []
 
@@ -373,13 +371,12 @@ async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db))
 
     db.commit()
 
-    # Also append to Google Sheets (try GAS first, fallback to Service Account)
+    # Push to Google Sheets via GAS (instant); pullFromVM() every 30min is backup
     sheets_count = 0
     if saved_articles:
+        from backend.services.google_sheets import append_news_via_gas
         gas_ok = await append_news_via_gas(saved_articles)
-        if not gas_ok:
-            sheets_count = await append_news(saved_articles)
-        else:
+        if gas_ok:
             sheets_count = len(saved_articles)
 
     return {
