@@ -864,25 +864,21 @@ async def _radar_scan_inner(force: bool = False):
 
         # 自動將高/緊急文章寫入 Google Sheet（非阻塞，失敗不影響掃描）
         try:
-            from backend.config import settings as _cfg
-            if _cfg.GOOGLE_APPS_SCRIPT_URL:
-                _urgent_rows = []
-                for _a in new_articles:
-                    _sev = _article_severity(_a)
-                    if _sev in ("critical", "high"):
-                        _urgent_rows.append({
-                            "date":    datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
-                            "title":   _a.get("title", ""),
-                            "keyword": _a.get("matched_keyword", ""),
-                            "url":     _a.get("source_url", ""),
-                        })
-                if _urgent_rows:
-                    import httpx as _httpx
-                    async with _httpx.AsyncClient(timeout=10) as _c:
-                        await _c.post(_cfg.GOOGLE_APPS_SCRIPT_URL,
-                                      json={"articles": _urgent_rows},
-                                      follow_redirects=True)
-                    _flog(f"[SCAN] Wrote {len(_urgent_rows)} urgent articles to Google Sheet")
+            from backend.services.google_sheets import append_news_via_gas as _gas_push
+            _urgent_rows = []
+            for _a in new_articles:
+                _sev = _article_severity(_a)
+                if _sev in ("critical", "high"):
+                    _urgent_rows.append({
+                        "title":          _a.get("title", ""),
+                        "severity":       _sev,
+                        "source":         _a.get("source", ""),
+                        "matched_keyword": _a.get("matched_keyword", ""),
+                        "source_url":     _a.get("source_url", ""),
+                    })
+            if _urgent_rows:
+                await _gas_push(_urgent_rows)
+                _flog(f"[SCAN] Wrote {len(_urgent_rows)} urgent articles to Google Sheet")
         except Exception as _gs_err:
             _flog(f"[SCAN] Google Sheet write failed (non-fatal): {_gs_err}")
 
