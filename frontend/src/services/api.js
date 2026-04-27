@@ -34,6 +34,12 @@ export const radarAPI = {
   getNlmYtReport: () => api.get('/radar/notebooklm-yt-report'),
   listNlmReports: (type = 'news') => api.get('/radar/notebooklm-reports', { params: { report_type: type } }),
   getNlmReportById: (id) => api.get(`/radar/notebooklm-reports/${id}`),
+  // Gemini 分析報告
+  getGeminiReport: () => api.get('/radar/gemini-report'),
+  getGeminiYtReport: () => api.get('/radar/gemini-yt-report'),
+  listGeminiReports: (type = 'gemini_news') => api.get('/radar/gemini-reports', { params: { report_type: type } }),
+  getGeminiReportById: (id) => api.get(`/radar/gemini-reports/${id}`),
+  triggerGeminiAnalysis: () => api.post('/radar/gemini-analyze'),
 }
 
 // --- Search APIs ---

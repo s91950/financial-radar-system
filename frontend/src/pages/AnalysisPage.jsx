@@ -60,26 +60,76 @@ function renderReport(content) {
   })
 }
 
+// Tab 定義：分為兩組（NLM 和 Gemini），每組有新聞和 YT
+const TAB_CONFIG = {
+  // NLM tabs
+  nlm_news: {
+    label: '📰 NLM 新聞',
+    emptyMsg: '尚無 NLM 新聞分析報告',
+    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
+    reportType: 'news',
+    getLatest: () => radarAPI.getNlmReport(),
+    listHistory: () => radarAPI.listNlmReports('news'),
+    getById: (id) => radarAPI.getNlmReportById(id),
+    group: 'nlm',
+  },
+  nlm_yt: {
+    label: '📺 NLM YouTube',
+    emptyMsg: '尚無 NLM YouTube 分析報告',
+    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
+    reportType: 'yt',
+    getLatest: () => radarAPI.getNlmYtReport(),
+    listHistory: () => radarAPI.listNlmReports('yt'),
+    getById: (id) => radarAPI.getNlmReportById(id),
+    group: 'nlm',
+  },
+  // Gemini tabs
+  gemini_news: {
+    label: '📰 Gemini 新聞',
+    emptyMsg: '尚無 Gemini 新聞分析報告',
+    emptyHint: 'VM 每 3 小時自動執行 Gemini 深度分析',
+    reportType: 'gemini_news',
+    getLatest: () => radarAPI.getGeminiReport(),
+    listHistory: () => radarAPI.listGeminiReports('gemini_news'),
+    getById: (id) => radarAPI.getGeminiReportById(id),
+    group: 'gemini',
+  },
+  gemini_yt: {
+    label: '📺 Gemini YouTube',
+    emptyMsg: '尚無 Gemini YouTube 分析報告',
+    emptyHint: 'VM 每 3 小時自動執行 Gemini 深度分析',
+    reportType: 'gemini_yt',
+    getLatest: () => radarAPI.getGeminiYtReport(),
+    listHistory: () => radarAPI.listGeminiReports('gemini_yt'),
+    getById: (id) => radarAPI.getGeminiReportById(id),
+    group: 'gemini',
+  },
+}
+
 export default function AnalysisPage() {
-  const [tab, setTab] = useState('news')
-  const [historyNews, setHistoryNews] = useState([])
-  const [historyYt, setHistoryYt] = useState([])
-  const [selectedIdNews, setSelectedIdNews] = useState(null)
-  const [selectedIdYt, setSelectedIdYt] = useState(null)
+  const [tab, setTab] = useState('gemini_news')
+  const [histories, setHistories] = useState({})
+  const [selectedIds, setSelectedIds] = useState({})
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [reportLoading, setReportLoading] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
 
-  // 載入歷史清單
+  // 載入所有 tab 的歷史清單
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const [nList, yList] = await Promise.all([
+        const [nList, yList, gnList, gyList] = await Promise.all([
           radarAPI.listNlmReports('news'),
           radarAPI.listNlmReports('yt'),
+          radarAPI.listGeminiReports('gemini_news'),
+          radarAPI.listGeminiReports('gemini_yt'),
         ])
-        setHistoryNews(nList.data || [])
-        setHistoryYt(yList.data || [])
+        setHistories({
+          nlm_news: nList.data || [],
+          nlm_yt: yList.data || [],
+          gemini_news: gnList.data || [],
+          gemini_yt: gyList.data || [],
+        })
       } catch {
         // 靜默失敗
       }
@@ -92,14 +142,13 @@ export default function AnalysisPage() {
     const loadReport = async () => {
       setLoading(true)
       try {
-        const selectedId = tab === 'news' ? selectedIdNews : selectedIdYt
+        const cfg = TAB_CONFIG[tab]
+        const selectedId = selectedIds[tab]
         let res
         if (selectedId) {
-          res = await radarAPI.getNlmReportById(selectedId)
+          res = await cfg.getById(selectedId)
         } else {
-          res = tab === 'news'
-            ? await radarAPI.getNlmReport()
-            : await radarAPI.getNlmYtReport()
+          res = await cfg.getLatest()
         }
         setReport(res.data)
       } catch {
@@ -109,36 +158,59 @@ export default function AnalysisPage() {
       }
     }
     loadReport()
-  }, [tab, selectedIdNews, selectedIdYt])
+  }, [tab, selectedIds])
 
-  const history = tab === 'news' ? historyNews : historyYt
-  const selectedId = tab === 'news' ? selectedIdNews : selectedIdYt
-  const setSelectedId = tab === 'news' ? setSelectedIdNews : setSelectedIdYt
-  const emptyMsg = tab === 'news' ? '尚無新聞分析報告' : '尚無 YouTube 分析報告'
+  const cfg = TAB_CONFIG[tab]
+  const history = histories[tab] || []
+  const selectedId = selectedIds[tab]
+  const setSelectedId = (id) => setSelectedIds((prev) => ({ ...prev, [tab]: id }))
 
   const fmtDate = (iso) => {
     if (!iso) return '—'
     return new Date(iso).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
+  const handleTriggerGemini = async () => {
+    setAnalyzing(true)
+    try {
+      await radarAPI.triggerGeminiAnalysis()
+    } catch {
+      // 靜默失敗
+    } finally {
+      setTimeout(() => setAnalyzing(false), 3000)
+    }
+  }
+
   return (
     <div className="max-w-4xl mx-auto space-y-4">
-      {/* Tab 切換 */}
-      <div className="flex gap-2">
-        {[
-          ['news', '📰 新聞分析'],
-          ['yt', '📺 YouTube 影片分析'],
-        ].map(([key, label]) => (
+      {/* 分析引擎切換 */}
+      <div className="flex items-center gap-4">
+        <div className="flex gap-1 bg-dark-800 rounded-lg p-1 border border-dark-700">
+          {Object.entries(TAB_CONFIG).map(([key, c]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-3 py-1.5 rounded-md font-medium text-xs transition-colors ${
+                tab === key
+                  ? c.group === 'gemini'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-primary-600 text-white'
+                  : 'text-dark-400 hover:text-white'
+              }`}
+            >{c.label}</button>
+          ))}
+        </div>
+
+        {/* Gemini 手動觸發按鈕 */}
+        {cfg.group === 'gemini' && (
           <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
-              tab === key
-                ? 'bg-primary-600 text-white'
-                : 'bg-dark-800 text-dark-400 hover:text-white border border-dark-700'
-            }`}
-          >{label}</button>
-        ))}
+            onClick={handleTriggerGemini}
+            disabled={analyzing}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600/20 text-blue-400 border border-blue-600/40 hover:bg-blue-600/30 disabled:opacity-50 transition-colors"
+          >
+            {analyzing ? '分析中...' : '手動觸發 Gemini 分析'}
+          </button>
+        )}
       </div>
 
       {/* 歷史清單（橫列） */}
@@ -151,7 +223,9 @@ export default function AnalysisPage() {
               onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
               className={`shrink-0 px-3 py-1.5 rounded-lg text-xs transition-colors whitespace-nowrap ${
                 (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
-                  ? 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
+                  ? cfg.group === 'gemini'
+                    ? 'bg-blue-600/20 text-blue-400 border border-blue-600/40'
+                    : 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
                   : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800 border border-dark-700'
               }`}
             >
@@ -169,18 +243,27 @@ export default function AnalysisPage() {
             </div>
           ) : !report?.content ? (
             <div className="text-center py-16 text-dark-500">
-              <div className="text-4xl mb-3">📋</div>
-              <div className="text-sm">{emptyMsg}</div>
-              <div className="text-xs text-dark-600 mt-1">NotebookLM 腳本執行後報告將自動同步至此</div>
+              <div className="text-4xl mb-3">{cfg.group === 'gemini' ? '🤖' : '📋'}</div>
+              <div className="text-sm">{cfg.emptyMsg}</div>
+              <div className="text-xs text-dark-600 mt-1">{cfg.emptyHint}</div>
             </div>
           ) : (
             <div>
               {/* 報告 meta */}
               <div className="flex items-center justify-between pb-4 mb-4 border-b border-dark-700">
                 <div className="text-xs text-dark-500 space-y-0.5">
-                  <div>生成時間：<span className="text-dark-400">
-                    {report.generated_at ? new Date(report.generated_at).toLocaleString('zh-TW') : '—'}
-                  </span></div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      cfg.group === 'gemini'
+                        ? 'bg-blue-600/20 text-blue-400'
+                        : 'bg-primary-600/20 text-primary-400'
+                    }`}>
+                      {cfg.group === 'gemini' ? 'Gemini' : 'NotebookLM'}
+                    </span>
+                    <span>生成時間：<span className="text-dark-400">
+                      {report.generated_at ? new Date(report.generated_at).toLocaleString('zh-TW') : '—'}
+                    </span></span>
+                  </div>
                   {report.source_title && (
                     <div>來源批次：<span className="text-dark-400">{report.source_title}</span></div>
                   )}

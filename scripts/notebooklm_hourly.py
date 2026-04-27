@@ -31,6 +31,7 @@ Windows Task Scheduler 設定：
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import sys
@@ -41,6 +42,23 @@ from datetime import datetime, timedelta, timezone
 if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+
+# ── 日誌設定：同時輸出到 console 和 run.log ──────────────────────────────────
+_script_dir_early = os.path.dirname(os.path.abspath(__file__))
+_log_dir = os.path.join(_script_dir_early, "nlm_reports")
+os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, "run.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_log_file, encoding="utf-8", mode="a"),
+    ],
+)
+_log = logging.getLogger("nlm")
 
 # ── 讀取 .env.local ────────────────────────────────────────────────────────
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -139,13 +157,64 @@ def _parse_alert_articles(alert: dict) -> list[dict]:
 
 
 def _html_to_text(html: str) -> str:
-    """HTML 轉純文字，優先使用 BeautifulSoup，沒有則用 regex。"""
+    """HTML 轉純文字，聚焦主文內容，去除導覽列、相關新聞、訂閱 CTA 等雜訊。"""
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside", "iframe"]):
+
+        # ① 移除明確雜訊標籤
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside",
+                          "iframe", "noscript", "figure", "figcaption", "form",
+                          "button", "input", "select", "textarea"]):
             tag.decompose()
-        return soup.get_text(separator="\n", strip=True)
+
+        # ② 移除常見雜訊 class / id（導覽、相關新聞、廣告、訂閱區塊等）
+        _NOISE = [
+            "recommend", "related", "more-news", "also-read", "read-more",
+            "newsletter", "subscribe", "subscription", "paywall", "register",
+            "sidebar", "breadcrumb", "tag-list", "social", "share", "comment",
+            "advertisement", "ad-", "banner", "popup", "modal", "promo",
+            "hot-news", "popular", "trending", "latest-news",
+        ]
+        for el in soup.find_all(True):
+            cls = " ".join(el.get("class", [])).lower()
+            id_ = (el.get("id") or "").lower()
+            if any(p in cls or p in id_ for p in _NOISE):
+                el.decompose()
+
+        # ③ 優先找語意化主文容器
+        content = ""
+        for selector in [
+            "article",
+            "[itemprop='articleBody']",
+            ".article-body", ".article-content", ".article__body",
+            "#article-content", "#articleBody",
+            ".story-body", ".post-content", ".content-body",
+            "main",
+        ]:
+            try:
+                el = soup.select_one(selector)
+            except Exception:
+                continue
+            if el:
+                content = el.get_text(separator="\n", strip=True)
+                break
+
+        # ④ 退而求其次：只收 <p> 段落，過濾過短的（導覽 / 按鈕文字）
+        if not content:
+            paras = [p.get_text(strip=True) for p in soup.find_all("p")]
+            paras = [p for p in paras if len(p) > 25]
+            content = "\n\n".join(paras)
+
+        # ⑤ 最後手段：整頁純文字
+        if not content:
+            content = soup.get_text(separator="\n", strip=True)
+
+        # 去除連續空白行，限制長度
+        lines = [ln.strip() for ln in content.splitlines()]
+        lines = [ln for ln in lines if ln]
+        return "\n".join(lines)
+
     except ImportError:
         text = re.sub(r'<[^>]+>', ' ', html)
         return re.sub(r'\s+', ' ', text).strip()
@@ -156,8 +225,9 @@ _SKILL_PREFIX = "[SKILL] "
 
 
 async def _ensure_skill_sources(client, notebook_id: str):
-    """確保所有 skills/ 目錄內的 .md 檔已匯入指定 NLM notebook。
-    以標題 '[SKILL] 檔名（不含副檔名）' 識別；已存在的跳過，缺少的補匯入。
+    """確保 NLM notebook 內的 [SKILL] sources 與 skills/ 目錄完全同步：
+    - skills/ 有但 NLM 沒有 → 補匯入
+    - NLM 有但 skills/ 已刪除 → 從 NLM 移除（孤兒清理）
     """
     if not os.path.isdir(_SKILLS_DIR):
         print(f"  [Skills] 找不到 skills/ 目錄（{_SKILLS_DIR}），跳過")
@@ -168,17 +238,37 @@ async def _ensure_skill_sources(client, notebook_id: str):
         print("  [Skills] skills/ 目錄內無 .md 檔，跳過")
         return
 
+    # 以 skills/ 內的檔案為基準，建立預期標題集合
+    expected_titles = {
+        f"{_SKILL_PREFIX}{os.path.splitext(f)[0]}" for f in skill_files
+    }
+
     try:
         existing = await client.sources.list(notebook_id)
-        existing_titles = {s.title for s in existing if s.title and s.title.startswith(_SKILL_PREFIX)}
+        existing_skill_sources = {
+            s.title: s for s in existing
+            if s.title and s.title.startswith(_SKILL_PREFIX)
+        }
     except Exception as e:
         print(f"  [Skills] 無法取得現有 sources：{e}")
-        existing_titles = set()
+        existing_skill_sources = {}
 
+    # 移除孤兒（NLM 有、skills/ 已不存在）
+    removed = 0
+    for title, src in existing_skill_sources.items():
+        if title not in expected_titles:
+            try:
+                await client.sources.delete(notebook_id, src.id)
+                removed += 1
+                print(f"  [Skills] 移除孤兒：{title}")
+            except Exception as e:
+                print(f"  [Skills] 移除失敗 {title}：{e}")
+
+    # 補匯入缺少的 skill
     added = skipped = 0
     for filename in skill_files:
         title = f"{_SKILL_PREFIX}{os.path.splitext(filename)[0]}"
-        if title in existing_titles:
+        if title in existing_skill_sources:
             skipped += 1
             continue
         filepath = os.path.join(_SKILLS_DIR, filename)
@@ -191,8 +281,14 @@ async def _ensure_skill_sources(client, notebook_id: str):
         except Exception as e:
             print(f"  [Skills] 匯入失敗 {filename}：{e}")
 
-    status = f"新增 {added}" if added else "全部已存在"
-    print(f"  [Skills] 完成（{status}，共 {len(skill_files)} 個 skill 檔）")
+    parts = []
+    if added:
+        parts.append(f"新增 {added}")
+    if removed:
+        parts.append(f"移除 {removed}")
+    if not parts:
+        parts.append("已同步")
+    print(f"  [Skills] 完成（{', '.join(parts)}，目前 {len(skill_files)} 個 skill 檔）")
 
 
 async def _cleanup_news_sources(client, notebook_id: str):
@@ -232,8 +328,14 @@ async def _add_source_with_fallback(
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
             allow_redirects=True,
         )
-        text = _html_to_text(resp.text)[:8000]
-        content = f"# {title}\n\n來源：{url}\n\n{text}"
+        text = _html_to_text(resp.text)
+
+        # 品質門檻：純文字去除空白後 < 100 字視為無效（導覽頁、空頁、403 頁面等）
+        if len(text.replace(" ", "").replace("\n", "")) < 100:
+            return "failed"
+
+        # 截取前 6000 字（主文通常在前段，避免帶入頁尾相關新聞）
+        content = f"# {title}\n\n來源：{url}\n\n{text[:6000]}"
         await client.sources.add_text(notebook_id, title=title[:100], content=content, wait=False)
         return "text"
     except Exception:
@@ -268,14 +370,12 @@ def _build_news_summary(articles: list[dict], cutoff: datetime) -> str:
     return "\n".join(lines)
 
 
-def _build_news_prompt(article_count: int) -> str:
+def _build_news_prompt_v1(article_count: int) -> str:
     """
-    依文章數量選擇分析提示詞版本，兩版均使用完整分析團隊框架。
-    輸出格式統一：最多 2 個主題類別，每類固定 3 點（事件描述／市場影響／後續分析）。
-    < 10 篇 → 精簡版：1 個類別（文章少，聚焦最重要主題）
-    ≥ 10 篇 → 分類版：1～2 個類別（由 AI 選最重要的 1～2 個主題）
+    【舊版 v1 備份，已暫停使用】
+    依文章數量選擇分析提示詞版本，使用 PROJECT_INSTRUCTIONS_v2 + SKILL_* 框架。
+    輸出格式：最多 2 個主題類別，每類固定 3 點（事件描述／市場影響／後續分析）。
     """
-    # ── 分析團隊前導（兩版共用）──────────────────────────────────────────
     team_preamble = (
         "你是由多名頂尖金融專業人士組成的分析團隊，團隊架構、各分析師專業底蘊、"
         "六層分析流程及全體禁止行為，詳見已上傳的 [SKILL] PROJECT_INSTRUCTIONS_v2 "
@@ -287,15 +387,11 @@ def _build_news_prompt(article_count: int) -> str:
         "• 點出不同市場參與者的立場分歧（外資、央行、散戶至少涵蓋一組）\n"
         "• 若有反證條件（「若___發生，此判斷不成立」），請在相關段落中標示\n\n"
     )
-
-    # ── 來源規則（兩版共用）──────────────────────────────────────────────
     source_rule = (
         "【來源規則】\n"
         "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構任何未匯入的文章\n"
         "• 若匯入來源不足以支撐某個論點，請縮短篇幅，不可用自身知識庫填補\n\n"
     )
-
-    # ── 輸出格式（兩版共用）──────────────────────────────────────────────
     output_format = (
         "【報告格式（嚴格遵守）】\n\n"
         "第一行為報告主標題（H1），點出本批次核心主題，例如：\n"
@@ -320,13 +416,49 @@ def _build_news_prompt(article_count: int) -> str:
         "只列確實匯入的文章，禁止虛構，若來源無可用 URL 則標示「（來源文本）」。\n\n"
         "全程使用繁體中文撰寫。"
     )
-
     if article_count < 10:
         fmt = output_format.replace("{max_cat}", "1")
     else:
         fmt = output_format.replace("{max_cat}", "2")
-
     return team_preamble + source_rule + fmt
+
+
+def _build_news_prompt(article_count: int) -> str:
+    """
+    【新版 v2】基於「定期市場新聞分析簡報 ─ 分析師合議版」SKILL 框架。
+    完整規範（五大類別、三段式結構、分析師池、企業機構清單、品質清單）
+    詳見已上傳的 [SKILL] 新聞分析SKILL 文件。
+
+    < 10 篇 → 精簡版：選出最重要的 1 個類別
+    ≥ 10 篇 → 分類版：選出最重要的 1～3 個類別
+    """
+    max_cat = "1" if article_count < 10 else "3"
+
+    return (
+        "你是一個「定期市場新聞分析簡報」系統。"
+        "完整的分析框架（核心運作邏輯、分析師合議召集機制、三段式結構規範、"
+        "企業機構參考清單、輸出模板、品質清單、分類判斷準則與常見錯誤範例）"
+        "全部詳見已上傳的 [SKILL] 新聞分析SKILL 文件，請嚴格遵照該文件執行。\n\n"
+        "【本次執行指示】\n"
+        f"本批次共 {article_count} 篇新聞。"
+        f"請從五大類別（總經/央行政策、台股/亞股、信用市場/私募信貸、"
+        f"FX/大宗商品/地緣政治、財金總經綜合）中，"
+        f"選出最重要的 1～{max_cat} 個有料類別進行分析；無料類別直接省略，不得硬湊。\n"
+        "涵蓋時段請根據匯入的新聞摘要 source 中「分析時段」欄位自動填入。\n\n"
+        "【三段式格式提醒（[SKILL] 新聞分析SKILL 第三節）】\n"
+        "每個類別固定輸出三點，對應：\n"
+        "① 事件 + 市場反應（What + How，含具體數據、幅度、時序）\n"
+        "② 分析師合議解讀（Why it matters，必須點名具體公司/機構，"
+        "呈現跨市場/跨國別傳導路徑，禁止「金融股」「科技股」等模糊詞）\n"
+        "③ 後續觀察（What to watch，具體可驗證的追蹤項目，含時間/數字/明確關卡，"
+        "禁止「持續觀察」「值得關注」等空話）\n\n"
+        "【來源標注規則】\n"
+        "• 每點結尾附 1-2 則核心新聞網址，格式：[1][2]\n"
+        "• 報告末尾統一列出【關鍵新聞來源】區塊，格式：[1] https://...\n"
+        "• 同一網址全份報告只出現一次，不得重複引用\n"
+        "• 只能根據本次實際匯入的新聞來源進行分析，禁止引用或虛構未匯入的文章\n\n"
+        "全程使用繁體中文撰寫。"
+    )
 
 
 async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mod) -> str | None:
@@ -399,8 +531,8 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 URL:{added_url} 文字:{added_text} 略過:{skipped} + 1份摘要")
 
             # Step C：建立分析師團隊報告（依文章數量選擇提示詞版本）
-            prompt_version = "分類版" if len(articles) >= 10 else "精簡版"
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告（{prompt_version}，共 {len(articles)} 篇）...")
+            prompt_version = "分類版(≤3類)" if len(articles) >= 10 else "精簡版(1類)"
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立新聞分析報告（v2 新聞分析SKILL，{prompt_version}，共 {len(articles)} 篇）...")
             gen_status = await client.artifacts.generate_report(
                 NOTEBOOK_ID,
                 report_format=ReportFormat.CUSTOM,
@@ -577,31 +709,54 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 已匯入 YT URL:{added} 略過:{skipped} + 1份摘要")
 
             # Step C：建立頻道洞察報告
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立 YT 分析報告...")
+            # ── YT 提示詞 v1（舊版備份，已暫停使用） ──────────────────────────
+            # _YT_PROMPT_V1 = (
+            #     "你是由多名頂尖金融專業人士組成的分析團隊，團隊架構、各分析師專業底蘊、"
+            #     "六層分析流程及全體禁止行為，詳見已上傳的 [SKILL] PROJECT_INSTRUCTIONS_v2 "
+            #     "與各 [SKILL] SKILL_* 檔案，請以這些檔案作為分析框架與視角依據。\n\n"
+            #     "【執行方式】\n"
+            #     "• 由首席分析師（CHIEF-01）為每支影片指派最適合的分析師角色\n"
+            #     "• 各分析師依其專業（宏觀/債市/股市/匯率/商品/地緣政治等）提出核心洞察\n"
+            #     "• 每個洞察追蹤至少三層因果鏈，並點出跨市場連動與投資人行為因素\n"
+            #     "• 若有反證條件（「若___發生，此判斷不成立」），請在相關要點中標示\n\n"
+            #     "【來源規則】\n"
+            #     "• 只能根據本次實際匯入的影片內容進行分析，禁止引用或虛構未匯入的影片\n\n"
+            #     "【報告格式要求（嚴格遵守）】\n"
+            #     "- 每支影片獨立一個段落，標題格式：「一、【頻道名稱】影片標題」（依影片清單順序編號）\n"
+            #     "- 影片清單中標注 [Shorts] 的影片：只列「1.」共 1 個分析要點（約 60～80 字）\n"
+            #     "- 未標注 [Shorts] 的一般影片：列「1.」「2.」「3.」共 3 個分析要點，每點約 80～100 字\n"
+            #     "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與投資人行為因素\n"
+            #     "- 報告最末統一列出「影片來源」區塊；只列本次確實匯入的影片，"
+            #     "格式「一. 【頻道名稱】標題（URL）」，不得引用未在本批次中出現的影片，切勿省略此區塊\n"
+            #     "- 全程使用繁體中文撰寫"
+            # )
+            # ── YT 提示詞 v2（新版，使用 新聞分析SKILL 框架） ──────────────────
+            _yt_prompt_v2 = (
+                "你是一個「YouTube 金融影片定期簡報」系統。"
+                "分析師合議框架（分析師角色池、四層思考、用詞紀律等）"
+                "詳見已上傳的 [SKILL] 新聞分析SKILL 文件，請以該文件的分析視角與深度標準執行。\n\n"
+                "【本次 YouTube 影片分析格式（嚴格遵守）】\n"
+                "• 每支影片獨立一個段落，標題格式：「一、【頻道名稱】影片標題」（依清單順序編號）\n"
+                "• [Shorts] 標注的影片：只列「①」共 1 個分析點（約 60-80 字），"
+                "必須點名至少一個具體公司或機構\n"
+                "• 一般影片：列「①②③」共 3 個分析點，對應：\n"
+                "  ① 內容摘要 + 市場訊號（What：影片主張、關鍵數據、觀點方向）\n"
+                "  ② 分析師合議解讀（Why：跨市場傳導路徑、具體點名公司/機構、"
+                "參與者行為邏輯；禁止「金融股」「科技股」等模糊詞）\n"
+                "  ③ 後續觀察（Watch：具體可驗證項目、價格關卡、時間節點；"
+                "禁止「持續觀察」「值得關注」等空話）\n"
+                "  每點約 80-100 字\n"
+                "• 來源規則：只能分析本次匯入的影片，禁止引用未匯入的內容\n"
+                "• 報告末尾統一列出「影片來源」區塊，"
+                "格式「一. 【頻道名稱】標題（URL）」，不得省略此區塊\n"
+                "• 全程使用繁體中文撰寫"
+            )
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 建立 YT 分析報告（v2 新聞分析SKILL 框架）...")
             gen_status = await client.artifacts.generate_report(
                 NOTEBOOK_ID_YT,
                 report_format=ReportFormat.CUSTOM,
                 language="zh-TW",
-                custom_prompt=(
-                    "你是由多名頂尖金融專業人士組成的分析團隊，團隊架構、各分析師專業底蘊、"
-                    "六層分析流程及全體禁止行為，詳見已上傳的 [SKILL] PROJECT_INSTRUCTIONS_v2 "
-                    "與各 [SKILL] SKILL_* 檔案，請以這些檔案作為分析框架與視角依據。\n\n"
-                    "【執行方式】\n"
-                    "• 由首席分析師（CHIEF-01）為每支影片指派最適合的分析師角色\n"
-                    "• 各分析師依其專業（宏觀/債市/股市/匯率/商品/地緣政治等）提出核心洞察\n"
-                    "• 每個洞察追蹤至少三層因果鏈，並點出跨市場連動與投資人行為因素\n"
-                    "• 若有反證條件（「若___發生，此判斷不成立」），請在相關要點中標示\n\n"
-                    "【來源規則】\n"
-                    "• 只能根據本次實際匯入的影片內容進行分析，禁止引用或虛構未匯入的影片\n\n"
-                    "【報告格式要求（嚴格遵守）】\n"
-                    "- 每支影片獨立一個段落，標題格式：「一、【頻道名稱】影片標題」（依影片清單順序編號）\n"
-                    "- 影片清單中標注 [Shorts] 的影片：只列「1.」共 1 個分析要點（約 60～80 字）\n"
-                    "- 未標注 [Shorts] 的一般影片：列「1.」「2.」「3.」共 3 個分析要點，每點約 80～100 字\n"
-                    "- 文字精簡淺白但分析程度要深，必須涵蓋跨市場連動與投資人行為因素\n"
-                    "- 報告最末統一列出「影片來源」區塊；只列本次確實匯入的影片，"
-                    "格式「一. 【頻道名稱】標題（URL）」，不得引用未在本批次中出現的影片，切勿省略此區塊\n"
-                    "- 全程使用繁體中文撰寫"
-                ),
+                custom_prompt=_yt_prompt_v2,
             )
 
             # Step D：等待完成
@@ -657,38 +812,94 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
 def _auto_login():
     """
     執行 notebooklm login 並自動按 Enter。
-    - 認證有效：瀏覽器載入 NLM 首頁後自動送出換行，無需人工介入。
-    - 認證過期：瀏覽器開啟真正登入畫面，換行會立即送出（太早），
-      此時腳本會在後面的 API 呼叫失敗並提示手動執行 notebooklm login。
-    - 逾時（30 秒）或找不到 notebooklm 執行檔時，靜默略過不影響後續流程。
+    改為在獨立 daemon 執行緒中執行，避免背景排程時瀏覽器行為不可預期
+    導致主執行緒卡死（subprocess.TimeoutExpired 在某些 Windows 狀態下不會正常觸發）。
+    硬性上限 30 秒後強制放棄，不影響後續流程。
     """
-    import subprocess, shutil
+    import subprocess, shutil, threading
+
+    # 先檢查 storage_state.json 是否存在且未過期
+    state_path = os.path.expanduser("~/.notebooklm/storage_state.json")
+    if os.path.exists(state_path):
+        age_hours = (datetime.now().timestamp() - os.path.getmtime(state_path)) / 3600
+        if age_hours < 12:
+            _log.info("NotebookLM 認證檔 %.1f 小時前更新，跳過自動登入", age_hours)
+            return
+
     nlm_bin = shutil.which("notebooklm")
     if not nlm_bin:
-        # 嘗試 Python Scripts 目錄
         import sysconfig
         scripts = sysconfig.get_path("scripts")
         candidate = os.path.join(scripts, "notebooklm.exe" if sys.platform == "win32" else "notebooklm")
         nlm_bin = candidate if os.path.exists(candidate) else None
     if not nlm_bin:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] 找不到 notebooklm 執行檔，跳過自動登入")
+        _log.warning("找不到 notebooklm 執行檔，跳過自動登入")
         return
+
+    login_result = {"ok": False, "err": ""}
+
+    def _do_login():
+        try:
+            r = subprocess.run(
+                [nlm_bin, "login"],
+                input=b"\n",
+                timeout=25,
+                capture_output=True,
+            )
+            login_result["ok"] = r.returncode == 0
+            if r.returncode != 0:
+                login_result["err"] = r.stderr.decode("utf-8", errors="replace")[:200]
+        except subprocess.TimeoutExpired:
+            login_result["err"] = "timeout"
+        except Exception as e:
+            login_result["err"] = str(e)[:200]
+
+    _log.info("自動刷新 NotebookLM 認證（執行緒，上限 30s）...")
+    t = threading.Thread(target=_do_login, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    if t.is_alive():
+        _log.warning("notebooklm login 執行緒逾時（30s），繼續執行")
+    elif login_result["ok"]:
+        _log.info("NotebookLM 認證已刷新")
+    else:
+        _log.warning("notebooklm login 非正常結束：%s", login_result["err"])
+
+
+async def _run_all_async(
+    run_news: bool,
+    articles: list,
+    news_cutoff: "datetime",
+    run_yt: bool,
+    videos: list,
+    yt_cutoff: "datetime",
+    requests_mod,
+    global_timeout: int = 1500,  # 25 分鐘硬性上限
+) -> tuple:
+    """
+    新聞 + YT 分析合併為單一 event loop 執行，解決 Windows asyncio 二次啟動問題。
+    同時加上全域逾時保護，任一步驟 hang 最多 25 分鐘後強制結束。
+    """
+    async def _inner():
+        news_result = None
+        yt_result = None
+        if run_news and articles:
+            news_result = await _run_news_analysis(articles, news_cutoff, requests_mod)
+        if run_yt and videos:
+            yt_result = await _run_yt_analysis(videos, yt_cutoff, requests_mod)
+        return news_result, yt_result
+
     try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 自動刷新 NotebookLM 認證...")
-        subprocess.run(
-            [nlm_bin, "login"],
-            input=b"\n",       # 模擬按 Enter（認證有效時瀏覽器載完即自動繼續）
-            timeout=60,        # 60 秒：給瀏覽器更多載入時間
-            capture_output=True,
-        )
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] NotebookLM 認證已刷新")
-    except subprocess.TimeoutExpired:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] notebooklm login 逾時（60s），略過")
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [WARNING] notebooklm login 失敗（非致命）：{e}")
+        return await asyncio.wait_for(_inner(), timeout=global_timeout)
+    except asyncio.TimeoutError:
+        mins = global_timeout // 60
+        print(f"[ERROR] 整體執行逾時（{mins} 分鐘上限），強制結束", file=sys.stderr)
+        return None, None
 
 
 def main():
+    _log.info("=" * 60)
+    _log.info("NotebookLM 金融分析腳本啟動")
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -731,6 +942,12 @@ def main():
         print("[ERROR] 請設定環境變數 NOTEBOOK_ID", file=sys.stderr)
         sys.exit(1)
 
+    # ── Windows asyncio 穩定性：改用 SelectorEventLoop ──────────────────────
+    # ProactorEventLoop（Windows 預設）在 notebooklm-py WebSocket 清理時容易 hang；
+    # SelectorEventLoop 更穩定，且 notebooklm-py 不依賴 ProactorEventLoop 功能。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     # ── 自動刷新 NotebookLM 認證 ──────────────────────────────────────────────
     _auto_login()
 
@@ -755,36 +972,41 @@ def main():
 
     manual_override = args.hours is not None or args.since is not None
 
-    # ── 新聞分析 ──────────────────────────────────────────────────────────────
-    if args.yt_only:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] --yt-only：跳過新聞分析")
-    else:
+    # ── 同步階段：抓取新聞與 YT 資料 ──────────────────────────────────────────
+    # （API 呼叫是同步的，在進入 asyncio 之前先完成，避免混用 sync/async requests）
+
+    articles: list = []
+    news_cutoff: datetime = now
+    run_news = not args.yt_only
+
+    if run_news:
         news_cutoff = _resolve_cutoff("news_last_run")
         tw_str = news_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
         label = "[手動] " if manual_override else ""
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {label}抓取新聞文章（自 {tw_str} 台灣時間，嚴重度 {MIN_SEVERITY}+）...")
 
-        # 從新聞資料庫抓取指定時間起點之後入庫的文章（server-side fetched_at 過濾）
         _crit_kws = {"崩盤","暴跌","暴漲","危機","緊急","衝擊","崩潰","戰爭","制裁","封鎖","違約","破產"}
         _high_kws = {"下跌","上漲","升息","降息","通膨","衰退","波動","警告","風險","貶值","升值",
                      "利率","匯率","油價","黃金","股市","台積","輝達","聯準"}
         min_sev = MIN_SEVERITY
 
         def _article_severity(title: str) -> str:
-            t = title
-            if any(k in t for k in _crit_kws):
+            if any(k in title for k in _crit_kws):
                 return "critical"
-            if any(k in t for k in _high_kws):
+            if any(k in title for k in _high_kws):
                 return "high"
             return "low"
+
+        def _effective_sev(a: dict) -> str:
+            db_sev = a.get("severity")
+            if db_sev in ("critical", "high", "low"):
+                return db_sev
+            return _article_severity(a.get("title", ""))
 
         try:
             resp = requests.get(
                 f"{API_BASE_URL}/api/news/articles",
-                params={
-                    "limit": 500,
-                    "fetched_after": news_cutoff.isoformat(),  # server-side 過濾，取時間窗內所有文章
-                },
+                params={"limit": 500, "fetched_after": news_cutoff.isoformat()},
                 timeout=20,
             )
             resp.raise_for_status()
@@ -793,14 +1015,6 @@ def main():
             print(f"[ERROR] 無法連接 API：{e}", file=sys.stderr)
             sys.exit(1)
 
-        # 依嚴重度過濾（優先使用 DB 的 severity 欄位，無則用 keyword 推估）
-        def _effective_sev(a: dict) -> str:
-            db_sev = a.get("severity")
-            if db_sev in ("critical", "high", "low"):
-                return db_sev
-            return _article_severity(a.get("title", ""))
-
-        articles = []
         for a in all_articles:
             sev = _effective_sev(a)
             if min_sev == "critical" and sev != "critical":
@@ -809,7 +1023,6 @@ def main():
                 continue
             articles.append(a)
 
-        # 超過 120 篇時自動將門檻升至 high+（避免 NLM source 過多）
         _AUTO_HIGH_THRESHOLD = 120
         if len(articles) > _AUTO_HIGH_THRESHOLD:
             articles_high = [a for a in articles if _effective_sev(a) in ("critical", "high")]
@@ -821,21 +1034,15 @@ def main():
 
         if articles:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(articles)} 篇文章")
-            asyncio.run(_run_news_analysis(articles, news_cutoff, requests))
-            if not args.no_save_state and not manual_override:
-                state["news_last_run"] = now_iso
-                _save_state(state)
-            elif args.no_save_state:
-                print("  [--no-save-state] 不更新 state，排程時間記錄保持不變")
         else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 無符合條件的新聞文章，跳過")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 無符合條件的新聞文章，跳過新聞分析")
+            run_news = False
 
-    # ── YouTube 分析 ──────────────────────────────────────────────────────────
-    if args.news_only:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] --news-only：跳過 YouTube 分析")
-    elif not NOTEBOOK_ID_YT:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] NOTEBOOK_ID_YT 未設定，略過 YouTube 分析")
-    else:
+    videos: list = []
+    yt_cutoff: datetime = now
+    run_yt = not args.news_only and bool(NOTEBOOK_ID_YT)
+
+    if run_yt:
         yt_cutoff = _resolve_cutoff("yt_last_run")
         if manual_override:
             tw_str = yt_cutoff.astimezone(timezone(timedelta(hours=8))).strftime('%m/%d %H:%M')
@@ -855,12 +1062,10 @@ def main():
             print(f"[WARNING] 無法取得 YouTube 影片：{e}")
             all_videos = []
 
-        # 統一以 published_at 過濾（不依賴 is_new），避免標記已看後被跳過
-        videos = []
         for v in all_videos:
             ts_str = v.get("published_at") or ""
             if not ts_str:
-                videos.append(v)  # 無發布時間則納入（不遺漏）
+                videos.append(v)
                 continue
             try:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
@@ -869,19 +1074,45 @@ def main():
                 if ts >= yt_cutoff:
                     videos.append(v)
             except Exception:
-                videos.append(v)  # 解析失敗則納入（不遺漏）
+                videos.append(v)
 
         if videos:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 找到 {len(videos)} 支新影片")
-            asyncio.run(_run_yt_analysis(videos, yt_cutoff, requests))
-            if not args.no_save_state and not manual_override:
-                state["yt_last_run"] = now_iso
-                _save_state(state)
         else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 無新 YouTube 影片，跳過")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 無新 YouTube 影片，跳過 YT 分析")
+            run_yt = False
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] 全部完成")
+    # ── 非同步階段：單一 asyncio.run()，含全域 25 分鐘逾時保護 ──────────────
+    # 兩次 asyncio.run() 會在 Windows 上造成 event loop 二次啟動問題，合併為一次。
+    if run_news or run_yt:
+        news_result, yt_result = asyncio.run(
+            _run_all_async(
+                run_news=run_news, articles=articles, news_cutoff=news_cutoff,
+                run_yt=run_yt,   videos=videos,   yt_cutoff=yt_cutoff,
+                requests_mod=requests,
+            )
+        )
+    else:
+        news_result, yt_result = None, None
+
+    # ── 狀態儲存 ──────────────────────────────────────────────────────────────
+    if args.no_save_state:
+        print("  [--no-save-state] 不更新 state，排程時間記錄保持不變")
+    elif not manual_override:
+        if run_news:
+            state["news_last_run"] = now_iso
+        if run_yt:
+            state["yt_last_run"] = now_iso
+        if run_news or run_yt:
+            _save_state(state)
+
+    _log.info("全部完成")
+    _log.info("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        _log.exception("腳本異常終止：%s", e)
+        sys.exit(1)

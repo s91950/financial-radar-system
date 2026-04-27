@@ -543,6 +543,90 @@ async def get_nlm_yt_report(db: Session = Depends(get_db)):
     return {"content": content, "generated_at": _val("nlm_yt_report_generated_at"), "source_title": _val("nlm_yt_report_source_title")}
 
 
+# ── Gemini 分析報告端點 ────────────────────────────────────────────────────
+
+
+@router.get("/gemini-report")
+async def get_gemini_report(db: Session = Depends(get_db)):
+    """取得最新 Gemini 新聞分析報告。"""
+    row = db.query(NlmReport).filter(NlmReport.report_type == "gemini_news").order_by(NlmReport.id.desc()).first()
+    if row:
+        return {
+            "id": row.id,
+            "content": row.content,
+            "generated_at": _iso_utc(row.generated_at),
+            "source_title": row.source_title,
+        }
+    return {"content": None, "generated_at": None, "source_title": None}
+
+
+@router.get("/gemini-reports")
+async def list_gemini_reports(
+    report_type: str = "gemini_news",
+    limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    """列出歷史 Gemini 分析報告清單（最新在前）。"""
+    rows = (
+        db.query(NlmReport)
+        .filter(NlmReport.report_type == report_type)
+        .order_by(NlmReport.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "generated_at": _iso_utc(r.generated_at),
+            "source_title": r.source_title,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/gemini-reports/{report_id}")
+async def get_gemini_report_by_id(report_id: int, db: Session = Depends(get_db)):
+    """取得指定 ID 的 Gemini 報告完整內容。"""
+    row = db.query(NlmReport).filter(NlmReport.id == report_id).first()
+    if not row:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="報告不存在")
+    return {
+        "id": row.id,
+        "report_type": row.report_type,
+        "content": row.content,
+        "generated_at": _iso_utc(row.generated_at),
+        "source_title": row.source_title,
+    }
+
+
+@router.get("/gemini-yt-report")
+async def get_gemini_yt_report(db: Session = Depends(get_db)):
+    """取得最新 Gemini YouTube 分析報告。"""
+    row = db.query(NlmReport).filter(NlmReport.report_type == "gemini_yt").order_by(NlmReport.id.desc()).first()
+    if row:
+        return {
+            "id": row.id,
+            "content": row.content,
+            "generated_at": _iso_utc(row.generated_at),
+            "source_title": row.source_title,
+        }
+    return {"content": None, "generated_at": None, "source_title": None}
+
+
+@router.post("/gemini-analyze")
+async def manual_gemini_analyze(background_tasks: BackgroundTasks):
+    """手動觸發一次 Gemini 深度分析。"""
+    from backend.services.gemini_analysis import run_gemini_news_analysis, run_gemini_yt_analysis
+
+    async def _run():
+        await run_gemini_news_analysis(hours_back=3)
+        await run_gemini_yt_analysis(hours_back=3)
+
+    background_tasks.add_task(_run)
+    return {"message": "Gemini 分析已啟動（背景執行中）"}
+
+
 @router.post("/scan")
 async def manual_scan(background_tasks: BackgroundTasks):
     """Manually trigger a radar scan immediately (bypasses cross-process lock)."""

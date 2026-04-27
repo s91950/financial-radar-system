@@ -119,6 +119,17 @@ def start_scheduler(ws_manager):
         next_run_time=first_run,
     )
 
+    # Gemini 深度分析每 3 小時（VM 端自動執行，無需本地電腦）
+    gemini_first_run = datetime.utcnow() + timedelta(minutes=5)
+    scheduler.add_job(
+        gemini_analysis,
+        "interval",
+        hours=3,
+        id="gemini_analysis",
+        name="Gemini 新聞深度分析",
+        next_run_time=gemini_first_run,
+    )
+
     scheduler.start()
     logger.info("Scheduler started with radar and daily news jobs")
 
@@ -1820,3 +1831,37 @@ def _parse_datetime(dt_str: str | None) -> datetime | None:
         return dt
     except (ValueError, AttributeError):
         return None
+
+
+async def gemini_analysis():
+    """Gemini 新聞+YT 深度分析 — 每 3 小時自動執行。
+
+    在 VM 上直接用 Gemini API 分析，無需本地電腦開機。
+    結果獨立存放（report_type="gemini_news"/"gemini_yt"）。
+    """
+    from backend.services.gemini_analysis import run_gemini_news_analysis, run_gemini_yt_analysis
+
+    _flog("[GEMINI] 開始 Gemini 深度分析...")
+    logger.info("[Gemini分析] 排程啟動")
+
+    try:
+        news_report = await run_gemini_news_analysis(hours_back=3, min_severity="low")
+        if news_report:
+            _flog(f"[GEMINI] 新聞分析完成，{len(news_report)} 字")
+        else:
+            _flog("[GEMINI] 新聞分析跳過（無文章或 API 未設定）")
+    except Exception as e:
+        logger.error("[Gemini分析] 新聞分析失敗：%s", e, exc_info=True)
+        _flog(f"[GEMINI] 新聞分析失敗：{e}")
+
+    try:
+        yt_report = await run_gemini_yt_analysis(hours_back=3)
+        if yt_report:
+            _flog(f"[GEMINI] YT 分析完成，{len(yt_report)} 字")
+        else:
+            _flog("[GEMINI] YT 分析跳過（無影片或 API 未設定）")
+    except Exception as e:
+        logger.error("[Gemini分析] YT 分析失敗：%s", e, exc_info=True)
+        _flog(f"[GEMINI] YT 分析失敗：{e}")
+
+    logger.info("[Gemini分析] 排程結束")
