@@ -843,7 +843,7 @@ def _migrate_db():
              '["economy","Europe","inflation","UK","interest rate","trade","recession","ECB"]', 1),
             ("Politico Economy", "rss",
              "https://rss.politico.com/economy.xml",
-             '["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]', 1),
+             '["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]', 0),
             # 能源 / 商品
             ("EIA Today in Energy", "rss",
              "https://www.eia.gov/rss/todayinenergy.xml",
@@ -1296,7 +1296,7 @@ def _seed_defaults():
                 MonitorSource(
                     name="Wall Street Journal",
                     type="rss",
-                    url="https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US&ceid=US:en",
+                    url="https://news.google.com/rss/search?q=site:wsj.com+when:3d&hl=en&gl=US&ceid=US:en",
                     keywords='["market","stocks","bonds","Fed","economy"]',
                 ),
                 MonitorSource(
