@@ -626,10 +626,14 @@ export default function NewsDBPage() {
             <select
               value={filters.source}
               onChange={(e) => { setFilters(prev => ({ ...prev, source: e.target.value })); setPage(0) }}
-              className="input text-sm w-40"
+              className="input text-sm w-44"
             >
               <option value="">全部來源</option>
-              {sourceList.map(s => <option key={s.name} value={s.name}>{s.name} ({s.count})</option>)}
+              {sourceList.map(s => (
+                <option key={s.name} value={s.name}>
+                  {s.name === '__other__' ? `其他來源 (${s.count})` : `${s.name} (${s.count})`}
+                </option>
+              ))}
             </select>
           )}
 
@@ -714,32 +718,20 @@ export default function NewsDBPage() {
                     />
                     <SeverityBadge severity={sev} />
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                         {article.is_saved && (
                           <svg className="w-4 h-4 text-yellow-500 shrink-0" fill="currentColor" viewBox="0 0 24 24">
                             <path d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
                           </svg>
                         )}
                         <span className="text-xs text-dark-500">{article.source}</span>
-                        {article.category && (
-                          <span className="badge bg-dark-700 text-dark-300">{article.category}</span>
-                        )}
+                        {article.matched_keyword && article.matched_keyword.split(/[,、]/).map(kw => kw.trim()).filter(Boolean).map(kw => (
+                          <span key={kw} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600/15 text-blue-400 border border-blue-500/20 whitespace-nowrap">
+                            {kw}
+                          </span>
+                        ))}
                       </div>
                       <h4 className="font-medium text-sm text-gray-200 line-clamp-2">{article.title}</h4>
-                      {(article.matched_keyword || (article.tags && article.tags.length > 0)) && (
-                        <div className="flex gap-1 mt-1.5 flex-wrap">
-                          {article.matched_keyword && article.matched_keyword.split(/[,、]/).map(kw => kw.trim()).filter(Boolean).map(kw => (
-                            <span key={kw} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600/15 text-blue-400 border border-blue-500/20">
-                              {kw}
-                            </span>
-                          ))}
-                          {(article.tags || []).map(tag => (
-                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20">
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      )}
                     </div>
                     <span className="text-xs text-dark-500 whitespace-nowrap">
                       {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}

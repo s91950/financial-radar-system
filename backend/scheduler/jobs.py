@@ -728,6 +728,7 @@ async def _radar_scan_inner(force: bool = False):
                         source_url=data.get("source_url", ""),
                         published_at=_parse_datetime(data.get("published_at")),
                         category=data.get("category", "radar"),
+                        matched_keyword=data.get("matched_keyword", "") or None,
                         composite_score=_scores["composite"],
                         finance_relevance=_scores["finance_relevance"],
                         novelty_score=_scores["novelty"],

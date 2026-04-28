@@ -69,7 +69,16 @@ async def get_articles(
     if category:
         query = query.filter(Article.category == category)
     if source:
-        query = query.filter(Article.source == source)
+        if source == '__other__':
+            from backend.database import MonitorSource
+            configured_names = {
+                r[0] for r in db.query(MonitorSource.name)
+                .filter(MonitorSource.is_deleted == False)
+                .all() if r[0]
+            }
+            query = query.filter(~Article.source.in_(configured_names))
+        else:
+            query = query.filter(Article.source == source)
     if keyword:
         query = query.filter(Article.matched_keyword.contains(keyword))
     if search:
@@ -454,8 +463,17 @@ async def get_categories(db: Session = Depends(get_db)):
 
 @router.get("/sources")
 async def get_sources(db: Session = Depends(get_db)):
-    """Get all unique article source names."""
+    """Get article source names, grouped by configured MonitorSource; unconfigured → '其他'."""
     from sqlalchemy import func
+    from backend.database import MonitorSource
+
+    # 取得所有已設定的來源名稱
+    configured_names = {
+        r[0] for r in db.query(MonitorSource.name)
+        .filter(MonitorSource.is_deleted == False)
+        .all() if r[0]
+    }
+
     rows = (
         db.query(Article.source, func.count(Article.id))
         .filter(Article.source != None, Article.source != "")
@@ -463,7 +481,19 @@ async def get_sources(db: Session = Depends(get_db)):
         .order_by(func.count(Article.id).desc())
         .all()
     )
-    return [{"name": r[0], "count": r[1]} for r in rows]
+
+    result = []
+    other_count = 0
+    for name, count in rows:
+        if name in configured_names:
+            result.append({"name": name, "count": count})
+        else:
+            other_count += count
+
+    if other_count > 0:
+        result.append({"name": "__other__", "count": other_count})
+
+    return result
 
 
 @router.get("/keywords")
