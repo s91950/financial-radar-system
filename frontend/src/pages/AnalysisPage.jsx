@@ -25,7 +25,7 @@ function renderInline(line, lineKey) {
   const segments = line.split(/(\*\*[^*]+\*\*)/)
   return segments.map((seg, j) => {
     const bold = seg.match(/^\*\*(.+)\*\*$/)
-    if (bold) return <strong key={`${lineKey}-b${j}`} className="text-dark-200 font-semibold">{bold[1]}</strong>
+    if (bold) return <strong key={`${lineKey}-b${j}`} className="text-gray-100 font-semibold">{bold[1]}</strong>
     return <span key={`${lineKey}-s${j}`}>{linkify(seg, `${lineKey}-s${j}`)}</span>
   })
 }
@@ -37,23 +37,23 @@ function renderReport(content) {
       const level = line.match(/^(#{1,4})\s/)[1].length
       const text = line.replace(/^#{1,4}\s/, '')
       const cls = level === 1
-        ? 'text-base font-bold text-dark-100 mt-6 mb-2'
+        ? 'text-lg font-bold text-gray-100 mt-6 mb-2'
         : level === 2
-        ? 'text-sm font-semibold text-dark-200 mt-5 mb-1'
+        ? 'text-base font-semibold text-gray-200 mt-5 mb-1.5'
         : level === 3
-        ? 'text-sm font-medium text-primary-400 mt-4 mb-1'
-        : 'text-sm font-medium text-dark-300 mt-3 mb-0.5'
+        ? 'text-[15px] font-medium text-primary-300 mt-4 mb-1'
+        : 'text-[15px] font-medium text-gray-300 mt-3 mb-0.5'
       return <div key={i} className={cls}>{text}</div>
     }
     if (/^---+$/.test(line.trim())) return <hr key={i} className="border-dark-700 my-3" />
     // Whole-line bold: **text**
     const boldMatch = line.match(/^\*\*(.+)\*\*$/)
-    if (boldMatch) return <div key={i} className="text-sm font-semibold text-dark-200 mt-2">{boldMatch[1]}</div>
+    if (boldMatch) return <div key={i} className="text-[15px] font-semibold text-gray-200 mt-2">{boldMatch[1]}</div>
     if (line.trim() === '') return <div key={i} className="h-1.5" />
     // Source indent lines starting with spaces (分類版 **來源**: ...)
     const isIndented = /^\s{2,}/.test(line)
     return (
-      <div key={i} className={`text-sm leading-relaxed ${isIndented ? 'text-dark-500 pl-4 mt-0.5' : 'text-dark-400'}`}>
+      <div key={i} className={`text-[15px] leading-relaxed ${isIndented ? 'text-gray-400 pl-4 mt-0.5' : 'text-gray-300'}`}>
         {renderInline(line.trimStart(), i)}
       </div>
     )

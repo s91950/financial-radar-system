@@ -52,6 +52,8 @@ async def get_articles(
     category: str | None = None,
     search: str | None = None,
     severity: str | None = None,
+    source: str | None = None,
+    keyword: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     fetched_after: str | None = Query(None, description="只回傳 fetched_at 晚於此時間的文章（ISO 8601，供 NLM 腳本使用）"),
@@ -66,6 +68,10 @@ async def get_articles(
         query = query.filter(Article.is_saved == True)
     if category:
         query = query.filter(Article.category == category)
+    if source:
+        query = query.filter(Article.source == source)
+    if keyword:
+        query = query.filter(Article.matched_keyword.contains(keyword))
     if search:
         query = query.filter(
             (Article.title.contains(search)) | (Article.content.contains(search))
@@ -444,6 +450,34 @@ async def get_categories(db: Session = Depends(get_db)):
     """Get all unique article categories."""
     categories = db.query(Article.category).distinct().all()
     return [c[0] for c in categories if c[0]]
+
+
+@router.get("/sources")
+async def get_sources(db: Session = Depends(get_db)):
+    """Get all unique article source names."""
+    from sqlalchemy import func
+    rows = (
+        db.query(Article.source, func.count(Article.id))
+        .filter(Article.source != None, Article.source != "")
+        .group_by(Article.source)
+        .order_by(func.count(Article.id).desc())
+        .all()
+    )
+    return [{"name": r[0], "count": r[1]} for r in rows]
+
+
+@router.get("/keywords")
+async def get_keywords(db: Session = Depends(get_db)):
+    """Get all unique matched_keyword values."""
+    from sqlalchemy import func
+    rows = (
+        db.query(Article.matched_keyword, func.count(Article.id))
+        .filter(Article.matched_keyword != None, Article.matched_keyword != "")
+        .group_by(Article.matched_keyword)
+        .order_by(func.count(Article.id).desc())
+        .all()
+    )
+    return [{"keyword": r[0], "count": r[1]} for r in rows]
 
 
 def _article_to_dict(article: Article) -> dict:

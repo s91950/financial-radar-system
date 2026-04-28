@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { newsAPI, resolveUrl, copyToClipboard } from '../services/api'
+import { newsAPI, settingsAPI, resolveUrl, copyToClipboard } from '../services/api'
 
 // Severity assessment — mirrors backend _assess_severity_single logic
 const CRITICAL_KWS = ['崩盤', '暴跌', '危機', 'crash', 'crisis', 'emergency',
@@ -42,6 +42,8 @@ export default function NewsDBPage() {
   const [filters, setFilters] = useState({
     saved_only: false,
     category: '',
+    source: '',
+    keyword: '',
     search: '',
     date_from: '',
     date_to: '',
@@ -53,9 +55,11 @@ export default function NewsDBPage() {
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(20)
 
-  // Sort & category state
+  // Sort & filter state
   const [sortOrder, setSortOrder] = useState('newest')  // 'newest'|'oldest'|'source'
   const [categories, setCategories] = useState([])
+  const [sourceList, setSourceList] = useState([])
+  const [keywordList, setKeywordList] = useState([])
 
   // Preview state
   const [preview, setPreview] = useState(null)
@@ -73,6 +77,8 @@ export default function NewsDBPage() {
 
   useEffect(() => {
     newsAPI.getCategories().then(({ data }) => setCategories(data)).catch(() => {})
+    newsAPI.getSources().then(({ data }) => setSourceList(data)).catch(() => {})
+    newsAPI.getKeywords().then(({ data }) => setKeywordList(data)).catch(() => {})
   }, [])
 
   const loadArticles = useCallback(async () => {
@@ -599,10 +605,10 @@ export default function NewsDBPage() {
               )}
             </button>
             <button type="submit" className="btn-secondary">篩選</button>
-            {(filters.search || filters.date_from || filters.date_to) && (
+            {(filters.search || filters.date_from || filters.date_to || filters.source || filters.keyword) && (
               <button type="button" onClick={() => {
                 setSearchInput('')
-                setFilters(prev => ({ ...prev, search: '', date_from: '', date_to: '' }))
+                setFilters(prev => ({ ...prev, search: '', date_from: '', date_to: '', source: '', keyword: '' }))
                 setPage(0)
               }} className="btn-secondary text-red-400">清除</button>
             )}
@@ -615,15 +621,27 @@ export default function NewsDBPage() {
             <option value="source">來源 A-Z</option>
           </select>
 
-          {/* Category filter */}
-          {categories.length > 0 && (
+          {/* Source filter */}
+          {sourceList.length > 0 && (
             <select
-              value={filters.category}
-              onChange={(e) => { setFilters(prev => ({ ...prev, category: e.target.value })); setPage(0) }}
-              className="input text-sm w-32"
+              value={filters.source}
+              onChange={(e) => { setFilters(prev => ({ ...prev, source: e.target.value })); setPage(0) }}
+              className="input text-sm w-40"
             >
-              <option value="">全部類別</option>
-              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="">全部來源</option>
+              {sourceList.map(s => <option key={s.name} value={s.name}>{s.name} ({s.count})</option>)}
+            </select>
+          )}
+
+          {/* Keyword filter */}
+          {keywordList.length > 0 && (
+            <select
+              value={filters.keyword}
+              onChange={(e) => { setFilters(prev => ({ ...prev, keyword: e.target.value })); setPage(0) }}
+              className="input text-sm w-40"
+            >
+              <option value="">全部關鍵字</option>
+              {keywordList.map(k => <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.count})</option>)}
             </select>
           )}
         </div>
@@ -695,11 +713,6 @@ export default function NewsDBPage() {
                       className="mt-1 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 shrink-0"
                     />
                     <SeverityBadge severity={sev} />
-                    {article.matched_keyword && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-primary-600/20 text-primary-400 whitespace-nowrap shrink-0">
-                        {article.matched_keyword}
-                      </span>
-                    )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         {article.is_saved && (
@@ -713,10 +726,15 @@ export default function NewsDBPage() {
                         )}
                       </div>
                       <h4 className="font-medium text-sm text-gray-200 line-clamp-2">{article.title}</h4>
-                      {article.tags && article.tags.length > 0 && (
-                        <div className="flex gap-1 mt-1.5">
-                          {article.tags.map(tag => (
-                            <span key={tag} className="text-xs px-1.5 py-0.5 rounded bg-primary-600/10 text-primary-400">
+                      {(article.matched_keyword || (article.tags && article.tags.length > 0)) && (
+                        <div className="flex gap-1 mt-1.5 flex-wrap">
+                          {article.matched_keyword && article.matched_keyword.split(/[,、]/).map(kw => kw.trim()).filter(Boolean).map(kw => (
+                            <span key={kw} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-600/15 text-blue-400 border border-blue-500/20">
+                              {kw}
+                            </span>
+                          ))}
+                          {(article.tags || []).map(tag => (
+                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20">
                               {tag}
                             </span>
                           ))}
