@@ -1041,20 +1041,18 @@ def _signal_to_severity(signal: str, change_pct: float) -> str:
 
 
 async def daily_news_fetch():
-    """Daily job to collect news from all sources."""
+    """Daily job to collect news from all sources.
+
+    只從使用者設定的 RSS/website 來源蒐集新聞，不再無條件抓 Google News。
+    Google News 的新聞由 radar_scan 的主題搜尋機制負責。
+    """
     from backend.services import rss_feed
-    from backend.services.google_news import search_google_news
 
     logger.info("Running daily news fetch...")
     db = SessionLocal()
 
     try:
         articles_data = []
-
-        # Headlines from Google News RSS (multiple topics)
-        for topic in ["金融市場", "台股", "美股", "經濟數據", "央行政策"]:
-            results = await search_google_news(query=topic, hours_back=24, max_results=10)
-            articles_data.extend(results)
 
         # RSS feeds
         sources = db.query(MonitorSource).filter(

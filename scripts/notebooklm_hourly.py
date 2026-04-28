@@ -60,6 +60,10 @@ logging.basicConfig(
 )
 _log = logging.getLogger("nlm")
 
+# 抑制 httpx / httpcore / playwright 的 INFO 雜訊（每個 HTTP 請求都會印一行）
+for _noisy in ("httpx", "httpcore", "playwright", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 # ── 讀取 .env.local ────────────────────────────────────────────────────────
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _env_path = os.path.join(_script_dir, ".env.local")
@@ -809,61 +813,74 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
 # 主程式
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _auto_login():
+def _refresh_cookies_playwright():
     """
-    執行 notebooklm login 並自動按 Enter。
-    改為在獨立 daemon 執行緒中執行，避免背景排程時瀏覽器行為不可預期
-    導致主執行緒卡死（subprocess.TimeoutExpired 在某些 Windows 狀態下不會正常觸發）。
-    硬性上限 30 秒後強制放棄，不影響後續流程。
-    """
-    import subprocess, shutil, threading
+    用 Playwright 無頭瀏覽器刷新 Google session cookie。
 
-    # 先檢查 storage_state.json 是否存在且未過期
+    Google 的 __Secure-*PSIDRTS cookie 只有幾小時壽命，純 HTTP client
+    無法刷新（需要瀏覽器 JS 執行）。此函式載入現有 storage_state，
+    用 headless Chromium 訪問 notebooklm.google.com，瀏覽器會自動
+    刷新短效 cookie，再存回 storage_state.json。
+    """
+    import threading
+
     state_path = os.path.expanduser("~/.notebooklm/storage_state.json")
-    if os.path.exists(state_path):
-        age_hours = (datetime.now().timestamp() - os.path.getmtime(state_path)) / 3600
-        if age_hours < 12:
-            _log.info("NotebookLM 認證檔 %.1f 小時前更新，跳過自動登入", age_hours)
-            return
-
-    nlm_bin = shutil.which("notebooklm")
-    if not nlm_bin:
-        import sysconfig
-        scripts = sysconfig.get_path("scripts")
-        candidate = os.path.join(scripts, "notebooklm.exe" if sys.platform == "win32" else "notebooklm")
-        nlm_bin = candidate if os.path.exists(candidate) else None
-    if not nlm_bin:
-        _log.warning("找不到 notebooklm 執行檔，跳過自動登入")
+    if not os.path.exists(state_path):
+        _log.warning("storage_state.json 不存在，請先執行 notebooklm login")
         return
 
-    login_result = {"ok": False, "err": ""}
+    result = {"ok": False, "err": ""}
 
-    def _do_login():
+    def _do_refresh():
+        """在獨立執行緒內執行 Playwright，避免與主 asyncio loop 衝突。
+
+        Playwright 需要 ProactorEventLoop（Windows 預設），但主腳本已切換為
+        SelectorEventLoop。在獨立執行緒中建立新的 ProactorEventLoop 來執行。
+        """
         try:
-            r = subprocess.run(
-                [nlm_bin, "login"],
-                input=b"\n",
-                timeout=25,
-                capture_output=True,
-            )
-            login_result["ok"] = r.returncode == 0
-            if r.returncode != 0:
-                login_result["err"] = r.stderr.decode("utf-8", errors="replace")[:200]
-        except subprocess.TimeoutExpired:
-            login_result["err"] = "timeout"
-        except Exception as e:
-            login_result["err"] = str(e)[:200]
+            from playwright.async_api import async_playwright
+            import asyncio as _asyncio
 
-    _log.info("自動刷新 NotebookLM 認證（執行緒，上限 30s）...")
-    t = threading.Thread(target=_do_login, daemon=True)
+            async def _refresh():
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    ctx = await browser.new_context(storage_state=state_path)
+                    page = await ctx.new_page()
+
+                    await page.goto("https://notebooklm.google.com/", wait_until="domcontentloaded", timeout=30000)
+                    final_url = page.url
+
+                    if "accounts.google.com" in final_url or "/login" in final_url:
+                        result["err"] = f"認證已完全過期（redirect to {final_url[:80]}），請手動執行 notebooklm login"
+                    else:
+                        await ctx.storage_state(path=state_path)
+                        result["ok"] = True
+
+                    await browser.close()
+
+            # 在獨立執行緒中建立 ProactorEventLoop（Playwright 需要）
+            loop = _asyncio.ProactorEventLoop() if sys.platform == "win32" else _asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_refresh())
+            finally:
+                loop.close()
+
+        except ImportError:
+            result["err"] = "playwright 未安裝（pip install playwright && playwright install chromium）"
+        except Exception as e:
+            result["err"] = str(e)[:200]
+
+    _log.info("用 Playwright 刷新 Google session cookie...")
+    t = threading.Thread(target=_do_refresh, daemon=True)
     t.start()
-    t.join(timeout=30)
+    t.join(timeout=45)
+
     if t.is_alive():
-        _log.warning("notebooklm login 執行緒逾時（30s），繼續執行")
-    elif login_result["ok"]:
-        _log.info("NotebookLM 認證已刷新")
+        _log.warning("Playwright cookie 刷新逾時（45s），繼續執行")
+    elif result["ok"]:
+        _log.info("Cookie 刷新成功（storage_state.json 已更新）")
     else:
-        _log.warning("notebooklm login 非正常結束：%s", login_result["err"])
+        _log.warning("Cookie 刷新失敗：%s", result["err"])
 
 
 async def _run_all_async(
@@ -948,8 +965,8 @@ def main():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    # ── 自動刷新 NotebookLM 認證 ──────────────────────────────────────────────
-    _auto_login()
+    # ── 自動刷新 NotebookLM 認證（用 Playwright 刷新短效 cookie） ──────────────
+    _refresh_cookies_playwright()
 
     # ── 決定時間起點 ──────────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
