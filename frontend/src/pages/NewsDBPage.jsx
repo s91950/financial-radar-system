@@ -622,32 +622,28 @@ export default function NewsDBPage() {
           </select>
 
           {/* Source filter */}
-          {sourceList.length > 0 && (
-            <select
-              value={filters.source}
-              onChange={(e) => { setFilters(prev => ({ ...prev, source: e.target.value })); setPage(0) }}
-              className="input text-sm w-44"
-            >
-              <option value="">全部來源</option>
-              {sourceList.map(s => (
-                <option key={s.name} value={s.name}>
-                  {s.name === '__other__' ? `其他來源 (${s.count})` : `${s.name} (${s.count})`}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            value={filters.source}
+            onChange={(e) => { setFilters(prev => ({ ...prev, source: e.target.value })); setPage(0) }}
+            className="input text-sm w-44"
+          >
+            <option value="">全部來源</option>
+            {sourceList.map(s => (
+              <option key={s.name} value={s.name}>
+                {s.name === '__other__' ? `其他來源 (${s.count})` : `${s.name} (${s.count})`}
+              </option>
+            ))}
+          </select>
 
           {/* Keyword filter */}
-          {keywordList.length > 0 && (
-            <select
-              value={filters.keyword}
-              onChange={(e) => { setFilters(prev => ({ ...prev, keyword: e.target.value })); setPage(0) }}
-              className="input text-sm w-40"
-            >
-              <option value="">全部關鍵字</option>
-              {keywordList.map(k => <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.count})</option>)}
-            </select>
-          )}
+          <select
+            value={filters.keyword}
+            onChange={(e) => { setFilters(prev => ({ ...prev, keyword: e.target.value })); setPage(0) }}
+            className="input text-sm w-40"
+          >
+            <option value="">全部關鍵字</option>
+            {keywordList.map(k => <option key={k.keyword} value={k.keyword}>{k.keyword} ({k.count})</option>)}
+          </select>
         </div>
 
         {/* Date range panel */}
