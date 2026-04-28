@@ -230,6 +230,16 @@ class NlmReport(Base):
     source_title = Column(String)
 
 
+class Feedback(Base):
+    """使用者意見回饋。"""
+    __tablename__ = "feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String, default="general")  # general | bug | feature | ui
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # --- Database Helpers ---
 
 def init_db():

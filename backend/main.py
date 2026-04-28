@@ -79,6 +79,9 @@ app.include_router(research.router, prefix="/api/research", tags=["研究報告"
 app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube 頻道"])
 app.include_router(line_webhook.router, prefix="/api", tags=["LINE Webhook"])
 
+from backend.routers import feedback
+app.include_router(feedback.router, prefix="/api/feedback", tags=["意見回饋"])
+
 
 @app.get("/api/health")
 async def health_check():
