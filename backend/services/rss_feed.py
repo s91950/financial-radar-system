@@ -189,11 +189,14 @@ async def fetch_multiple_feeds(
         fetch_all = feed_info.get("fetch_all", False)
 
         if fetch_all:
-            # 全文讀取模式：納入所有文章，用 _annotate_matched_terms 標記實際出現的所有關鍵詞
+            # 全文讀取模式：納入所有文章，合併來源關鍵字+雷達主題做徽章標記
             # 標記 fetch_all_source 讓財經篩選跳過這些文章（但仍計算分數）
-            if source_kws:
+            all_kws = list(source_kws)
+            if global_topics:
+                all_kws.extend(global_topics)
+            if all_kws:
                 articles = [
-                    {**a, "matched_keyword": _annotate_matched_terms(a, source_kws), "fetch_all_source": True}
+                    {**a, "matched_keyword": _annotate_matched_terms(a, all_kws), "fetch_all_source": True}
                     for a in articles
                 ]
             else:

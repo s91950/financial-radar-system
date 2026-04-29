@@ -1134,7 +1134,7 @@ export default function SettingsPage() {
                           source.fixed_severity === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
                           source.fixed_severity === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
                           'bg-green-500/20 text-green-400 border-green-500/30'
-                        }`}>{source.fixed_severity === 'critical' ? '固定緊急' : source.fixed_severity === 'high' ? '固定高風險' : '固定低風險'}</span>
+                        }`} title="最低風險等級下限，關鍵字仍可調升">{source.fixed_severity === 'critical' ? '最低緊急' : source.fixed_severity === 'high' ? '最低高風險' : '最低低風險'}</span>
                       )}
                       {source.keywords && source.keywords.length > 0
                         ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
@@ -1307,12 +1307,12 @@ export default function SettingsPage() {
                     {/* 固定風險等級 */}
                     <div className="flex items-center justify-between py-1">
                       <div>
-                        <span className="text-xs text-dark-300 font-medium">固定風險等級</span>
+                        <span className="text-xs text-dark-300 font-medium">最低風險等級</span>
                         <span className="text-xs text-dark-500 ml-2">
-                          {source.fixed_severity ? `所有文章強制設為「${
+                          {source.fixed_severity ? `最低為「${
                             source.fixed_severity === 'critical' ? '緊急' :
                             source.fixed_severity === 'high' ? '高風險' : '低風險'
-                          }」，忽略關鍵字評估` : '依關鍵字動態評估'}
+                          }」，關鍵字可再調升` : '依關鍵字動態評估'}
                         </span>
                       </div>
                       <select

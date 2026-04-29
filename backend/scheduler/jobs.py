@@ -313,11 +313,24 @@ async def _radar_scan_inner(force: bool = False):
         _known_source_names: frozenset = frozenset(_ksn)
 
         def _article_severity(a: dict) -> str:
-            """取得文章風險等級：優先使用來源固定等級，否則動態評估。"""
+            """取得文章風險等級：固定緊急直接回傳；高/低風險作為下限+來源可信度加成。"""
             src = a.get("source", "")
-            if src and src in _source_fixed_sev:
-                return _source_fixed_sev[src]
-            return _assess_severity_single(a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names)
+            floor = _source_fixed_sev.get(src) if src else None
+            # 固定緊急 → 不跑動態評估，直接回傳
+            if floor == "critical":
+                return "critical"
+            # 固定高風險 → 注入 source_weight_override=1.6 讓 high 關鍵字有機會升級
+            sw_override = 1.6 if floor == "high" else None
+            dynamic = _assess_severity_single(
+                a, _sev_crit, _sev_high, _sev_rules, _decay_hours, _known_source_names,
+                source_weight_override=sw_override,
+            )
+            if floor:
+                # 取兩者中較高的等級
+                if _SEVERITY_ORDER.get(dynamic, 0) >= _SEVERITY_ORDER.get(floor, 0):
+                    return dynamic
+                return floor
+            return dynamic
 
         # 1. Fetch from active RSS sources (includes social type = Nitter/RSS mirrors)
         sources = db.query(MonitorSource).filter(
@@ -402,8 +415,11 @@ async def _radar_scan_inner(force: bool = False):
                 mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
                 mops_fetch_all = bool(getattr(mops_source, "fetch_all", False))
                 if mops_fetch_all:
+                    _mops_all_kws = list(mops_kws)
+                    if _global_topics:
+                        _mops_all_kws.extend(_global_topics)
                     mops_articles = [
-                        {**a, "matched_keyword": _ann(a, mops_kws) if mops_kws else "", "fetch_all_source": True}
+                        {**a, "matched_keyword": _ann(a, _mops_all_kws) if _mops_all_kws else "", "fetch_all_source": True}
                         for a in mops_articles
                     ]
                 elif mops_kws:
@@ -450,12 +466,15 @@ async def _radar_scan_inner(force: bool = False):
                         _a["source"] = ws.name
                     ws_kws = json.loads(ws.keywords) if ws.keywords else []
                     if ws_fetch_all:
-                        # 全文讀取：納入全部，用 _annotate_matched_terms 標記實際出現的所有關鍵詞
+                        # 全文讀取：合併來源關鍵字+雷達主題做徽章標記
                         # 標記 fetch_all_source 讓財經篩選跳過這些文章（但仍計算分數）
-                        if ws_kws:
-                            from backend.services.rss_feed import _annotate_matched_terms as _ann
+                        from backend.services.rss_feed import _annotate_matched_terms as _ann
+                        _all_kws = list(ws_kws)
+                        if _global_topics:
+                            _all_kws.extend(_global_topics)
+                        if _all_kws:
                             ws_articles = [
-                                {**a, "matched_keyword": _ann(a, ws_kws), "fetch_all_source": True}
+                                {**a, "matched_keyword": _ann(a, _all_kws), "fetch_all_source": True}
                                 for a in ws_articles
                             ]
                         else:
@@ -1543,7 +1562,7 @@ def _apply_time_decay(severity: str, published_at_str: str | None, decay_hours: 
     return severity
 
 
-def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6, known_sources: frozenset = frozenset()) -> str:
+def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rules=None, decay_hours: int = 6, known_sources: frozenset = frozenset(), source_weight_override: float | None = None) -> str:
     """多維風險評分模型。
 
     評估順序：
@@ -1597,13 +1616,16 @@ def _assess_severity_single(article: dict, critical_kws=None, high_kws=None, rul
         base_score = 2.0
         ref_kws = high_hits
 
-    # 2c. 來源可信度
-    source_w = _get_source_weight(source)
-    # GN 文章且 _SOURCE_WEIGHTS 無明確權重 → 檢查是否為使用者設定來源；否則懲罰 0.65
-    if source_w == 1.0 and known_sources and article.get("origin") == "gn":
-        src_lower = source.lower()
-        if not any(k in src_lower or src_lower in k for k in known_sources):
-            source_w = 0.65
+    # 2c. 來源可信度（使用者設定固定風險等級時，以 override 值優先）
+    if source_weight_override is not None:
+        source_w = source_weight_override
+    else:
+        source_w = _get_source_weight(source)
+        # GN 文章且 _SOURCE_WEIGHTS 無明確權重 → 檢查是否為使用者設定來源；否則懲罰 0.65
+        if source_w == 1.0 and known_sources and article.get("origin") == "gn":
+            src_lower = source.lower()
+            if not any(k in src_lower or src_lower in k for k in known_sources):
+                source_w = 0.65
 
     # 2d. 標題+內文同時命中 → 1.3x
     in_title = any(kw in title_lower for kw in ref_kws)

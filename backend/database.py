@@ -698,24 +698,6 @@ def _migrate_db():
         ))
         conn.commit()
 
-        # 新增 / 更新 Trump Truth Social 來源
-        trump_row = conn.execute(text(
-            "SELECT id, url FROM monitor_sources WHERE name LIKE '%realDonaldTrump%' OR name LIKE '%Trump%/@%' LIMIT 1"
-        )).fetchone()
-        if trump_row:
-            # 若舊 URL 是 Nitter，更新為 Truth Social
-            if trump_row[1] and "nitter" in trump_row[1]:
-                conn.execute(text(
-                    "UPDATE monitor_sources SET name='Trump / @realDonaldTrump (Truth Social)', "
-                    "url='https://truthsocial.com/@realDonaldTrump.rss' WHERE id=:id"
-                ), {"id": trump_row[0]})
-        else:
-            conn.execute(text(
-                "INSERT INTO monitor_sources (name, type, url, keywords, is_active) VALUES "
-                "('Trump / @realDonaldTrump (Truth Social)', 'social', "
-                "'https://truthsocial.com/@realDonaldTrump.rss', "
-                "'[\"Trump\",\"tariff\",\"trade war\",\"Fed\",\"China\",\"Taiwan\",\"關稅\",\"貿易戰\"]', 0)"
-            ))
         # 新增 White House 新聞稿（若不存在）
         wh_exists = conn.execute(text(
             "SELECT id FROM monitor_sources WHERE url LIKE '%whitehouse.gov%' LIMIT 1"
@@ -1175,10 +1157,10 @@ def _migrate_db():
         conn.execute(text(
             "DELETE FROM monitor_sources WHERE url='https://www.caixinglobal.com/rss' AND is_active=0"
         ))
-        # 停用 trumpstruth.org（第三方鏡像，改用官方 Truth Social）
+        # 軟刪除舊版 Truth Social RSS（403 錯誤，改用 trumpstruth.org feed）
         conn.execute(text(
-            "UPDATE monitor_sources SET is_active=0 "
-            "WHERE url LIKE '%trumpstruth.org%'"
+            "UPDATE monitor_sources SET is_active=0, is_deleted=1 "
+            "WHERE url LIKE '%truthsocial.com%' AND is_deleted=0"
         ))
         conn.commit()
 
@@ -1415,12 +1397,12 @@ def _seed_defaults():
                     keywords='["market","commodity","currency","rate","Fed"]',
                 ),
                 # ── 特定人物 / 社群帳號 ──
-                # Trump / Truth Social：Mastodon ActivityPub 標準 RSS 端點
+                # Trump Truth Social（透過 trumpstruth.org 第三方 feed）
                 # 備用方案：White House → https://www.whitehouse.gov/feed/
                 MonitorSource(
-                    name="Trump / @realDonaldTrump (Truth Social)",
+                    name="@realDonaldTrump",
                     type="social",
-                    url="https://truthsocial.com/@realDonaldTrump.rss",
+                    url="https://www.trumpstruth.org/feed",
                     keywords='["Trump","tariff","trade war","Fed","China","Taiwan","關稅","貿易戰"]',
                     is_active=False,  # 預設停用，請先測試 RSS 後再啟用
                 ),
