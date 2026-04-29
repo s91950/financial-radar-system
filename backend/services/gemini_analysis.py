@@ -14,6 +14,33 @@ from backend.database import Article, NlmReport, SessionLocal, SystemConfig, You
 
 logger = logging.getLogger(__name__)
 
+# ── 重試設定 ──
+_MAX_RETRIES = 3
+_RETRY_DELAYS = [30, 60, 120]  # 秒：第 1/2/3 次重試前的等待時間
+
+
+async def _call_gemini_with_retry(client, model: str, prompt: str, label: str) -> str | None:
+    """呼叫 Gemini API，遇 503/429 自動重試最多 3 次。"""
+    import asyncio
+
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = await client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            err_str = str(e)
+            is_retryable = "503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            if is_retryable and attempt < _MAX_RETRIES:
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning("[%s] 第 %d 次失敗（%s），%d 秒後重試...",
+                               label, attempt + 1, "503" if "503" in err_str else "429", delay)
+                await asyncio.sleep(delay)
+                continue
+            raise  # 非可重試錯誤，或已耗盡重試次數
+
 # 嚴重度關鍵字（與 notebooklm_hourly.py 對齊）
 _CRIT_KWS = {"崩盤", "暴跌", "暴漲", "危機", "緊急", "衝擊", "崩潰", "戰爭", "制裁", "封鎖", "違約", "破產"}
 _HIGH_KWS = {"下跌", "上漲", "升息", "降息", "通膨", "衰退", "波動", "警告", "風險", "貶值", "升值",
@@ -207,15 +234,11 @@ async def run_gemini_news_analysis(hours_back: int = 3, min_severity: str = "low
         prompt = _build_news_prompt(len(articles))
         full_prompt = f"{prompt}\n\n---\n\n以下是本時段的新聞資料：\n\n{articles_text}"
 
-        # 呼叫 Gemini API
+        # 呼叫 Gemini API（含 503/429 自動重試）
         from google import genai
 
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=settings.GEMINI_MODEL,
-            contents=full_prompt,
-        )
-        report = response.text
+        report = await _call_gemini_with_retry(client, settings.GEMINI_MODEL, full_prompt, "Gemini分析")
         if not report:
             logger.warning("[Gemini分析] API 回傳空白結果")
             return None
@@ -288,11 +311,7 @@ async def run_gemini_yt_analysis(hours_back: int = 3) -> str | None:
         from google import genai
 
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=settings.GEMINI_MODEL,
-            contents=full_prompt,
-        )
-        report = response.text
+        report = await _call_gemini_with_retry(client, settings.GEMINI_MODEL, full_prompt, "Gemini YT分析")
         if not report:
             logger.warning("[Gemini YT分析] API 回傳空白結果")
             return None

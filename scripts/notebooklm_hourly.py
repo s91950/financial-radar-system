@@ -43,6 +43,16 @@ if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
+# 安全 print：Task Scheduler 無控制台時 stdout 可能無效（OSError: [Errno 22]），
+# 所有輸出改用此函式，失敗時靜默寫入 log 而非 crash。
+_orig_print = print
+def print(*args, **kwargs):
+    try:
+        _orig_print(*args, **kwargs)
+    except OSError:
+        # stdout/stderr pipe 已失效（常見於 Task Scheduler 無視窗模式），靜默略過
+        pass
+
 # ── 日誌設定：同時輸出到 console 和 run.log ──────────────────────────────────
 _script_dir_early = os.path.dirname(os.path.abspath(__file__))
 _log_dir = os.path.join(_script_dir_early, "nlm_reports")
@@ -843,11 +853,14 @@ def _refresh_cookies_playwright():
 
             async def _refresh():
                 async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True)
+                    # 使用 headed 模式：Google 會攔截 headless 瀏覽器導致 cookie 刷新失敗
+                    browser = await p.chromium.launch(headless=False)
                     ctx = await browser.new_context(storage_state=state_path)
                     page = await ctx.new_page()
 
                     await page.goto("https://notebooklm.google.com/", wait_until="domcontentloaded", timeout=30000)
+                    # 等待幾秒讓短效 cookie 完成刷新
+                    await page.wait_for_timeout(3000)
                     final_url = page.url
 
                     if "accounts.google.com" in final_url or "/login" in final_url:
@@ -942,6 +955,8 @@ def main():
     parser.add_argument("--yt-only", action="store_true", help="只執行 YT 分析，跳過新聞")
     parser.add_argument("--no-save-state", action="store_true",
                         help="執行完不更新 state（手動補看時不影響自動排程的時間記錄）")
+    parser.add_argument("--cookie-refresh", action="store_true",
+                        help="僅刷新 Google session cookie 後退出（保活用，不做分析）")
     args = parser.parse_args()
 
     # 套用 CLI 覆蓋
@@ -967,6 +982,11 @@ def main():
 
     # ── 自動刷新 NotebookLM 認證（用 Playwright 刷新短效 cookie） ──────────────
     _refresh_cookies_playwright()
+
+    # --cookie-refresh 模式：僅刷新 cookie 後退出
+    if args.cookie_refresh:
+        _log.info("Cookie 保活完成，退出")
+        sys.exit(0)
 
     # ── 決定時間起點 ──────────────────────────────────────────────────────────
     now = datetime.now(timezone.utc)
