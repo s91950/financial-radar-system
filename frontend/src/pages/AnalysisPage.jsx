@@ -184,8 +184,8 @@ export default function AnalysisPage() {
   return (
     <div className="max-w-4xl mx-auto space-y-4">
       {/* 分析引擎切換 */}
-      <div className="flex items-center gap-4">
-        <div className="flex gap-1 bg-dark-800 rounded-lg p-1 border border-dark-700">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
+        <div className="flex gap-1 bg-dark-800 rounded-lg p-1 border border-dark-700 overflow-x-auto max-w-full">
           {Object.entries(TAB_CONFIG).map(([key, c]) => (
             <button
               key={key}

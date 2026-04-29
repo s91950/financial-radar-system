@@ -555,9 +555,9 @@ export default function SearchPage() {
   const hasFilter = filterSeverity !== 'all' || filterSource !== 'all' || filterKeyword || sortOrder !== 'desc'
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-8rem)]">
+    <div className="flex flex-col md:flex-row gap-3 md:gap-4 h-auto md:h-[calc(100vh-8rem)]">
       {/* Left sidebar: topic list */}
-      <div className="w-64 shrink-0 flex flex-col gap-2">
+      <div className="w-full md:w-64 shrink-0 flex flex-col gap-2">
         <button
           onClick={() => { setEditTopic(null); setShowModal(true) }}
           className="btn-primary w-full flex items-center justify-center gap-2 py-2.5"
@@ -568,7 +568,7 @@ export default function SearchPage() {
           新增主題
         </button>
 
-        <div className="card flex-1 overflow-y-auto p-2 space-y-1">
+        <div className="card flex-1 overflow-x-auto md:overflow-x-hidden overflow-y-auto p-2 space-y-1 md:space-y-1 flex md:block gap-2 md:gap-0">
           {loadingTopics ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500" />
@@ -580,7 +580,7 @@ export default function SearchPage() {
               <div
                 key={topic.id}
                 onClick={() => handleSelectTopic(topic.id)}
-                className={`group flex items-center justify-between p-2.5 rounded-lg cursor-pointer transition-colors ${
+                className={`group flex items-center justify-between p-2.5 rounded-lg cursor-pointer transition-colors shrink-0 md:shrink ${
                   selectedId === topic.id
                     ? 'bg-primary-600/20 border border-primary-500/30'
                     : 'hover:bg-dark-800/60'

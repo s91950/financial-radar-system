@@ -44,7 +44,7 @@ export default function NotificationCenter({ isOpen, onClose, onAlertClick }) {
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30" />
       <div
-        className="absolute right-0 top-0 h-full w-96 bg-dark-900 border-l border-dark-700 shadow-2xl animate-slide-in"
+        className="absolute right-0 top-0 h-full w-full sm:w-96 bg-dark-900 border-l border-dark-700 shadow-2xl animate-slide-in"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between p-4 border-b border-dark-700">

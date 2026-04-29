@@ -134,7 +134,7 @@ export default function DashboardPage({ wsSubscribe }) {
           </div>
         )}
 
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
           {marketLoading && displayItems.length === 0 ? (
             Array(8).fill(0).map((_, i) => (
               <div key={i} className="card animate-pulse">

@@ -90,7 +90,7 @@ export default function App() {
     <BrowserRouter>
       <div className="min-h-screen">
         <Sidebar />
-        <main className="ml-64">
+        <main className="ml-0 md:ml-64 pb-16 md:pb-0">
           <Routes>
             <Route path="/" element={
               <PageWrapper path="/" wsConnected={isConnected} alertStats={alertStats}
@@ -171,7 +171,7 @@ function PageWrapper({ path, children, wsConnected, alertStats, onToggleNotifica
         alertStats={alertStats}
         onToggleNotifications={onToggleNotifications}
       />
-      <div className="p-6">
+      <div className="p-3 md:p-6">
         {children}
       </div>
     </>

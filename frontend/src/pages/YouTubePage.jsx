@@ -358,9 +358,9 @@ export default function YouTubePage({ wsSubscribe }) {
     : totalNew
 
   return (
-    <div className="flex gap-6 h-[calc(100vh-120px)]">
+    <div className="flex flex-col md:flex-row gap-3 md:gap-6 h-auto md:h-[calc(100vh-120px)]">
       {/* ── Left sidebar: channel list ── */}
-      <div className="w-64 flex-shrink-0 flex flex-col gap-3">
+      <div className="w-full md:w-64 flex-shrink-0 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-dark-300 uppercase tracking-wide">監控頻道</h2>
           <button
@@ -388,7 +388,7 @@ export default function YouTubePage({ wsSubscribe }) {
         </div>
 
         {/* Channel cards */}
-        <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+        <div className="flex-1 overflow-x-auto md:overflow-x-hidden overflow-y-auto flex md:block gap-2 md:gap-0 md:space-y-2 pr-1">
           {channels.length === 0 ? (
             <div className="card text-center py-8">
               <svg className="w-8 h-8 text-dark-500 mx-auto mb-2" viewBox="0 0 24 24" fill="currentColor">
@@ -518,7 +518,7 @@ export default function YouTubePage({ wsSubscribe }) {
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto">
-            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4">
               {videos.map(v => (
                 <VideoCard
                   key={v.id}

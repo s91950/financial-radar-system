@@ -402,8 +402,8 @@ export default function ReportsPage() {
       </div>
 
       {/* Reports list + detail */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className={`space-y-2 ${selectedReport ? 'lg:col-span-1' : 'lg:col-span-3'}`}>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
+        <div className={`space-y-2 ${selectedReport ? 'hidden lg:block lg:col-span-1' : 'lg:col-span-3'}`}>
           {loading ? (
             Array(5).fill(0).map((_, i) => (
               <div key={i} className="card animate-pulse">
@@ -466,11 +466,19 @@ export default function ReportsPage() {
 
         {/* Detail panel */}
         {selectedReport && (
-          <div className="lg:col-span-2 card sticky top-24 max-h-[calc(100vh-8rem)] overflow-y-auto">
+          <div className="lg:col-span-2 card lg:sticky lg:top-24 max-h-[calc(100vh-8rem)] overflow-y-auto">
+            {/* Mobile back button */}
+            <button onClick={() => setSelectedReport(null)}
+              className="lg:hidden flex items-center gap-1 text-sm text-primary-400 mb-3">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+              返回列表
+            </button>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div className="flex-1 min-w-0">
                 <InstitutionBadge name={selectedReport.source} />
-                <h3 className="text-lg font-bold text-gray-100 mt-2">{selectedReport.title}</h3>
+                <h3 className="text-base md:text-lg font-bold text-gray-100 mt-2">{selectedReport.title}</h3>
                 <div className="flex items-center gap-3 mt-1 flex-wrap">
                   {selectedReport.authors?.length > 0 && (
                     <span className="text-sm text-dark-400">{selectedReport.authors.join(', ')}</span>

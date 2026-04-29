@@ -1013,7 +1013,7 @@ export default function SettingsPage() {
         {/* Add Source Form */}
         {showAddSource && (
           <form onSubmit={handleAddSource} className="mb-4 p-4 bg-dark-900 rounded-lg space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm text-dark-400 mb-1">名稱</label>
                 <input
@@ -1991,7 +1991,7 @@ export default function SettingsPage() {
         </div>
 
         {sheetsStatus && (
-          <div className="grid grid-cols-2 gap-3 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
             <div className="p-3 bg-dark-900 rounded-lg">
               <span className="text-xs text-dark-400">金鑰檔案</span>
               <p className="text-sm mt-1 flex items-center gap-1.5">
@@ -2078,7 +2078,7 @@ export default function SettingsPage() {
       {/* System Info */}
       <section className="card">
         <h3 className="text-lg font-bold mb-4">系統資訊</h3>
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
           <div className="p-3 bg-dark-900 rounded-lg">
             <span className="text-dark-400">雷達掃描間隔</span>
             <p className="font-medium mt-1">每 5 分鐘</p>

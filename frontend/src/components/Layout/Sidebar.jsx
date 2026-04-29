@@ -1,9 +1,11 @@
-import { NavLink } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 
 const navItems = [
   {
     path: '/',
     label: '即時雷達',
+    shortLabel: '雷達',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -14,6 +16,7 @@ const navItems = [
   {
     path: '/search',
     label: '主題追蹤',
+    shortLabel: '追蹤',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -24,6 +27,7 @@ const navItems = [
   {
     path: '/news',
     label: '新聞資料庫',
+    shortLabel: '新聞',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -34,6 +38,7 @@ const navItems = [
   {
     path: '/reports',
     label: '研究報告',
+    shortLabel: '報告',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -44,6 +49,7 @@ const navItems = [
   {
     path: '/dashboard',
     label: '市場儀表板',
+    shortLabel: '儀表',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -54,6 +60,7 @@ const navItems = [
   {
     path: '/youtube',
     label: 'YouTube 監控',
+    shortLabel: 'YT',
     icon: (
       <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
         <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
@@ -63,6 +70,7 @@ const navItems = [
   {
     path: '/analysis',
     label: '分析結果',
+    shortLabel: '分析',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -73,6 +81,7 @@ const navItems = [
   {
     path: '/feedback',
     label: '意見回饋',
+    shortLabel: '回饋',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -83,6 +92,7 @@ const navItems = [
   {
     path: '/settings',
     label: '系統設定',
+    shortLabel: '設定',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -93,53 +103,146 @@ const navItems = [
   },
 ]
 
+// Bottom tab bar: indices into navItems
+const primaryTabIndices = [0, 2, 6, 5] // 雷達, 新聞, 分析, YT
+const secondaryIndices = [1, 3, 4, 7, 8] // 追蹤, 報告, 儀表, 回饋, 設定
+
 export default function Sidebar() {
+  const [moreOpen, setMoreOpen] = useState(false)
+  const location = useLocation()
+
+  const isSecondaryActive = secondaryIndices.some(i => {
+    const p = navItems[i].path
+    return p === '/' ? location.pathname === '/' : location.pathname.startsWith(p)
+  })
+
   return (
-    <aside className="fixed left-0 top-0 h-screen w-64 bg-dark-900 border-r border-dark-700 flex flex-col z-40">
-      {/* Logo */}
-      <div className="p-5 border-b border-dark-700">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center">
-            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
-            </svg>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-white">金融偵測系統</h1>
-            <p className="text-xs text-dark-400">Financial Radar</p>
+    <>
+      {/* Desktop sidebar */}
+      <aside className="hidden md:flex fixed left-0 top-0 h-screen w-64 bg-dark-900 border-r border-dark-700 flex-col z-40">
+        {/* Logo */}
+        <div className="p-5 border-b border-dark-700">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-primary-600 rounded-xl flex items-center justify-center">
+              <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-white">金融偵測系統</h1>
+              <p className="text-xs text-dark-400">Financial Radar</p>
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 p-3 space-y-1">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.path}
-            to={item.path}
-            end={item.path === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
-                isActive
-                  ? 'bg-primary-600/20 text-primary-400 border border-primary-500/30'
-                  : 'text-dark-300 hover:text-white hover:bg-dark-800'
-              }`
-            }
+        {/* Navigation */}
+        <nav className="flex-1 p-3 space-y-1">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              end={item.path === '/'}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
+                  isActive
+                    ? 'bg-primary-600/20 text-primary-400 border border-primary-500/30'
+                    : 'text-dark-300 hover:text-white hover:bg-dark-800'
+                }`
+              }
+            >
+              {item.icon}
+              <span className="font-medium">{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        {/* Footer */}
+        <div className="p-4 border-t border-dark-700">
+          <div className="flex items-center gap-2 text-xs text-dark-500">
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span>System Active</span>
+          </div>
+        </div>
+      </aside>
+
+      {/* Mobile bottom tab bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-dark-900 border-t border-dark-700">
+        <div className="flex justify-around items-center">
+          {primaryTabIndices.map(idx => {
+            const item = navItems[idx]
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                end={item.path === '/'}
+                className={({ isActive }) =>
+                  `flex flex-col items-center justify-center min-h-[56px] flex-1 transition-colors ${
+                    isActive ? 'text-primary-400' : 'text-dark-400'
+                  }`
+                }
+              >
+                {item.icon}
+                <span className="text-[10px] mt-0.5">{item.shortLabel}</span>
+              </NavLink>
+            )
+          })}
+          {/* More button */}
+          <button
+            onClick={() => setMoreOpen(true)}
+            className={`flex flex-col items-center justify-center min-h-[56px] flex-1 transition-colors ${
+              isSecondaryActive ? 'text-primary-400' : 'text-dark-400'
+            }`}
           >
-            {item.icon}
-            <span className="font-medium">{item.label}</span>
-          </NavLink>
-        ))}
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+            </svg>
+            <span className="text-[10px] mt-0.5">更多</span>
+          </button>
+        </div>
       </nav>
 
-      {/* Footer */}
-      <div className="p-4 border-t border-dark-700">
-        <div className="flex items-center gap-2 text-xs text-dark-500">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          <span>System Active</span>
+      {/* Mobile "More" overlay */}
+      {moreOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" onClick={() => setMoreOpen(false)}>
+          {/* Backdrop */}
+          <div className="absolute inset-0 bg-black/60" />
+          {/* Bottom sheet */}
+          <div
+            className="absolute bottom-0 left-0 right-0 bg-dark-800 rounded-t-2xl border-t border-dark-700 animate-slide-up"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Handle bar */}
+            <div className="flex justify-center py-2">
+              <div className="w-10 h-1 bg-dark-600 rounded-full" />
+            </div>
+            <nav className="px-4 pb-6 space-y-1">
+              {secondaryIndices.map(idx => {
+                const item = navItems[idx]
+                const isActive = item.path === '/'
+                  ? location.pathname === '/'
+                  : location.pathname.startsWith(item.path)
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    onClick={() => setMoreOpen(false)}
+                    className={`flex items-center gap-3 px-4 py-3.5 rounded-lg transition-colors ${
+                      isActive
+                        ? 'bg-primary-600/20 text-primary-400'
+                        : 'text-dark-300 active:bg-dark-700'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="font-medium">{item.label}</span>
+                  </NavLink>
+                )
+              })}
+            </nav>
+          </div>
         </div>
-      </div>
-    </aside>
+      )}
+    </>
   )
 }

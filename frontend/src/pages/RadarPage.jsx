@@ -352,9 +352,9 @@ export default function RadarPage({ wsSubscribe }) {
     <div className="space-y-6">
       {/* Alerts Feed */}
       <section>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
           <h3 className="text-lg font-semibold">信號動態</h3>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             <span className="text-sm text-dark-400">
               {hasActiveFilter
                 ? <>{displayAlerts.length} <span className="text-dark-600">/ {alerts.length} 則</span></>
