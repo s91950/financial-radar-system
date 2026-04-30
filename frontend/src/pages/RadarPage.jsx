@@ -539,47 +539,14 @@ export default function RadarPage({ wsSubscribe }) {
                     if (!alert.is_read) handleMarkRead(alert)
                   }}
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
-                        {alert.type !== 'news' && severityBadge(alert.severity)}
-                        {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
-                      </div>
-                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
-
-                      {articleLines.length > 0 && (
-                        <div className="mt-1.5 space-y-0.5">
-                          {(() => {
-                            const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                            const visibleLines = filterSeverity !== 'all'
-                              ? numberedLines.filter(l => l.severity === filterSeverity)
-                              : numberedLines
-                            const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
-                            return (
-                              <>
-                                {showLines.map((line, i) => (
-                                  <p key={i} className="text-sm text-dark-400 flex items-center gap-1.5">
-                                    {line.severity && lineSeverityBadge(line.severity)}
-                                    <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
-                                    {line.kw && (
-                                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
-                                        {line.kw}
-                                      </span>
-                                    )}
-                                  </p>
-                                ))}
-                                {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
-                                  <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
-                                )}
-                              </>
-                            )
-                          })()}
-                        </div>
-                      )}
+                  {/* 頂部：日期 + 刪除（手機獨立一行，桌面靠右） */}
+                  <div className="flex items-center justify-between sm:justify-end gap-2 mb-1 sm:mb-0 sm:float-right sm:ml-3">
+                    <div className="flex items-center gap-2 sm:hidden">
+                      <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
+                      {alert.type !== 'news' && severityBadge(alert.severity)}
+                      {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2">
                       <span className="text-xs text-dark-500 whitespace-nowrap">
                         {alert.created_at && new Date(alert.created_at).toLocaleString('zh-TW', {
                           month: 'numeric', day: 'numeric',
@@ -597,6 +564,47 @@ export default function RadarPage({ wsSubscribe }) {
                         </svg>
                       </button>
                     </div>
+                  </div>
+
+                  {/* 主內容：標題 + 文章行（手機全寬） */}
+                  <div className="min-w-0">
+                    <div className="hidden sm:flex items-center gap-2 mb-1">
+                      <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
+                      {alert.type !== 'news' && severityBadge(alert.severity)}
+                      {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
+                    </div>
+                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+
+                    {articleLines.length > 0 && (
+                      <div className="mt-1.5 space-y-0.5">
+                        {(() => {
+                          const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
+                          const visibleLines = filterSeverity !== 'all'
+                            ? numberedLines.filter(l => l.severity === filterSeverity)
+                            : numberedLines
+                          const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
+                          return (
+                            <>
+                              {showLines.map((line, i) => (
+                                <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                  {line.severity && lineSeverityBadge(line.severity)}
+                                  <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
+                                  <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                  {line.kw && (
+                                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
+                                      {line.kw}
+                                    </span>
+                                  )}
+                                </p>
+                              ))}
+                              {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
+                                <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
+                              )}
+                            </>
+                          )
+                        })()}
+                      </div>
+                    )}
                   </div>
 
                   {/* Expanded Detail */}
