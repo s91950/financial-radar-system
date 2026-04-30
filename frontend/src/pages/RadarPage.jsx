@@ -539,9 +539,9 @@ export default function RadarPage({ wsSubscribe }) {
                     if (!alert.is_read) handleMarkRead(alert)
                   }}
                 >
-                  {/* 頂部：日期 + 刪除（手機獨立一行，桌面靠右） */}
-                  <div className="flex items-center justify-between sm:justify-end gap-2 mb-1 sm:mb-0 sm:float-right sm:ml-3">
-                    <div className="flex items-center gap-2 sm:hidden">
+                  {/* 手機版：日期+刪除獨立一行，標題全寬 */}
+                  <div className="flex items-center justify-between gap-2 mb-1 sm:hidden">
+                    <div className="flex items-center gap-2">
                       <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
                       {alert.type !== 'news' && severityBadge(alert.severity)}
                       {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
@@ -566,54 +566,80 @@ export default function RadarPage({ wsSubscribe }) {
                     </div>
                   </div>
 
-                  {/* 主內容：標題 + 文章行（手機全寬） */}
-                  <div className="min-w-0">
-                    <div className="hidden sm:flex items-center gap-2 mb-1">
-                      <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
-                      {alert.type !== 'news' && severityBadge(alert.severity)}
-                      {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
-                    </div>
-                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
-
-                    {articleLines.length > 0 && (
-                      <div className="mt-1.5 space-y-0.5">
-                        {(() => {
-                          const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                          const visibleLines = filterSeverity !== 'all'
-                            ? numberedLines.filter(l => l.severity === filterSeverity)
-                            : numberedLines
-                          const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
-                          return (
-                            <>
-                              {(() => {
-                                let kwCount = 0
-                                return showLines.map((line, i) => {
-                                  const hasKw = !!line.kw
-                                  if (hasKw) kwCount++
-                                  const hideKwOnMobile = hasKw && kwCount > 2
-                                  return (
-                                    <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
-                                      {line.severity && lineSeverityBadge(line.severity)}
-                                      <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                      <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
-                                      {hasKw && (
-                                        <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default ${hideKwOnMobile ? 'hidden sm:inline' : ''}`}>
-                                          {line.kw}
-                                        </span>
-                                      )}
-                                    </p>
-                                  )
-                                })
-                              })()}
-                              {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
-                                <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
-                              )}
-                            </>
-                          )
-                        })()}
+                  {/* 桌面版：原始橫排佈局（標題左、日期右） */}
+                  <div className="hidden sm:flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
+                        {alert.type !== 'news' && severityBadge(alert.severity)}
+                        {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
                       </div>
-                    )}
+                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-dark-500 whitespace-nowrap">
+                        {alert.created_at && new Date(alert.created_at).toLocaleString('zh-TW', {
+                          month: 'numeric', day: 'numeric',
+                          hour: '2-digit', minute: '2-digit'
+                        })}
+                      </span>
+                      <button
+                        onClick={(e) => handleDeleteAlert(e, alert.id)}
+                        className="text-dark-500 hover:text-red-400 transition-colors p-1"
+                        title="刪除"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
+
+                  {/* 手機版標題（全寬） */}
+                  <div className="min-w-0 sm:hidden">
+                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                  </div>
+
+                  {/* 文章列表（手機：限顯示2個關鍵字標籤） */}
+                  {articleLines.length > 0 && (
+                    <div className="mt-1.5 space-y-0.5">
+                      {(() => {
+                        const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
+                        const visibleLines = filterSeverity !== 'all'
+                          ? numberedLines.filter(l => l.severity === filterSeverity)
+                          : numberedLines
+                        const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
+                        return (
+                          <>
+                            {(() => {
+                              let kwCount = 0
+                              return showLines.map((line, i) => {
+                                const hasKw = !!line.kw
+                                if (hasKw) kwCount++
+                                const hideKwOnMobile = hasKw && kwCount > 2
+                                return (
+                                  <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                    {line.severity && lineSeverityBadge(line.severity)}
+                                    <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
+                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                    {hasKw && (
+                                      <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default ${hideKwOnMobile ? 'hidden sm:inline' : ''}`}>
+                                        {line.kw}
+                                      </span>
+                                    )}
+                                  </p>
+                                )
+                              })
+                            })()}
+                            {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
+                              <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
+                            )}
+                          </>
+                        )
+                      })()}
+                    </div>
+                  )}
 
                   {/* Expanded Detail */}
                   {selectedAlert?.id === alert.id && (
