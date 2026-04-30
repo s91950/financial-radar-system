@@ -47,7 +47,7 @@ async def _resolve_redirect(url: str, client: httpx.AsyncClient) -> str:
 async def _resolve_gn_article_urls(articles: list[dict]) -> list[dict]:
     """Decode news.google.com/rss/articles/... URLs to actual article URLs.
 
-    Uses the same batchexecute decode as google_news.py.
+    Uses base64 protobuf decode (primary) + HTTP redirect (fallback).
     Articles without GN URLs are returned unchanged.
     Falls back to original URL on any decode failure.
     """
@@ -77,7 +77,7 @@ async def _resolve_gn_article_urls(articles: list[dict]) -> list[dict]:
             if resolved and resolved.startswith("http"):
                 articles[idx]["source_url"] = resolved
     except Exception as e:
-        logger.warning(f"GN batchexecute decode failed: {e}")
+        logger.warning(f"GN URL decode failed: {e}")
 
     return articles
 

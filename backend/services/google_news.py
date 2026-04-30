@@ -54,91 +54,64 @@ _GN_HEADERS = {
 
 # ---------------------------------------------------------------------------
 # Google News URL 解碼：CBMi... article ID → 真正的文章 URL
-# 原理：從 Google News 文章頁取得簽名 + 時間戳，再透過 batchexecute API 解碼
+# 方法 1（主要）：base64 解碼 protobuf 結構，直接提取嵌入的 URL — 無網路請求
+# 方法 2（備援）：逐個 HTTP GET follow redirect — 慢但可靠
 # ---------------------------------------------------------------------------
 
-_DECODE_CONCURRENCY = 5  # 同時取得解碼參數的併發上限
+_DECODE_CONCURRENCY = 8
 
 
-async def _get_decode_params(
-    client: httpx.AsyncClient, gn_art_id: str
-) -> dict | None:
-    """從 Google News 文章頁取得解碼用的 signature 和 timestamp。"""
+def _decode_gn_article_id(article_id: str) -> str | None:
+    """從 Google News article ID (base64 protobuf) 直接提取原始 URL。
+
+    GN article ID 是 base64url 編碼的 protobuf 結構，
+    內含原始文章 URL 作為 length-delimited string。
+    此方法不需要任何網路請求。
+    """
+    import base64
+
     try:
-        resp = await client.get(
-            f"https://news.google.com/rss/articles/{gn_art_id}",
-            follow_redirects=True,
-            timeout=10,
-        )
-        html = resp.text
-        sig_m = re.search(r'data-n-a-sg="([^"]+)"', html)
-        ts_m = re.search(r'data-n-a-ts="([^"]+)"', html)
-        if sig_m and ts_m:
-            return {
-                "gn_art_id": gn_art_id,
-                "signature": sig_m.group(1),
-                "timestamp": int(ts_m.group(1)),
-            }
+        # 補齊 base64 padding
+        padded = article_id + "=" * (4 - len(article_id) % 4)
+        # 嘗試 URL-safe 和標準 base64
+        for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+            try:
+                raw = decoder(padded)
+                break
+            except Exception:
+                continue
+        else:
+            return None
+
+        # 在解碼的 bytes 中搜尋 URL
+        url_match = re.search(rb'https?://[^\x00-\x1f\x7f-\xff\s]+', raw)
+        if url_match:
+            url = url_match.group(0).decode('ascii', errors='ignore')
+            # 確保是完整的 URL（不是截斷的）
+            if '.' in url and len(url) > 10:
+                return url
     except Exception:
         pass
     return None
 
 
-async def _batch_decode(
-    client: httpx.AsyncClient, params_list: list[dict]
-) -> list[str | None]:
-    """透過 Google batchexecute API 批次解碼多個 article ID → 真正 URL。"""
-    if not params_list:
-        return []
-
-    articles_reqs = []
-    for p in params_list:
-        articles_reqs.append([
-            "Fbv4je",
-            json.dumps([
-                "garturlreq",
-                [["X", "X", ["X", "X"], None, None, 1, 1, "US:en",
-                  None, 1, None, None, None, None, None, 0, 1],
-                 "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0],
-                p["gn_art_id"], p["timestamp"], p["signature"],
-            ]),
-        ])
-
-    payload = f"f.req={quote(json.dumps([articles_reqs]))}"
-    try:
-        resp = await client.post(
-            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
-            data=payload,
-            timeout=15,
-        )
-        resp.raise_for_status()
-
-        decoded_urls: list[str | None] = [None] * len(params_list)
-        text = resp.text
-        idx = 0  # running counter across all response lines
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line.startswith("[["):
-                continue
-            try:
-                parsed = json.loads(line)
-                for item in parsed:
-                    if (isinstance(item, list) and len(item) >= 3
-                            and item[0] == "wrb.fr"):
-                        try:
-                            inner = json.loads(item[2])
-                            if isinstance(inner, list) and len(inner) >= 2:
-                                decoded_urls[idx] = inner[1]
-                        except Exception:
-                            pass
-                        idx += 1
-            except json.JSONDecodeError:
-                pass
-        return decoded_urls
-    except Exception as e:
-        logger.debug(f"batchexecute failed: {e}")
-        return [None] * len(params_list)
+async def _resolve_single_gn_url(
+    client: httpx.AsyncClient, sem: asyncio.Semaphore, article_id: str
+) -> str | None:
+    """HTTP 備援：透過 follow redirect 解碼單個 GN article URL。"""
+    async with sem:
+        try:
+            resp = await client.get(
+                f"https://news.google.com/rss/articles/{article_id}",
+                follow_redirects=True,
+                timeout=10,
+            )
+            final = str(resp.url)
+            if final.startswith("http") and "news.google.com" not in final:
+                return final
+        except Exception:
+            pass
+    return None
 
 
 async def _resolve_google_news_urls(
@@ -146,40 +119,39 @@ async def _resolve_google_news_urls(
 ) -> list[str | None]:
     """解碼一批 Google News article ID 為真正的文章 URL。
 
-    流程：並行取得每個 article 的 signature/timestamp → 批次呼叫 batchexecute
-    失敗的 URL 返回 None（caller 可 fallback）。
+    優先用 base64 protobuf 解碼（無網路請求、每個 ID 獨立解碼不會混淆）。
+    失敗的再用 HTTP redirect 逐個解碼。
     """
     if not article_ids:
         return []
 
-    # Step 1: 並行取得解碼參數（限制併發）
-    sem = asyncio.Semaphore(_DECODE_CONCURRENCY)
-
-    async def _get_with_sem(art_id: str):
-        async with sem:
-            return await _get_decode_params(client, art_id)
-
-    params_results = await asyncio.gather(
-        *[_get_with_sem(aid) for aid in article_ids],
-        return_exceptions=True,
-    )
-
-    # 分離成功與失敗
-    valid_params = []
-    idx_map = {}  # valid_params index → original index
-    for i, p in enumerate(params_results):
-        if isinstance(p, dict):
-            idx_map[len(valid_params)] = i
-            valid_params.append(p)
-
-    # Step 2: 批次解碼
-    decoded = await _batch_decode(client, valid_params)
-
-    # Step 3: 映射回原始順序
     result: list[str | None] = [None] * len(article_ids)
-    for vi, url in enumerate(decoded):
-        if url and vi in idx_map:
-            result[idx_map[vi]] = url
+
+    # Step 1: base64 protobuf 直接解碼（主要方法）
+    need_http: list[int] = []
+    for i, aid in enumerate(article_ids):
+        url = _decode_gn_article_id(aid)
+        if url:
+            result[i] = url
+        else:
+            need_http.append(i)
+
+    decoded_count = len(article_ids) - len(need_http)
+    if need_http:
+        logger.debug(f"GN base64 decoded {decoded_count}/{len(article_ids)}, "
+                      f"{len(need_http)} need HTTP fallback")
+
+    # Step 2: HTTP redirect 備援（僅對 base64 失敗的）
+    if need_http:
+        sem = asyncio.Semaphore(_DECODE_CONCURRENCY)
+        fallback_results = await asyncio.gather(
+            *[_resolve_single_gn_url(client, sem, article_ids[i]) for i in need_http],
+            return_exceptions=True,
+        )
+        for j, idx in enumerate(need_http):
+            fb = fallback_results[j]
+            if isinstance(fb, str) and fb.startswith("http"):
+                result[idx] = fb
 
     return result
 
