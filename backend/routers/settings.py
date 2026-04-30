@@ -419,7 +419,7 @@ async def get_topic_categories(db: Session = Depends(get_db)):
 
 
 class TopicCategoriesUpdate(BaseModel):
-    categories: dict  # {分類名稱: [關鍵字...]}
+    categories: list | dict  # [{name, lang, keywords}] 或舊格式 {分類名稱: [關鍵字...]}
 
 
 @router.put("/radar-topic-categories")

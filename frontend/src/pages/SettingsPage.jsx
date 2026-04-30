@@ -558,6 +558,10 @@ export default function SettingsPage() {
   const [newCatLang, setNewCatLang] = useState('tw')
   const [newCatKws, setNewCatKws] = useState({})   // { catIndex: 輸入框值 }
   const [showCatGroupBuilder, setShowCatGroupBuilder] = useState(null)  // catIndex or null
+  const [kwLangTab, setKwLangTab] = useState('tw')  // 'tw' | 'en'
+  const [dragModeEnabled, setDragModeEnabled] = useState(false)  // 拖曳分類模式
+  const [dragKw, setDragKw] = useState(null)  // { kw, fromCatIdx }
+  const [dragOverCat, setDragOverCat] = useState(null)  // target catIdx
   // 布林嚴重度規則
   const [severityRules, setSeverityRules] = useState([])
   const [showRuleBuilder, setShowRuleBuilder] = useState(false)
@@ -754,8 +758,8 @@ export default function SettingsPage() {
   const addCategory = () => {
     const name = newCatName.trim()
     if (!name) return
-    if (topicCategories.some(c => c.name === name && c.lang === newCatLang)) return
-    setTopicCategories(prev => [...prev, { name, lang: newCatLang, keywords: [] }])
+    if (topicCategories.some(c => c.name === name && c.lang === kwLangTab)) return
+    setTopicCategories(prev => [...prev, { name, lang: kwLangTab, keywords: [] }])
     setNewCatName('')
   }
   const removeCategory = (idx) => setTopicCategories(prev => prev.filter((_, i) => i !== idx))
@@ -765,6 +769,14 @@ export default function SettingsPage() {
   }
   const removeKwFromCategory = (idx, kw) => {
     setTopicCategories(prev => prev.map((c, i) => i === idx ? { ...c, keywords: c.keywords.filter(k => k !== kw) } : c))
+  }
+  const moveKwToCategory = (fromIdx, toIdx, kw) => {
+    if (fromIdx === toIdx) return
+    setTopicCategories(prev => prev.map((c, i) => {
+      if (i === fromIdx) return { ...c, keywords: c.keywords.filter(k => k !== kw) }
+      if (i === toIdx && !c.keywords.includes(kw)) return { ...c, keywords: [...c.keywords, kw] }
+      return c
+    }))
   }
 
   const handleTestRss = async (sourceId) => {
@@ -1417,21 +1429,49 @@ export default function SettingsPage() {
           </button>
         </div>
 
-        {/* 分類關鍵字卡片 */}
+        {/* TW / EN 分頁 + 拖曳模式 */}
+        <div className="flex items-center justify-between">
+          <div className="flex gap-1 bg-dark-800 rounded-lg p-1 border border-dark-700">
+            <button onClick={() => setKwLangTab('tw')}
+              className={`px-4 py-1.5 rounded-md font-medium text-xs transition-colors ${kwLangTab === 'tw' ? 'bg-blue-600 text-white' : 'text-dark-400 hover:text-white'}`}>
+              TW 中文 <span className="opacity-60 ml-1">{topicCategories.filter(c => c.lang === 'tw').reduce((n, c) => n + c.keywords.length, 0)}</span>
+            </button>
+            <button onClick={() => setKwLangTab('en')}
+              className={`px-4 py-1.5 rounded-md font-medium text-xs transition-colors ${kwLangTab === 'en' ? 'bg-amber-600 text-white' : 'text-dark-400 hover:text-white'}`}>
+              EN 英文 <span className="opacity-60 ml-1">{topicCategories.filter(c => c.lang === 'en').reduce((n, c) => n + c.keywords.length, 0)}</span>
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-dark-500">拖曳分類</span>
+            <button
+              type="button"
+              onClick={() => { setDragModeEnabled(v => !v); setDragKw(null); setDragOverCat(null) }}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${dragModeEnabled ? 'bg-primary-600' : 'bg-dark-600'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${dragModeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* 分類關鍵字卡片（依 tab 篩選） */}
         {topicCategories.map((cat, ci) => {
+          if (cat.lang !== kwLangTab) return null
           const c = CAT_COLORS[ci % CAT_COLORS.length]
           const simpleKws = cat.keywords.filter(k => !k.includes('('))
           const groupedKws = cat.keywords.filter(k => k.includes('('))
           const isEn = cat.lang === 'en'
+          const isDropTarget = dragModeEnabled && dragOverCat === ci && dragKw?.fromCatIdx !== ci
           return (
-            <div key={ci} className={`p-4 rounded-lg border space-y-3 ${isEn ? 'border-amber-500/20 bg-amber-500/5' : 'border-dark-700 bg-dark-900/40'}`}>
+            <div key={ci}
+              className={`p-4 rounded-lg border space-y-3 transition-colors ${isDropTarget ? 'border-primary-400 bg-primary-500/10' : isEn ? 'border-amber-500/20 bg-amber-500/5' : 'border-dark-700 bg-dark-900/40'}`}
+              onDragOver={dragModeEnabled ? (e) => { e.preventDefault(); setDragOverCat(ci) } : undefined}
+              onDragLeave={dragModeEnabled ? () => setDragOverCat(null) : undefined}
+              onDrop={dragModeEnabled ? (e) => { e.preventDefault(); setDragOverCat(null); if (dragKw) { moveKwToCategory(dragKw.fromCatIdx, ci, dragKw.kw); setDragKw(null) } } : undefined}
+            >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className={`w-2.5 h-2.5 rounded-full ${c.dot}`} />
                   <span className={`text-sm font-semibold ${c.text}`}>{cat.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${isEn ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
-                    {isEn ? 'EN' : 'TW'}
-                  </span>
                   <span className="text-xs text-dark-500">{cat.keywords.length} 個關鍵字</span>
                 </div>
                 <button onClick={() => removeCategory(ci)} className="text-dark-600 hover:text-red-400 text-xs transition-colors">刪除分類</button>
@@ -1444,7 +1484,12 @@ export default function SettingsPage() {
                     const isCrit = severityKws.critical.includes(kw)
                     const isHigh = severityKws.high.includes(kw)
                     return (
-                      <span key={kw} className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${c.bg} ${c.text} ${c.border}`}>
+                      <span key={kw}
+                        draggable={dragModeEnabled}
+                        onDragStart={dragModeEnabled ? () => setDragKw({ kw, fromCatIdx: ci }) : undefined}
+                        onDragEnd={dragModeEnabled ? () => { setDragKw(null); setDragOverCat(null) } : undefined}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${c.bg} ${c.text} ${c.border} ${dragModeEnabled ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      >
                         {isCrit && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
                         {!isCrit && isHigh && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
                         {kw}
@@ -1506,11 +1551,7 @@ export default function SettingsPage() {
             placeholder="新增分類名稱（例：央行政策）"
             className="input text-sm flex-1"
           />
-          <select value={newCatLang} onChange={e => setNewCatLang(e.target.value)} className="input text-sm w-24">
-            <option value="tw">TW</option>
-            <option value="en">EN</option>
-          </select>
-          <button onClick={addCategory} className="btn-secondary text-sm px-4">新增分類</button>
+          <button onClick={() => { setNewCatLang(kwLangTab); addCategory() }} className="btn-secondary text-sm px-4">新增分類</button>
         </div>
 
         {/* 全域排除關鍵字 */}
