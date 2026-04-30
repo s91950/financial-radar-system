@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.exc import IntegrityError
@@ -1859,8 +1859,27 @@ async def gemini_analysis():
 
     在 VM 上直接用 Gemini API 分析，無需本地電腦開機。
     結果獨立存放（report_type="gemini_news"/"gemini_yt"）。
+    服務重啟時也會觸發（next_run_time=+5min），但若上次報告
+    不到 2.5 小時則自動跳過，避免重複分析浪費 API 配額。
     """
     from backend.services.gemini_analysis import run_gemini_news_analysis, run_gemini_yt_analysis
+
+    # 防止服務重啟時重複觸發：檢查上次報告時間
+    try:
+        db = SessionLocal()
+        try:
+            row = db.query(SystemConfig).filter(SystemConfig.key == "gemini_report_generated_at").first()
+            if row and row.value:
+                last_dt = datetime.fromisoformat(row.value.replace("Z", "+00:00"))
+                elapsed = datetime.now(timezone.utc) - last_dt
+                if elapsed < timedelta(hours=2, minutes=30):
+                    _flog(f"[GEMINI] 跳過：上次報告在 {int(elapsed.total_seconds()//60)} 分鐘前，未滿 2.5 小時")
+                    logger.info(f"[Gemini分析] 跳過：距上次僅 {int(elapsed.total_seconds()//60)} 分鐘")
+                    return
+        finally:
+            db.close()
+    except Exception:
+        pass  # 查不到就正常執行
 
     _flog("[GEMINI] 開始 Gemini 深度分析...")
     logger.info("[Gemini分析] 排程啟動")
