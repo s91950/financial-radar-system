@@ -116,13 +116,13 @@ async def _batch_decode(
 
         decoded_urls: list[str | None] = [None] * len(params_list)
         text = resp.text
+        idx = 0  # running counter across all response lines
         for line in text.split("\n"):
             line = line.strip()
             if not line.startswith("[["):
                 continue
             try:
                 parsed = json.loads(line)
-                idx = 0
                 for item in parsed:
                     if (isinstance(item, list) and len(item) >= 3
                             and item[0] == "wrb.fr"):

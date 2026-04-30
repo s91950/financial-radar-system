@@ -395,7 +395,7 @@ export default function RadarPage({ wsSubscribe }) {
         </div>
 
         {/* Filter Bar */}
-        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-dark-900/50 rounded-xl border border-dark-700">
+        <div className="flex flex-wrap items-center gap-2 mb-4 p-3 bg-dark-900/50 rounded-xl border border-dark-700 overflow-hidden">
           {/* Severity pills */}
           {severityPills.map(({ v, label, color }) => (
             <button key={v}
@@ -407,7 +407,7 @@ export default function RadarPage({ wsSubscribe }) {
               }`}>{label}</button>
           ))}
 
-          <div className="w-px h-4 bg-dark-700 mx-1" />
+          <div className="w-px h-4 bg-dark-700 mx-1 hidden sm:block" />
 
           {/* 僅未讀 */}
           <button onClick={() => setFilterUnread(v => !v)}
@@ -436,12 +436,10 @@ export default function RadarPage({ wsSubscribe }) {
             {sortOrder === 'desc' ? '↓ 最新' : '↑ 最舊'}
           </button>
 
-          <div className="flex-1" />
-
           {/* Keyword search */}
           <input type="text" value={filterKeyword} onChange={(e) => setFilterKeyword(e.target.value)}
             placeholder="關鍵字篩選..."
-            className="text-xs px-3 py-1.5 rounded-lg bg-dark-800 border border-dark-600 text-gray-300 placeholder-dark-500 w-36 focus:outline-none focus:border-primary-500/50" />
+            className="text-xs px-3 py-1.5 rounded-lg bg-dark-800 border border-dark-600 text-gray-300 placeholder-dark-500 w-full sm:w-36 focus:outline-none focus:border-primary-500/50" />
 
           {/* Select all filtered URLs */}
           {hasActiveFilter && displayAlerts.length > 0 && (

@@ -88,7 +88,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-screen">
+      <div className="min-h-screen overflow-x-hidden">
         <Sidebar />
         <main className="ml-0 md:ml-64 pb-16 md:pb-0">
           <Routes>
