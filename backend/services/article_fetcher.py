@@ -32,12 +32,40 @@ _CONTENT_SKIP_LEN = 500
 _MIN_BODY_LEN = 100
 
 
-def _extract_main_text(html: str) -> Optional[str]:
+def _extract_published_at(html: str, soup: BeautifulSoup) -> Optional[str]:
+    """從 HTML 擷取發布時間，回傳 ISO 8601 字串。
+
+    依序嘗試：
+    1. JSON-LD `"datePublished"`（最可靠，多數新聞網站採用 schema.org）
+    2. `<meta property="article:published_time">`（Open Graph 標準）
+    3. `<meta name="pubdate">` / `<meta name="publishdate">` / `<meta itemprop="datePublished">`
+    4. `<time datetime="...">` 標籤
+    """
+    # 1. JSON-LD
+    m = re.search(r'"datePublished"\s*:\s*"([^"]+)"', html)
+    if m:
+        return m.group(1)
+    # 2-3. meta tags
+    for attr_name, attr_val in (
+        ("property", "article:published_time"),
+        ("name", "pubdate"),
+        ("name", "publishdate"),
+        ("name", "publish_date"),
+        ("itemprop", "datePublished"),
+        ("name", "date"),
+    ):
+        tag = soup.find("meta", attrs={attr_name: attr_val})
+        if tag and tag.get("content"):
+            return tag["content"].strip()
+    # 4. <time datetime="...">
+    time_tag = soup.find("time", attrs={"datetime": True})
+    if time_tag:
+        return time_tag["datetime"].strip()
+    return None
+
+
+def _extract_main_text(soup: BeautifulSoup) -> Optional[str]:
     """從 HTML 抓主文文字。優先 <article>/<main>，退而求其次找最大 <div>。"""
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-    except Exception:
-        return None
     for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "iframe", "noscript"]):
         tag.decompose()
     candidate = soup.find("article") or soup.find("main")
@@ -56,18 +84,23 @@ def _extract_main_text(html: str) -> Optional[str]:
     return text
 
 
-async def _fetch_one(client: httpx.AsyncClient, url: str, timeout: float) -> Optional[str]:
+async def _fetch_one(client: httpx.AsyncClient, url: str, timeout: float) -> tuple[Optional[str], Optional[str]]:
+    """回傳 (主文文字, 發布時間 ISO 字串)。任一失敗則對應位置為 None。"""
     try:
         r = await client.get(url, headers=_HEADERS, timeout=timeout, follow_redirects=True)
         if r.status_code != 200:
-            return None
+            return None, None
         ctype = r.headers.get("content-type", "")
         if "html" not in ctype.lower():
-            return None
-        return _extract_main_text(r.text)
+            return None, None
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception:
+            return None, None
+        return _extract_main_text(soup), _extract_published_at(r.text, soup)
     except Exception as e:
         logger.debug(f"fetch full body failed for {url}: {e}")
-        return None
+        return None, None
 
 
 async def enrich_articles_with_full_body(
@@ -93,9 +126,12 @@ async def enrich_articles_with_full_body(
             continue
         if a.get("_body_fetched"):
             continue
-        if len(a.get("content", "") or "") >= _CONTENT_SKIP_LEN:
-            continue
         if "news.google.com" in url:
+            continue
+        # 內容已夠長 且 已有發布時間 → 全跳過；缺一就抓
+        body_ok = len(a.get("content", "") or "") >= _CONTENT_SKIP_LEN
+        date_ok = bool(a.get("published_at"))
+        if body_ok and date_ok:
             continue
         targets.append((idx, url))
 
@@ -107,12 +143,16 @@ async def enrich_articles_with_full_body(
     async with httpx.AsyncClient() as client:
         async def _job(idx: int, url: str) -> bool:
             async with sem:
-                body = await _fetch_one(client, url, timeout)
+                body, published_at = await _fetch_one(client, url, timeout)
+                updated = False
                 if body and len(body) > len(articles[idx].get("content", "") or ""):
                     articles[idx]["content"] = body
                     articles[idx]["_body_fetched"] = True
-                    return True
-            return False
+                    updated = True
+                if published_at and not articles[idx].get("published_at"):
+                    articles[idx]["published_at"] = published_at
+                    updated = True
+                return updated
 
         results = await asyncio.gather(
             *[_job(idx, url) for idx, url in targets],
