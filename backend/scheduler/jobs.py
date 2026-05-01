@@ -684,6 +684,22 @@ async def _radar_scan_inner(force: bool = False):
                             new_articles.append(a_copy)
                             logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
 
+        # 補抓全文：對通過初篩的少量候選文章（含 fetch_all 來源）並行抓 HTML，
+        # 用真正的全文取代 RSS summary，讓後續排除/嚴重度判斷能看到完整內文。
+        # 已被 scraper 寫好全文的文章（content >= 500 字）會自動跳過。
+        if new_articles:
+            try:
+                import time as _t
+                from backend.services.article_fetcher import enrich_articles_with_full_body
+                _t0 = _t.monotonic()
+                _enriched = await enrich_articles_with_full_body(
+                    new_articles, concurrency=5, timeout=5.0
+                )
+                _flog(f"[BODY] 補抓全文：{_enriched}/{len(new_articles)} 篇成功，"
+                      f"耗時 {_t.monotonic() - _t0:.1f}s")
+            except Exception as _body_err:
+                _flog(f"[BODY] 補抓失敗（不影響流程）：{_body_err}")
+
         # 全域排除關鍵字過濾（匹配任一關鍵字即丟棄）
         if _exclusion_kws:
             from backend.services.rss_feed import _term_in_text as _rss_term_in_text
