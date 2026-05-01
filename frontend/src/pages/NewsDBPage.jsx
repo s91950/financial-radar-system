@@ -775,7 +775,7 @@ export default function NewsDBPage() {
             </button>
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
-                <h3 className="text-base md:text-lg font-bold text-gray-100">{selectedArticle.title}</h3>
+                <h3 className="text-base md:text-lg font-bold text-gray-100 line-clamp-2" title={selectedArticle.title}>{selectedArticle.title}</h3>
                 <div className="flex items-center gap-3 mt-1">
                   <span className="text-sm text-dark-400">{selectedArticle.source}</span>
                   {selectedArticle.published_at && (

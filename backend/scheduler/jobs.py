@@ -119,6 +119,16 @@ def start_scheduler(ws_manager):
         next_run_time=first_run,
     )
 
+    # YouTube 影片每日清除新標記：台北時間 07:00（UTC 23:00 前一日）
+    scheduler.add_job(
+        mark_all_youtube_seen,
+        "cron",
+        hour=23,
+        minute=0,
+        id="youtube_mark_seen",
+        name="YouTube 新影片標記每日清除",
+    )
+
     # Gemini 深度分析每 3 小時（VM 端自動執行，無需本地電腦）
     gemini_first_run = datetime.utcnow() + timedelta(minutes=5)
     scheduler.add_job(
@@ -1270,6 +1280,23 @@ async def youtube_check():
             })
     except Exception as e:
         logger.error(f"YouTube check job error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def mark_all_youtube_seen():
+    """每日台北 07:00 清除所有 YouTube 影片的「新」標記。"""
+    from backend.database import YoutubeVideo
+    db = SessionLocal()
+    try:
+        n = db.query(YoutubeVideo).filter(YoutubeVideo.is_new == True).update(
+            {YoutubeVideo.is_new: False}, synchronize_session=False
+        )
+        db.commit()
+        _flog(f"[YOUTUBE] 每日清除新標記：{n} 支影片設為已讀")
+    except Exception as e:
+        logger.error(f"YouTube mark-all-seen error: {e}")
         db.rollback()
     finally:
         db.close()
