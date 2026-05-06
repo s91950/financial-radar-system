@@ -221,6 +221,7 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
     from backend.services.fed_scraper import is_fed_url, fetch_fed_news
     from backend.services.ctee_scraper import is_ctee_url, fetch_ctee_news
     from backend.services.nownews_scraper import is_nownews_url, fetch_nownews_news
+    from backend.services.treasury_scraper import is_treasury_url, fetch_treasury_news
     from backend.services.web_scraper import scrape_page
 
     if is_fed_url(url):
@@ -245,6 +246,8 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
         return await fetch_ctee_news(url, hours_back)
     if is_nownews_url(url):
         return await fetch_nownews_news(hours_back)
+    if is_treasury_url(url):
+        return await fetch_treasury_news(hours_back)
 
     # Generic HTML scraping — returns at most one article (the page itself)
     result = await scrape_page(url)

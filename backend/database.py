@@ -917,6 +917,17 @@ def _migrate_db():
             "https://news.google.com/rss/search?q=site:storm.mg+when:3d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
             "rss",
         )
+        # US Treasury：home.treasury.gov/rss.xml 主要是行政頁面更新（非新聞稿）
+        # → 改用 /news/press-releases HTML 列表頁，treasury_scraper 直接解析
+        _migrate_to_direct(
+            [
+                "%news.google.com/rss/search%treasury.gov%",
+                "%news.google.com/rss/search%us+treasury%",
+                "%home.treasury.gov/rss.xml%",
+            ],
+            "https://home.treasury.gov/news/press-releases",
+            "website",
+        )
         conn.commit()
 
         # ── 新增可靠財金來源 v2（若不存在則插入）──
@@ -1113,11 +1124,10 @@ def _migrate_db():
             "url='https://api.cnyes.com/media/api/v1/newslist/category/headline' "
             "WHERE url='https://api.cnyes.com/media/api/v1/newslist/category/macro'"
         ))
-        # 恢復已確認正常的來源（測試通過：SCMP 50則 / US Treasury 10則 / Nikkei Asia 50則）
+        # 恢復已確認正常的來源（SCMP / Nikkei Asia；US Treasury 已遷移到 /news/press-releases）
         conn.execute(text(
             "UPDATE monitor_sources SET is_active=1 WHERE url IN ("
             "  'https://www.scmp.com/rss/91/feed',"
-            "  'https://home.treasury.gov/rss.xml',"
             "  'https://asia.nikkei.com/rss/feed/nar'"
             ")"
         ))
@@ -1495,8 +1505,8 @@ def _seed_defaults():
                 ),
                 MonitorSource(
                     name="US Treasury",
-                    type="rss",
-                    url="https://home.treasury.gov/rss.xml",
+                    type="website",
+                    url="https://home.treasury.gov/news/press-releases",
                     keywords='["yield","TGA","debt","sanctions","Treasury"]',
                 ),
                 MonitorSource(
