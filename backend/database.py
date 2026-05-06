@@ -674,8 +674,8 @@ def _migrate_db():
             ("Business Weekly", "http://cmsapi.businessweekly.com.tw/?CategoryId=24612ec9-2ac5-4e1f-ab04-310879f89b33&TemplateId=8E19CF43-50E5-4093-B72D-70A912962D55"),
             ("經濟學人", "https://www.economist.com/finance-and-economics/rss.xml"),
             ("The Economist", "https://www.economist.com/finance-and-economics/rss.xml"),
-            ("politico", "https://rss.politico.com/economy.xml"),
-            ("Politico",  "https://rss.politico.com/economy.xml"),
+            ("politico", "https://rss.politico.com/morningmoney.xml"),
+            ("Politico",  "https://rss.politico.com/morningmoney.xml"),
             ("自由時報", "https://news.ltn.com.tw/rss/business.xml"),
         ]
         for src_name, correct_url in _rss_url_fixes:
@@ -847,6 +847,65 @@ def _migrate_db():
         ), {"u": _ctee_new_url})
         conn.commit()
 
+        # ── WSJ / Politico / NowNews 從 GN 代理（或失效直連）改為新直連，提升即時性 ──
+        # 通用 helper：把所有符合任何 LIKE 模式的列遷移到 canonical 直連 URL
+        # 1) 若已存在 canonical URL 列：啟用之
+        # 2) 若不存在但有匹配舊列：把第一個改為 canonical
+        # 3) 把其他匹配的舊列（GN 代理 / 失效直連 / 重複）軟刪除
+        def _migrate_to_direct(like_patterns: list[str], canonical_url: str, src_type: str = "rss"):
+            row = conn.execute(text(
+                "SELECT id FROM monitor_sources WHERE url=:u LIMIT 1"
+            ), {"u": canonical_url}).fetchone()
+            if row:
+                conn.execute(text(
+                    "UPDATE monitor_sources SET type=:t, is_active=1, is_deleted=0 WHERE id=:i"
+                ), {"t": src_type, "i": row[0]})
+            else:
+                for _p in like_patterns:
+                    _old = conn.execute(text(
+                        "SELECT id FROM monitor_sources WHERE url LIKE :p ORDER BY id LIMIT 1"
+                    ), {"p": _p}).fetchone()
+                    if _old:
+                        conn.execute(text(
+                            "UPDATE monitor_sources SET url=:u, type=:t, is_active=1, is_deleted=0 WHERE id=:i"
+                        ), {"u": canonical_url, "t": src_type, "i": _old[0]})
+                        break
+            # 軟刪除其他所有符合 LIKE 但不是 canonical URL 的列（含 GN 代理、失效直連）
+            for _p in like_patterns:
+                conn.execute(text(
+                    "UPDATE monitor_sources SET is_active=0, is_deleted=1 "
+                    "WHERE url LIKE :p AND url <> :u"
+                ), {"p": _p, "u": canonical_url})
+
+        # WSJ：feeds.a.dj.com 自 2025/01 停更 → feeds.content.dowjones.io（>60 篇/更新頻繁）
+        _migrate_to_direct(
+            [
+                "%news.google.com/rss/search%site:wsj.com%",
+                "%feeds.a.dj.com%",
+            ],
+            "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+            "rss",
+        )
+        # Politico：原 economy.xml feed 已停止更新（最新 1 篇 4 月前）
+        # → Morning Money（每日 8am ET 金融政策日報，30 篇）
+        _migrate_to_direct(
+            [
+                "%news.google.com/rss/search%site:politico.com%",
+                "%rss.politico.com/economy.xml%",
+            ],
+            "https://rss.politico.com/morningmoney.xml",
+            "rss",
+        )
+        # NowNews：用 Google News Sitemap（含 <news:title> 與 publication_date）
+        _migrate_to_direct(
+            [
+                "%news.google.com/rss/search%site:nownews.com%",
+            ],
+            "https://www.nownews.com/newsSitemap-daily.xml",
+            "website",
+        )
+        conn.commit()
+
         # ── 新增可靠財金來源 v2（若不存在則插入）──
         _new_sources_v2 = [
             # 台灣補充
@@ -872,9 +931,9 @@ def _migrate_db():
             ("The Guardian Business", "rss",
              "https://www.theguardian.com/uk/business/rss",
              '["economy","Europe","inflation","UK","interest rate","trade","recession","ECB"]', 1),
-            ("Politico Economy", "rss",
-             "https://rss.politico.com/economy.xml",
-             '["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]', 0),
+            ("Politico Morning Money", "rss",
+             "https://rss.politico.com/morningmoney.xml",
+             '["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]', 1),
             # 能源 / 商品
             ("EIA Today in Energy", "rss",
              "https://www.eia.gov/rss/todayinenergy.xml",
@@ -1049,10 +1108,11 @@ def _migrate_db():
             "  'https://asia.nikkei.com/rss/feed/nar'"
             ")"
         ))
-        # WSJ (Dow Jones) RSS 已於 2025年1月停止更新，改用 Google News 代理
+        # WSJ：舊 feeds.a.dj.com 自 2025/01 起停止更新；改用 Dow Jones 公開 RSS
+        # （feeds.content.dowjones.io 仍有更新，>60 篇/分鐘級即時性）
         conn.execute(text(
             "UPDATE monitor_sources SET "
-            "url='https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US&ceid=US:en', "
+            "url='https://feeds.content.dowjones.io/public/rss/RSSMarketsMain', "
             "name='Wall Street Journal' "
             "WHERE url LIKE '%feeds.a.dj.com%'"
         ))
@@ -1327,7 +1387,7 @@ def _seed_defaults():
                 MonitorSource(
                     name="Wall Street Journal",
                     type="rss",
-                    url="https://news.google.com/rss/search?q=site:wsj.com+when:3d&hl=en&gl=US&ceid=US:en",
+                    url="https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
                     keywords='["market","stocks","bonds","Fed","economy"]',
                 ),
                 MonitorSource(
@@ -1515,9 +1575,9 @@ def _seed_defaults():
                     keywords='["economy","Europe","inflation","UK","interest rate","trade","recession","ECB"]',
                 ),
                 MonitorSource(
-                    name="Politico Economy",
+                    name="Politico Morning Money",
                     type="rss",
-                    url="https://rss.politico.com/economy.xml",
+                    url="https://rss.politico.com/morningmoney.xml",
                     keywords='["tariff","trade policy","Fed","sanction","debt","budget","economy","inflation"]',
                 ),
                 # ── 能源 / 商品 ──
