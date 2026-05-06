@@ -123,6 +123,9 @@ class MonitorSource(Base):
     sort_order = Column(Integer, default=0)     # 使用者自訂排序（越小越前）
     fixed_severity = Column(String, nullable=True)  # None=動態評估 | 'critical'|'high'|'low'=強制覆寫
     is_deleted = Column(Boolean, default=False)  # 軟刪除：使用者刪除後設為 True，migration 不重新插入
+    last_attempt_at = Column(DateTime, nullable=True)   # 最後一次嘗試抓取時間（成功或失敗）
+    last_success_at = Column(DateTime, nullable=True)   # 最後一次 HTTP 200 成功時間
+    last_error = Column(String(500), nullable=True)     # 最後一次失敗的錯誤訊息（成功時清空）
 
 
 class NotificationSetting(Base):
@@ -1172,6 +1175,18 @@ def _migrate_db():
             conn.commit()
         except Exception:
             pass  # 欄位已存在，略過
+
+        # 新增 MonitorSource 健康監控三欄位（last_attempt_at / last_success_at / last_error）
+        for _col_sql in (
+            "ALTER TABLE monitor_sources ADD COLUMN last_attempt_at DATETIME",
+            "ALTER TABLE monitor_sources ADD COLUMN last_success_at DATETIME",
+            "ALTER TABLE monitor_sources ADD COLUMN last_error VARCHAR(500)",
+        ):
+            try:
+                conn.execute(text(_col_sql))
+                conn.commit()
+            except Exception:
+                pass  # 欄位已存在，略過
         # 初始化 sort_order（依現有 id 順序，只更新 sort_order=0 的列）
         conn.execute(text("""
             UPDATE monitor_sources

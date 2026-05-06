@@ -24,13 +24,16 @@ async def fetch_storm_news(hours_back: int = 24) -> list[dict]:
     """解析風傳媒 Google News Sitemap，回傳指定時間內的文章清單。"""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=15, headers=_HEADERS, follow_redirects=True) as client:
             r = await client.get(STORM_NEWS_SITEMAP)
             r.raise_for_status()
             content = r.text
+        mark_attempt(STORM_NEWS_SITEMAP, success=True)
     except Exception as e:
         logger.warning(f"storm.mg sitemap fetch error: {e}")
+        mark_attempt(STORM_NEWS_SITEMAP, success=False, error=str(e))
         return []
 
     entries = re.findall(r"<url>(.*?)</url>", content, re.DOTALL)

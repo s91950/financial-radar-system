@@ -56,13 +56,16 @@ async def fetch_cnyes_from_url(url: str, hours_back: int = 24) -> list[dict]:
         qs["limit"] = "100"
     fetch_url = _up.urlunparse(parsed._replace(query=_up.urlencode(qs)))
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as client:
             resp = await client.get(fetch_url, headers=_HEADERS)
             resp.raise_for_status()
             data = resp.json()
+        mark_attempt(url, success=True)
     except Exception as e:
         logger.error(f"Cnyes API error ({url}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
     items = data.get("items", {}).get("data", [])

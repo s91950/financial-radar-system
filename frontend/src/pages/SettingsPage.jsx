@@ -517,6 +517,23 @@ function NewRuleBuilder({ onAdd, onClose }) {
   )
 }
 
+// 計算來源健康狀態：grey=從未/未啟用、green=新鮮、yellow=半衰、red=超過閾值
+function computeSourceHealth(source, thresholdHours) {
+  if (!source.is_active) return { color: 'gray', label: '已停用', ageStr: '' }
+  if (!source.last_success_at) {
+    return { color: 'gray', label: '從未成功', ageStr: source.last_attempt_at ? '已嘗試但失敗' : '尚未抓取' }
+  }
+  const lastDt = new Date(source.last_success_at)
+  const ageHours = (Date.now() - lastDt.getTime()) / 3600000
+  let ageStr
+  if (ageHours < 1) ageStr = `${Math.round(ageHours * 60)} 分鐘前`
+  else if (ageHours < 48) ageStr = `${Math.round(ageHours)} 小時前`
+  else ageStr = `${Math.round(ageHours / 24)} 天前`
+  if (ageHours < thresholdHours / 2) return { color: 'green', label: '正常', ageStr }
+  if (ageHours < thresholdHours) return { color: 'yellow', label: '注意', ageStr }
+  return { color: 'red', label: '異常', ageStr }
+}
+
 export default function SettingsPage() {
   const [sources, setSources] = useState([])
   const [notifications, setNotifications] = useState([])
@@ -579,6 +596,10 @@ export default function SettingsPage() {
   const [savingRssPriority, setSavingRssPriority] = useState(false)
   // Google News 僅緊急模式
   const [gnCriticalOnly, setGnCriticalOnly] = useState(true)
+  // 來源健康監控
+  const [healthThreshold, setHealthThreshold] = useState(48)
+  const [healthThresholdDraft, setHealthThresholdDraft] = useState(48)
+  const [savingHealthThreshold, setSavingHealthThreshold] = useState(false)
   // 拖曳排序
   const [dragSourceId, setDragSourceId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
@@ -597,7 +618,7 @@ export default function SettingsPage() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes, catsRes, rulesRes, finRes, rssRes, gnCriticalOnlyRes] = await Promise.all([
+      const [srcRes, notifRes, sheetsRes, aiRes, topicsRes, sevRes, lineRes, catsRes, rulesRes, finRes, rssRes, gnCriticalOnlyRes, healthThRes] = await Promise.all([
         settingsAPI.getSources(),
         settingsAPI.getNotificationSettings(),
         settingsAPI.getGoogleSheetsStatus(),
@@ -610,6 +631,7 @@ export default function SettingsPage() {
         settingsAPI.getFinanceFilter(),
         settingsAPI.getRssPriority(),
         settingsAPI.getGnCriticalOnly(),
+        settingsAPI.getSourceHealthThreshold(),
       ])
       setSources(srcRes.data)
       setNotifications(notifRes.data)
@@ -648,6 +670,9 @@ export default function SettingsPage() {
       setFinanceThreshold(finRes.data.threshold ?? 0.15)
       setRssMinArticles(rssRes.data.min_articles ?? 0)
       setGnCriticalOnly(gnCriticalOnlyRes.data.enabled ?? true)
+      const th = healthThRes.data.hours ?? 48
+      setHealthThreshold(th)
+      setHealthThresholdDraft(th)
     } catch (err) {
       console.error('Failed to load settings:', err)
     }
@@ -913,6 +938,20 @@ export default function SettingsPage() {
     }
   }
 
+  const handleSaveHealthThreshold = async () => {
+    setSavingHealthThreshold(true)
+    try {
+      const hours = Math.max(1, Math.min(720, parseInt(healthThresholdDraft) || 48))
+      await settingsAPI.updateSourceHealthThreshold(hours)
+      setHealthThreshold(hours)
+      setHealthThresholdDraft(hours)
+      toast.success(`健康監控閾值已設為 ${hours} 小時`)
+    } catch {
+      toast.error('儲存失敗')
+    }
+    setSavingHealthThreshold(false)
+  }
+
   const handleSaveTopics = async () => {
     setSavingTopics(true)
     try {
@@ -1137,6 +1176,24 @@ export default function SettingsPage() {
                           >✎</button>
                         </div>
                       )}
+                      {(() => {
+                        const h = computeSourceHealth(source, healthThreshold)
+                        if (h.color === 'gray' && !source.is_active) return null
+                        const tipParts = [`狀態：${h.label}`]
+                        if (h.ageStr) tipParts.push(`上次成功：${h.ageStr}`)
+                        if (source.last_error) tipParts.push(`錯誤：${source.last_error}`)
+                        const cls = h.color === 'green' ? 'bg-emerald-500'
+                          : h.color === 'yellow' ? 'bg-yellow-500'
+                          : h.color === 'red' ? 'bg-red-500'
+                          : 'bg-dark-500'
+                        return (
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full shrink-0 ${cls}`}
+                            title={tipParts.join('\n')}
+                            onClick={e => e.stopPropagation()}
+                          />
+                        )
+                      })()}
                       <span className="badge bg-dark-700 text-dark-300 shrink-0">{typeLabels[source.type] || source.type}</span>
                       {source.fetch_all && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400 border border-teal-500/30 shrink-0" title="全文讀取：所有文章皆納入，關鍵字僅用於標記與風險評估">全文讀取</span>
@@ -1683,6 +1740,37 @@ export default function SettingsPage() {
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${gnCriticalOnly ? 'translate-x-6' : 'translate-x-1'}`} />
             </button>
+          </div>
+        </div>
+
+        {/* 來源健康監控閾值 */}
+        <div className="p-3 rounded-lg border border-dark-700 bg-dark-900/40 space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">來源健康監控閾值</p>
+              <p className="text-xs text-dark-400 mt-0.5">超過此小時數未成功抓取的來源會在來源列表顯示紅燈，LINE 傳「來源」可查詢清單</p>
+              <p className="text-xs text-dark-500 mt-1">
+                綠燈：&lt; {Math.floor(healthThreshold / 2)}h　黃燈：{Math.floor(healthThreshold / 2)}–{healthThreshold}h　紅燈：&gt; {healthThreshold}h
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                type="number"
+                min="1"
+                max="720"
+                value={healthThresholdDraft}
+                onChange={e => setHealthThresholdDraft(e.target.value)}
+                className="input w-20 text-sm"
+              />
+              <span className="text-xs text-dark-400">小時</span>
+              <button
+                onClick={handleSaveHealthThreshold}
+                disabled={savingHealthThreshold || parseInt(healthThresholdDraft) === healthThreshold}
+                className="btn-primary text-sm py-1 px-3"
+              >
+                {savingHealthThreshold ? '...' : '儲存'}
+              </button>
+            </div>
           </div>
         </div>
 

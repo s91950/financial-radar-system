@@ -95,6 +95,9 @@ export const settingsAPI = {
   updateRssPriority: (min_articles) => api.put('/settings/rss-priority', { min_articles }),
   getGnCriticalOnly: () => api.get('/settings/gn-critical-only'),
   updateGnCriticalOnly: (enabled) => api.put('/settings/gn-critical-only', { enabled }),
+  getSourceHealthThreshold: () => api.get('/settings/source-health-threshold'),
+  updateSourceHealthThreshold: (hours) => api.put('/settings/source-health-threshold', { hours }),
+  getSourceHealth: () => api.get('/settings/source-health'),
 }
 
 // --- Topic Tracking APIs ---

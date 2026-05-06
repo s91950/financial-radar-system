@@ -77,6 +77,7 @@ async def fetch_ctee_news(url: str, hours_back: int = 24) -> list[dict]:
     傳入完整 RSS URL，例如 https://www.ctee.com.tw/rss_web/livenews/ctee。
     若 URL 給的是 livenews 頁面（非 rss_web），會自動轉換到對應 RSS。
     """
+    from backend.services.source_health import mark_attempt
     rss_url = url
     m = re.search(r"ctee\.com\.tw/livenews/([\w-]+)", url)
     if m and "rss_web" not in url:
@@ -87,8 +88,10 @@ async def fetch_ctee_news(url: str, hours_back: int = 24) -> list[dict]:
             resp = await client.get(rss_url, headers=_HEADERS)
             resp.raise_for_status()
             xml_text = resp.text
+        mark_attempt(url, success=True)
     except Exception as e:
         logger.warning(f"ctee RSS fetch error ({rss_url}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
     feed = feedparser.parse(xml_text)

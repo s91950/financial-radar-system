@@ -31,13 +31,16 @@ async def fetch_udn_cate_news(url: str, hours_back: int = 24) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
     tw_offset = timezone(timedelta(hours=8))  # 頁面時間為台灣時間
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=15, headers=_HEADERS, follow_redirects=True) as client:
             r = await client.get(url)
             r.raise_for_status()
             html = r.text
+        mark_attempt(url, success=True)
     except Exception as e:
         logger.warning(f"udn cate fetch error ({url}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
     soup = BeautifulSoup(html, "html.parser")

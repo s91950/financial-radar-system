@@ -56,13 +56,16 @@ async def fetch_fsc_news(hours_back: int = 48) -> list[dict]:
     """
     cutoff = datetime.now() - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=20, verify=False, follow_redirects=True) as client:
             resp = await client.get(_NEWS_LIST_URL, headers=_HEADERS)
             resp.raise_for_status()
             html = resp.text
+        mark_attempt(_NEWS_LIST_URL, success=True)
     except Exception as e:
         logger.error(f"FSC fetch error: {e}")
+        mark_attempt(_NEWS_LIST_URL, success=False, error=str(e))
         return []
 
     soup = BeautifulSoup(html, "html.parser")

@@ -30,13 +30,16 @@ async def fetch_linetoday_news(hours_back: int = 24) -> list[dict]:
     """解析 LINE Today 國際版頁面，回傳指定時間內的文章清單。"""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=20, headers=_HEADERS, follow_redirects=True) as client:
             r = await client.get(LINETODAY_URL)
             r.raise_for_status()
             html = r.text
+        mark_attempt(LINETODAY_URL, success=True)
     except Exception as e:
         logger.warning(f"linetoday fetch error: {e}")
+        mark_attempt(LINETODAY_URL, success=False, error=str(e))
         return []
 
     # 從 HTML 中取出 __NEXT_DATA__ JSON

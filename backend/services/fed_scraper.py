@@ -60,6 +60,7 @@ async def fetch_fed_news(hours_back: int = 48) -> list[dict]:
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(
             timeout=20, verify=False, follow_redirects=True
@@ -67,8 +68,10 @@ async def fetch_fed_news(hours_back: int = 48) -> list[dict]:
             resp = await client.get(_URL, headers=_HEADERS)
             resp.raise_for_status()
             html = resp.text
+        mark_attempt(_URL, success=True)
     except Exception as e:
         logger.error(f"Fed recentpostings fetch error: {e}")
+        mark_attempt(_URL, success=False, error=str(e))
         return []
 
     soup = BeautifulSoup(html, "html.parser")

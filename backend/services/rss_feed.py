@@ -84,11 +84,13 @@ async def _resolve_gn_article_urls(articles: list[dict]) -> list[dict]:
 
 async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
     """Fetch and parse an RSS feed, returning recent entries."""
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=30, verify=False, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; FinancialRadar/1.0)"})
             resp.raise_for_status()
             feed = feedparser.parse(resp.text)
+        mark_attempt(url, success=True)
 
         cutoff = datetime.utcnow() - timedelta(hours=hours_back)
         articles = []
@@ -132,6 +134,7 @@ async def fetch_rss_feed(url: str, hours_back: int = 24) -> list[dict]:
         return articles
     except Exception as e:
         logger.error(f"RSS feed error ({url}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
 

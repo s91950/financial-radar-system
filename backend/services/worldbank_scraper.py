@@ -55,8 +55,11 @@ async def fetch_worldbank_news(url: str | None = None, hours_back: int = 48) -> 
         sep = "&" if "?" in fetch_url else "?"
         fetch_url += f"{sep}format=json"
 
+    from backend.services.source_health import mark_attempt
+    health_url = url or _API_URL
     # API 有時會回傳 500，嘗試重試一次（去掉 lang_exact 參數降低失敗率）
     data = None
+    last_err: Exception | None = None
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=20, verify=False, follow_redirects=True) as client:
@@ -65,6 +68,7 @@ async def fetch_worldbank_news(url: str | None = None, hours_back: int = 48) -> 
                 data = resp.json()
                 break
         except Exception as e:
+            last_err = e
             if attempt == 0 and "lang_exact" in fetch_url:
                 # 去掉 lang_exact 參數重試
                 import re
@@ -72,10 +76,13 @@ async def fetch_worldbank_news(url: str | None = None, hours_back: int = 48) -> 
                 logger.debug(f"World Bank API retry without lang_exact: {fetch_url}")
                 continue
             logger.error(f"World Bank API error ({fetch_url}): {e}")
+            mark_attempt(health_url, success=False, error=str(e))
             return []
 
     if data is None:
+        mark_attempt(health_url, success=False, error=str(last_err) if last_err else "no data")
         return []
+    mark_attempt(health_url, success=True)
 
     documents = data.get("documents", {})
     articles = []

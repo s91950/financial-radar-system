@@ -26,13 +26,16 @@ async def fetch_taisounds_news(hours_back: int = 24) -> list[dict]:
     """解析太報 sitemap，回傳指定時間內的文章清單。"""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=15, headers=_HEADERS, follow_redirects=True) as client:
             r = await client.get(TAISOUNDS_SITEMAP)
             r.raise_for_status()
             content = r.text
+        mark_attempt(TAISOUNDS_SITEMAP, success=True)
     except Exception as e:
         logger.warning(f"taisounds sitemap fetch error: {e}")
+        mark_attempt(TAISOUNDS_SITEMAP, success=False, error=str(e))
         return []
 
     # 解析 sitemap 找近期文章 URL

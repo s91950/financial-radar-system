@@ -138,12 +138,14 @@ async def _scrape_repec_listing(
 
     url: e.g. https://ideas.repec.org/s/ecb/ecbwps.html
     """
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(
             timeout=30, follow_redirects=True, headers=_HEADERS,
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
+            mark_attempt(url, success=True)
             soup = BeautifulSoup(resp.text, "html.parser")
 
             # Collect paper links from listing
@@ -215,6 +217,7 @@ async def _scrape_repec_listing(
             return results
     except Exception as e:
         logger.warning(f"RePEc scrape failed ({institution}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
 
@@ -237,6 +240,7 @@ async def fetch_research_feed(url: str, institution: str, hours_back: int = 72) 
     if _is_repec_url(url):
         return await _scrape_repec_listing(url, institution, hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(
             timeout=30,
@@ -247,8 +251,10 @@ async def fetch_research_feed(url: str, institution: str, hours_back: int = 72) 
             resp = await client.get(url)
             resp.raise_for_status()
             raw = resp.text
+        mark_attempt(url, success=True)
     except Exception as e:
         logger.warning(f"Research feed fetch failed ({institution}): {e}")
+        mark_attempt(url, success=False, error=str(e))
         return []
 
     try:

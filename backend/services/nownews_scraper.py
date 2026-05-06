@@ -33,13 +33,16 @@ async def fetch_nownews_news(hours_back: int = 24) -> list[dict]:
     """解析 NowNews Google News Sitemap，回傳指定時間內的文章清單。"""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
+    from backend.services.source_health import mark_attempt
     try:
         async with httpx.AsyncClient(timeout=20, headers=_HEADERS, follow_redirects=True, verify=False) as client:
             r = await client.get(NOWNEWS_NEWS_SITEMAP)
             r.raise_for_status()
             content = r.text
+        mark_attempt(NOWNEWS_NEWS_SITEMAP, success=True)
     except Exception as e:
         logger.warning(f"nownews sitemap fetch error: {e}")
+        mark_attempt(NOWNEWS_NEWS_SITEMAP, success=False, error=str(e))
         return []
 
     entries = re.findall(r"<url>(.*?)</url>", content, re.DOTALL)

@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Request
 
 from backend.config import settings
-from backend.database import Alert, SessionLocal, SystemConfig, YoutubeVideo
+from backend.database import Alert, MonitorSource, SessionLocal, SystemConfig, YoutubeVideo
 from backend.services.notification import send_line_reply_multi
 
 _TZ_HOURS = 8
@@ -139,6 +139,67 @@ def _md_to_plain(text: str) -> str:
     text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)         # 分隔線
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
+
+
+def _build_health_reply(db) -> list[str]:
+    """組合來源健康狀態回覆。
+
+    顯示：
+      - 異常來源清單（last_success_at 超過閾值或從未成功）
+      - 正常數量摘要
+    """
+    # 讀取閾值（預設 48h）
+    threshold_row = db.query(SystemConfig).filter(SystemConfig.key == "source_health_threshold_hours").first()
+    try:
+        threshold_hours = int(threshold_row.value) if threshold_row else 48
+    except (TypeError, ValueError):
+        threshold_hours = 48
+    cutoff = datetime.utcnow() - timedelta(hours=threshold_hours)
+
+    sources = db.query(MonitorSource).filter(
+        MonitorSource.is_deleted == False,
+        MonitorSource.is_active == True,
+    ).order_by(MonitorSource.sort_order, MonitorSource.id).all()
+
+    stale: list[MonitorSource] = []
+    healthy = 0
+    for s in sources:
+        if s.last_success_at is None or s.last_success_at < cutoff:
+            stale.append(s)
+        else:
+            healthy += 1
+
+    total = len(sources)
+    if not stale:
+        return [f"✅ 全部 {total} 個來源近 {threshold_hours} 小時內都正常"]
+
+    lines = [f"❌ {len(stale)} 個來源異常（>{threshold_hours}h 未成功），{healthy} 個正常"]
+    lines.append("─" * 22)
+    for s in stale[:30]:
+        if s.last_success_at:
+            age_h = (datetime.utcnow() - s.last_success_at).total_seconds() / 3600
+            if age_h < 48:
+                age_str = f"{int(age_h)} 小時前"
+            else:
+                age_str = f"{int(age_h / 24)} 天前"
+            line = f"• {s.name}\n  上次成功 {age_str}"
+        else:
+            line = f"• {s.name}\n  從未成功"
+        if s.last_error:
+            err = s.last_error[:80]
+            line += f"\n  錯誤：{err}"
+        lines.append(line)
+
+    if len(stale) > 30:
+        lines.append(f"…（還有 {len(stale) - 30} 個未顯示）")
+
+    text = "\n".join(lines)
+    # LINE 單則訊息 5000 字上限，分段
+    messages: list[str] = []
+    while text and len(messages) < 5:
+        messages.append(text[:_ANALYSIS_MAX_CHARS])
+        text = text[_ANALYSIS_MAX_CHARS:]
+    return messages or [text]
 
 
 def _build_analysis_reply(
@@ -292,17 +353,22 @@ async def line_webhook(request: Request):
         if not user_text:
             continue
 
-        # 判斷模式：yt 開頭 / 分析 / 通知
+        # 判斷模式：yt 開頭 / 分析 / 通知 / 來源（健康狀態）
         is_yt = user_text[:2].lower() == "yt"
         is_analysis = not is_yt and "分析" in user_text
-        is_news = not is_yt and not is_analysis and "通知" in user_text
+        is_health = not is_yt and not is_analysis and "來源" in user_text
+        is_news = not is_yt and not is_analysis and not is_health and "通知" in user_text
 
-        if not is_yt and not is_analysis and not is_news:
+        if not is_yt and not is_analysis and not is_news and not is_health:
             continue
 
         db = SessionLocal()
         try:
-            if is_analysis:
+            if is_health:
+                # ── 來源健康狀態模式 ──
+                reply_text = _build_health_reply(db)
+
+            elif is_analysis:
                 # ── 新聞分析報告模式 ──
                 def _cfg(key):
                     row = db.query(SystemConfig).filter(SystemConfig.key == key).first()

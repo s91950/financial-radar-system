@@ -119,6 +119,10 @@ async def fetch_mops_material_news(hours_back: int = 24) -> list[dict]:
 
     回傳格式與 rss_feed / google_news 相同，可直接接入雷達掃描流程。
     """
+    from backend.services.source_health import mark_attempt
+    # DB 中的 MonitorSource.url 是舊版 URL（type='mops' 來源的識別鍵），
+    # 與 scraper 實際呼叫的 API URL 不同，這裡用 DB URL 做健康追蹤
+    _MOPS_DB_URL = "https://mops.twse.com.tw/mops/web/t05sr01"
     cutoff = datetime.now() - timedelta(hours=hours_back)
 
     async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
@@ -126,6 +130,12 @@ async def fetch_mops_material_news(hours_back: int = 24) -> list[dict]:
             _fetch_market(client, "sii"),
             _fetch_market(client, "otc"),
         )
+
+    # sii / otc 任何一個成功就視為健康；兩者都失敗才標錯誤
+    if sii_articles or otc_articles:
+        mark_attempt(_MOPS_DB_URL, success=True)
+    else:
+        mark_attempt(_MOPS_DB_URL, success=False, error="MOPS 上市/上櫃 API 皆無回應")
 
     all_articles = sii_articles + otc_articles
 

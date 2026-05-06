@@ -300,6 +300,9 @@ def _source_to_dict(source: MonitorSource) -> dict:
         "fetch_all": bool(source.fetch_all),
         "sort_order": source.sort_order or 0,
         "fixed_severity": source.fixed_severity or None,
+        "last_attempt_at": source.last_attempt_at.isoformat() + "Z" if source.last_attempt_at else None,
+        "last_success_at": source.last_success_at.isoformat() + "Z" if source.last_success_at else None,
+        "last_error": source.last_error,
     }
 
 
@@ -656,25 +659,28 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
 
         sample_titles = [e.get("title", "（無標題）") for e in feed.entries[:5]]
 
-        # 檢查 feed 是否過期（最新文章超過 48 小時 = 可能已停止更新）
+        # 檢查 feed 是否過期：以「最新一篇」為準（取 entries 內 age 最小者）
+        # 修正先前 bug：原邏輯會在 entries[:3] 任何一筆 >48h 就觸發警告，
+        # 對日報型 feed（如 Politico Morning Money）會誤判
         import calendar
         stale_warning = None
-        for entry in feed.entries[:3]:
+        from datetime import datetime, timedelta
+        latest_age_hours = None
+        for entry in feed.entries[:20]:
             for attr in ("published_parsed", "updated_parsed"):
                 parsed = getattr(entry, attr, None)
                 if parsed:
                     try:
-                        from datetime import datetime, timedelta
                         entry_dt = datetime.utcfromtimestamp(calendar.timegm(parsed))
                         age_hours = (datetime.utcnow() - entry_dt).total_seconds() / 3600
-                        if age_hours > 48:
-                            age_days = int(age_hours / 24)
-                            stale_warning = f"⚠️ 此 RSS 最新文章為 {age_days} 天前，可能已停止更新。實際掃描時這些舊文會被時間過濾擋掉，不會進入雷達。建議改用 Google News 代理（類型改 RSS，URL 用 https://news.google.com/rss/search?q=site:wsj.com+when:7d&hl=en&gl=US）"
+                        if latest_age_hours is None or age_hours < latest_age_hours:
+                            latest_age_hours = age_hours
                     except Exception:
                         pass
                     break
-            if stale_warning:
-                break
+        if latest_age_hours is not None and latest_age_hours > 48:
+            age_days = int(latest_age_hours / 24)
+            stale_warning = f"⚠️ 此 RSS 最新文章為 {age_days} 天前，可能已停止更新。實際掃描時這些舊文會被時間過濾擋掉，不會進入雷達。"
 
         return {
             "success": True if not stale_warning else False,
@@ -770,3 +776,89 @@ async def update_gn_critical_only(req: GnCriticalOnlyRequest, db: Session = Depe
     _set_config(db, "gn_critical_only", "true" if req.enabled else "false")
     db.commit()
     return {"enabled": req.enabled}
+
+
+# --- Source Health Threshold ---
+
+class SourceHealthThresholdRequest(BaseModel):
+    hours: int = 48
+
+
+@router.get("/source-health-threshold")
+async def get_source_health_threshold(db: Session = Depends(get_db)):
+    """取得來源健康監控閾值（超過 N 小時未成功抓取視為異常）。"""
+    try:
+        hours = int(_get_config(db, "source_health_threshold_hours", "48"))
+    except (TypeError, ValueError):
+        hours = 48
+    return {"hours": hours}
+
+
+@router.put("/source-health-threshold")
+async def update_source_health_threshold(req: SourceHealthThresholdRequest, db: Session = Depends(get_db)):
+    """更新來源健康監控閾值。"""
+    hours = max(1, min(720, int(req.hours)))  # 限制 1 小時 ~ 30 天
+    _set_config(db, "source_health_threshold_hours", str(hours))
+    db.commit()
+    return {"hours": hours}
+
+
+@router.get("/source-health")
+async def get_source_health(db: Session = Depends(get_db)):
+    """取得所有來源的健康狀態摘要。
+
+    回傳：
+      threshold_hours: 設定的閾值
+      stale: 超過閾值未成功的來源清單（含 last_success_at, last_error）
+      healthy_count: 閾值內成功的數量
+      unknown_count: 從未抓取過的來源數量
+    """
+    from datetime import datetime, timedelta
+    try:
+        hours = int(_get_config(db, "source_health_threshold_hours", "48"))
+    except (TypeError, ValueError):
+        hours = 48
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    sources = db.query(MonitorSource).filter(
+        MonitorSource.is_deleted == False,
+        MonitorSource.is_active == True,
+    ).order_by(MonitorSource.sort_order, MonitorSource.id).all()
+
+    stale = []
+    healthy = 0
+    unknown = 0
+    for s in sources:
+        if s.last_success_at is None:
+            unknown += 1
+            stale.append({
+                "id": s.id,
+                "name": s.name,
+                "type": s.type,
+                "url": s.url,
+                "last_success_at": None,
+                "last_attempt_at": s.last_attempt_at.isoformat() + "Z" if s.last_attempt_at else None,
+                "last_error": s.last_error,
+                "hours_since_success": None,
+            })
+        elif s.last_success_at < cutoff:
+            stale.append({
+                "id": s.id,
+                "name": s.name,
+                "type": s.type,
+                "url": s.url,
+                "last_success_at": s.last_success_at.isoformat() + "Z",
+                "last_attempt_at": s.last_attempt_at.isoformat() + "Z" if s.last_attempt_at else None,
+                "last_error": s.last_error,
+                "hours_since_success": round((datetime.utcnow() - s.last_success_at).total_seconds() / 3600, 1),
+            })
+        else:
+            healthy += 1
+
+    return {
+        "threshold_hours": hours,
+        "healthy_count": healthy,
+        "unknown_count": unknown,
+        "stale_count": len(stale),
+        "stale": stale,
+    }
