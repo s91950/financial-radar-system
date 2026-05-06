@@ -840,6 +840,11 @@ def _migrate_db():
                     "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
                     "VALUES ('工商時報', 'website', :u, :k, 1)"
                 ), {"u": _ctee_new_url, "k": _ctee_kw})
+        # 清理其他舊 ctee 條目（GN 代理 / 舊 feed 等），避免重複抓取同來源
+        conn.execute(text(
+            "UPDATE monitor_sources SET is_active=0, is_deleted=1 "
+            "WHERE url LIKE '%ctee.com.tw%' AND url <> :u"
+        ), {"u": _ctee_new_url})
         conn.commit()
 
         # ── 新增可靠財金來源 v2（若不存在則插入）──
