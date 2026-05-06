@@ -907,6 +907,16 @@ def _migrate_db():
             "https://www.nownews.com/newsSitemap-daily.xml",
             "website",
         )
+        # 風傳媒：原 sitemap 直連在 VM 被 CDN/WAF 擋 (403 Forbidden, IP-based 封鎖)
+        # 本機開發測試 200，但 GCP us-east1 IP 全擋——只能改回 GN 代理
+        _migrate_to_direct(
+            [
+                "%storm.mg/sitemaps%",
+                "%storm.mg/article-news%",
+            ],
+            "https://news.google.com/rss/search?q=site:storm.mg+when:3d&hl=zh-TW&gl=TW&ceid=TW:zh-Hant",
+            "rss",
+        )
         conn.commit()
 
         # ── 新增可靠財金來源 v2（若不存在則插入）──
