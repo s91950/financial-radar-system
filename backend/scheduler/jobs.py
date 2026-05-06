@@ -219,6 +219,7 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
     from backend.services.linetoday_scraper import is_linetoday_url, fetch_linetoday_news
     from backend.services.udn_scraper import is_udn_cate_url, fetch_udn_cate_news
     from backend.services.fed_scraper import is_fed_url, fetch_fed_news
+    from backend.services.ctee_scraper import is_ctee_url, fetch_ctee_news
     from backend.services.web_scraper import scrape_page
 
     if is_fed_url(url):
@@ -239,6 +240,8 @@ async def _fetch_website_source(url: str, hours_back: int = 24) -> list[dict]:
         return await fetch_linetoday_news(hours_back)
     if is_udn_cate_url(url):
         return await fetch_udn_cate_news(url, hours_back)
+    if is_ctee_url(url):
+        return await fetch_ctee_news(url, hours_back)
 
     # Generic HTML scraping — returns at most one article (the page itself)
     result = await scrape_page(url)

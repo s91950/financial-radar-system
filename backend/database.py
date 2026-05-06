@@ -720,8 +720,8 @@ def _migrate_db():
             "https://www.cna.com.tw/rss/financemarket.aspx",
             # Reuters: RSS service dead (000 connection refused)
             "https://feeds.reuters.com/reuters/businessNews",
-            # 工商時報: connection refused (000)
-            "https://ctee.com.tw/feed",
+            # 工商時報: 舊 URL https://ctee.com.tw/feed 連線拒絕，已遷移到官方 livenews RSS
+            # （見下方 _ctee_migrate）— 不再列入 broken_urls，避免覆寫遷移後的有效 URL
             # 新浪財經: RSS discontinued (404)
             "https://rss.sina.com.cn/finance/forex/index.xml",
             "https://rss.sina.com.cn/finance/financenews/globalstock.xml",
@@ -806,6 +806,40 @@ def _migrate_db():
                     conn.execute(text(
                         "DELETE FROM monitor_sources WHERE id=:i"
                     ), {"i": _dup[0]})
+        conn.commit()
+
+        # ── 工商時報遷移：舊 RSS URL 連線拒絕 → 改用官方 livenews RSS + 專屬爬蟲 ──
+        # 處理時區（pubDate 無 tz 標記實為台灣時間），透過 ctee_scraper.py
+        _ctee_new_url = "https://www.ctee.com.tw/rss_web/livenews/ctee"
+        _ctee_old_urls = [
+            "https://ctee.com.tw/feed",
+            "https://www.ctee.com.tw/feed",
+        ]
+        _ctee_kw = '["台股","產業","法說會","獲利","投資"]'
+        _ctee_existing = conn.execute(text(
+            "SELECT id FROM monitor_sources WHERE url=:u LIMIT 1"
+        ), {"u": _ctee_new_url}).fetchone()
+        if _ctee_existing:
+            conn.execute(text(
+                "UPDATE monitor_sources SET type='website', is_active=1, is_deleted=0 WHERE id=:i"
+            ), {"i": _ctee_existing[0]})
+        else:
+            _ctee_old = None
+            for _u in _ctee_old_urls:
+                _ctee_old = conn.execute(text(
+                    "SELECT id FROM monitor_sources WHERE url=:u LIMIT 1"
+                ), {"u": _u}).fetchone()
+                if _ctee_old:
+                    break
+            if _ctee_old:
+                conn.execute(text(
+                    "UPDATE monitor_sources SET url=:u, type='website', is_active=1, is_deleted=0 WHERE id=:i"
+                ), {"u": _ctee_new_url, "i": _ctee_old[0]})
+            else:
+                conn.execute(text(
+                    "INSERT INTO monitor_sources (name, type, url, keywords, is_active) "
+                    "VALUES ('工商時報', 'website', :u, :k, 1)"
+                ), {"u": _ctee_new_url, "k": _ctee_kw})
         conn.commit()
 
         # ── 新增可靠財金來源 v2（若不存在則插入）──
@@ -1327,10 +1361,9 @@ def _seed_defaults():
                 ),
                 MonitorSource(
                     name="工商時報",
-                    type="rss",
-                    url="https://ctee.com.tw/feed",
+                    type="website",
+                    url="https://www.ctee.com.tw/rss_web/livenews/ctee",
                     keywords='["台股","產業","法說會","獲利","投資"]',
-                    is_active=False,  # 連線拒絕 (000) — 請確認 RSS URL
                 ),
                 MonitorSource(
                     name="鉅亨網",
