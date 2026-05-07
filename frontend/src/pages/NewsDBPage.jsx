@@ -701,7 +701,7 @@ export default function NewsDBPage() {
               return (
                 <div
                   key={article.id}
-                  onClick={() => setSelectedArticle(article)}
+                  onClick={() => setSelectedArticle(prev => prev?.id === article.id ? null : article)}
                   className={`card-hover cursor-pointer ${
                     selectedArticle?.id === article.id ? 'border-primary-500/50 bg-primary-500/5' : ''
                   } ${isSelected ? 'ring-1 ring-primary-500/30' : ''}`}
