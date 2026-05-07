@@ -765,7 +765,7 @@ def _migrate_db():
              "https://api.cnyes.com/media/api/v1/newslist/category/headline",
              '["GDP","通膨","就業","利率","總經","央行","貨幣政策"]'),
             ("鉅亨網 - 美股",
-             "https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
+             "https://news.cnyes.com/news/cat/wd_stock_all",
              '["美股","道瓊","納斯達克","標普","科技股","聯準會","AI","輝達","蘋果"]'),
         ]
         for _n, _u, _k in _cnyes_api:
@@ -799,6 +799,7 @@ def _migrate_db():
             "https://api.cnyes.com/media/api/v1/newslist/category/headline",
             "https://api.cnyes.com/media/api/v1/newslist/category/us_stock",
             "https://api.cnyes.com/media/api/v1/newslist/category/macro",
+            "https://news.cnyes.com/news/cat/wd_stock_all",
         ]
         for _dup_url in _cnyes_dedup_urls:
             _dup_rows = conn.execute(text(
