@@ -8,10 +8,13 @@
   us_stock  美股雷達（單一子分類）
   wd_stock  美股股市新聞（聚合美股雷達+國際政經+歐亞股，較廣）
   headline  頭條
-  macro     總經
   forex     外匯
-  global    國際
+  tw_macro  台灣總經
+  cn_stock  中國股
   crypto    加密貨幣
+
+DB 端可填網頁 URL（`https://news.cnyes.com/news/cat/{slug}`）或 API URL；scraper
+會自動把網頁 slug 轉為 API 分類代碼（特殊：`wd_stock_all` → `wd_stock`）。
 """
 
 import asyncio
@@ -29,19 +32,44 @@ _HEADERS = {
 }
 _API_BASE = "https://api.cnyes.com/media/api/v1/newslist/category/"
 
+# 網頁 slug 與 API 分類代碼映射；只列例外（slug 與 API 不同的）
+_PAGE_SLUG_MAP = {
+    "wd_stock_all": "wd_stock",  # 美股股市新聞聚合頁 → API 是 wd_stock
+}
+
 
 def is_cnyes_api_url(url: str) -> bool:
-    """Check whether a URL is a 鉅亨網 JSON API endpoint."""
-    return "api.cnyes.com/media/api/v1/newslist" in url
+    """是否為鉅亨網 JSON API 端點，或網頁分類頁 URL（兩者皆由本 scraper 處理）。"""
+    return (
+        "api.cnyes.com/media/api/v1/newslist" in url
+        or "news.cnyes.com/news/cat/" in url
+    )
+
+
+def _resolve_api_url(url: str) -> str:
+    """把網頁 URL（`news.cnyes.com/news/cat/{slug}`）轉成 API URL。
+    若已是 API URL，原樣返回。
+    """
+    if "news.cnyes.com/news/cat/" in url:
+        import urllib.parse as _up
+        path = _up.urlparse(url).path
+        slug = path.rsplit("/", 1)[-1].strip()
+        api_slug = _PAGE_SLUG_MAP.get(slug, slug)
+        return f"{_API_BASE}{api_slug}"
+    return url
 
 
 async def fetch_cnyes_from_url(url: str, hours_back: int = 24) -> list[dict]:
-    """Fetch news articles from a 鉅亨網 category API URL.
+    """Fetch news articles from a 鉅亨網 category URL（API 或網頁皆可）。
 
-    url: e.g. https://api.cnyes.com/media/api/v1/newslist/category/tw_stock
+    url 可為:
+      - https://api.cnyes.com/media/api/v1/newslist/category/wd_stock
+      - https://news.cnyes.com/news/cat/wd_stock_all  (自動轉 API)
     Returns list of article dicts in standard format.
-    Requests up to 50 items to maximise coverage within the time window.
+    Requests up to 100 items to maximise coverage within the time window.
     """
+    # 將網頁 URL 轉成 API URL
+    url = _resolve_api_url(url)
     # 鉅亨網 headline/category feed 會把舊文章重新精選推上頭條，
     # publishAt 是原始發佈日期（可能是昨天或前天），不是今天入榜的時間。
     # 若用 hours_back=1 當 cutoff，昨天的精選文章全被過濾掉。
