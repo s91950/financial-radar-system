@@ -701,7 +701,8 @@ export default function NewsDBPage() {
               return (
                 <div
                   key={article.id}
-                  className={`card ${
+                  onClick={() => setSelectedArticle(article)}
+                  className={`card-hover cursor-pointer ${
                     selectedArticle?.id === article.id ? 'border-primary-500/50 bg-primary-500/5' : ''
                   } ${isSelected ? 'ring-1 ring-primary-500/30' : ''}`}
                 >
@@ -711,6 +712,7 @@ export default function NewsDBPage() {
                       type="checkbox"
                       checked={isSelected}
                       onChange={(e) => handleToggleDbSelect(e, article.id)}
+                      onClick={(e) => e.stopPropagation()}
                       className="mt-1 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 shrink-0"
                     />
                     <SeverityBadge severity={sev} />
@@ -734,32 +736,21 @@ export default function NewsDBPage() {
                       <span className="text-xs text-dark-500 whitespace-nowrap">
                         {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
                       </span>
-                      <div className="flex items-center gap-0.5">
-                        <button
-                          onClick={() => setSelectedArticle(article)}
+                      {article.source_url && (
+                        <a
+                          href={article.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           className="p-1 rounded text-dark-400 hover:text-primary-400 hover:bg-dark-700 transition-colors"
-                          title="展開內容"
+                          title="原始來源"
                         >
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                              d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9M20.25 20.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                              d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
                           </svg>
-                        </button>
-                        {article.source_url && (
-                          <a
-                            href={article.source_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1 rounded text-dark-400 hover:text-primary-400 hover:bg-dark-700 transition-colors"
-                            title="原始來源"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                            </svg>
-                          </a>
-                        )}
-                      </div>
+                        </a>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -801,70 +792,74 @@ export default function NewsDBPage() {
             className="fixed inset-0 z-40 bg-black/50 lg:bg-transparent lg:pointer-events-none"
             onClick={() => setSelectedArticle(null)}
           />
-          <div className="fixed z-50 card overflow-y-auto inset-x-3 top-16 bottom-3 lg:inset-auto lg:right-6 lg:top-24 lg:bottom-6 lg:w-[min(900px,55vw)] shadow-2xl">
-            <div className="flex items-start justify-between gap-3 mb-4">
-              <div>
-                <h3 className="text-base md:text-lg font-bold text-gray-100 line-clamp-2" title={selectedArticle.title}>{selectedArticle.title}</h3>
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="text-sm text-dark-400">{selectedArticle.source}</span>
-                  {selectedArticle.published_at && (
-                    <span className="text-sm text-dark-500">
-                      {new Date(selectedArticle.published_at).toLocaleString('zh-TW')}
-                    </span>
-                  )}
+          <div className="fixed z-50 card overflow-y-auto inset-x-3 top-16 bottom-3 lg:inset-auto lg:right-6 lg:top-24 lg:bottom-6 lg:w-[min(900px,55vw)] shadow-2xl !p-0">
+            {/* Sticky header: title + actions stay pinned while content scrolls */}
+            <div className="sticky top-0 z-10 bg-dark-800 border-b border-dark-700 px-4 md:px-5 pt-4 pb-3">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <h3 className="text-base md:text-lg font-bold text-gray-100 line-clamp-2" title={selectedArticle.title}>{selectedArticle.title}</h3>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-sm text-dark-400">{selectedArticle.source}</span>
+                    {selectedArticle.published_at && (
+                      <span className="text-sm text-dark-500">
+                        {new Date(selectedArticle.published_at).toLocaleString('zh-TW')}
+                      </span>
+                    )}
+                  </div>
                 </div>
+                <button onClick={() => setSelectedArticle(null)}
+                  className="p-1 hover:bg-dark-700 rounded shrink-0">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
-              <button onClick={() => setSelectedArticle(null)}
-                className="p-1 hover:bg-dark-700 rounded shrink-0">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+
+              {/* Actions */}
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => handleToggleSave(selectedArticle)}
+                  className={`btn-secondary text-sm flex items-center gap-1.5 ${
+                    selectedArticle.is_saved ? 'text-yellow-500' : ''
+                  }`}>
+                  <svg className="w-4 h-4" fill={selectedArticle.is_saved ? 'currentColor' : 'none'}
+                    viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+                  </svg>
+                  {selectedArticle.is_saved ? '已收藏' : '收藏'}
+                </button>
+
+                {selectedArticle.source_url && (
+                  <div className="flex items-center gap-1">
+                    <a href={selectedArticle.source_url} target="_blank" rel="noopener noreferrer"
+                      className="btn-secondary text-sm flex items-center gap-1.5">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                      原始來源
+                    </a>
+                    <button
+                      onClick={() => handleCopyUrl(selectedArticle.source_url)}
+                      className="btn-secondary text-sm p-2"
+                      title="複製連結"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
+
+                <button onClick={() => handleDelete(selectedArticle.id)}
+                  className="btn-danger text-sm ml-auto">
+                  刪除
+                </button>
+              </div>
             </div>
 
-            {/* Actions */}
-            <div className="flex flex-wrap gap-2 mb-4 pb-4 border-b border-dark-700">
-              <button onClick={() => handleToggleSave(selectedArticle)}
-                className={`btn-secondary text-sm flex items-center gap-1.5 ${
-                  selectedArticle.is_saved ? 'text-yellow-500' : ''
-                }`}>
-                <svg className="w-4 h-4" fill={selectedArticle.is_saved ? 'currentColor' : 'none'}
-                  viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                </svg>
-                {selectedArticle.is_saved ? '已收藏' : '收藏'}
-              </button>
-
-              {selectedArticle.source_url && (
-                <div className="flex items-center gap-1">
-                  <a href={selectedArticle.source_url} target="_blank" rel="noopener noreferrer"
-                    className="btn-secondary text-sm flex items-center gap-1.5">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                    </svg>
-                    原始來源
-                  </a>
-                  <button
-                    onClick={() => handleCopyUrl(selectedArticle.source_url)}
-                    className="btn-secondary text-sm p-2"
-                    title="複製連結"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-
-              <button onClick={() => handleDelete(selectedArticle.id)}
-                className="btn-danger text-sm ml-auto">
-                刪除
-              </button>
-            </div>
-
+            <div className="px-4 md:px-5 py-4">
             {/* Tags */}
             <div className="mb-4">
               <div className="flex items-center gap-2 flex-wrap">
@@ -887,6 +882,7 @@ export default function NewsDBPage() {
             )}
             <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
               {selectedArticle.content || '（無內容）'}
+            </div>
             </div>
           </div>
         </>
