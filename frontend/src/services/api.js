@@ -122,6 +122,15 @@ export const reportsAPI = {
 }
 
 // --- YouTube Channel Monitor APIs ---
+// --- Raw Articles APIs（篩選前資料）---
+export const rawArticlesAPI = {
+  list: (params) => api.get('/raw-articles/articles', { params }),
+  stats: () => api.get('/raw-articles/stats'),
+  sources: () => api.get('/raw-articles/sources'),
+  delete: (id) => api.delete(`/raw-articles/articles/${id}`),
+  cleanup: (days = 7) => api.post('/raw-articles/cleanup', null, { params: { days } }),
+}
+
 export const youtubeAPI = {
   getChannels: () => api.get('/youtube/channels'),
   addChannel: (data) => api.post('/youtube/channels', data),

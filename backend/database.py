@@ -243,6 +243,30 @@ class Feedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class RawArticle(Base):
+    """雷達掃描每次 fetch 到的原始文章（任何過濾前），滾動保留 7 天。
+
+    - 不含全文 body（只存 summary 與 metadata），最小化磁碟用量
+    - 每天 cleanup job 砍 fetched_at < now-7d 的列
+    - 與 Article 區分：Article 是進入雷達/被使用者收藏的，RawArticle 是「全部抓回來的」
+    - 用於：使用者在「篩選前資料」頁查歷史、比對哪些被濾掉
+    """
+    __tablename__ = "raw_articles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text)                          # RSS summary 或前 500 字
+    source = Column(String, index=True)
+    source_url = Column(String, index=True)
+    source_type = Column(String, nullable=True)     # rss | social | website | mops | gn
+    published_at = Column(DateTime, nullable=True)
+    fetched_at = Column(DateTime, default=datetime.utcnow, index=True)
+    matched_keyword = Column(String, nullable=True)
+    # 過濾結果記錄：協助使用者了解這篇為何沒進雷達
+    filter_status = Column(String, nullable=True)   # passed | dup_url | dup_title | dup_content | excluded_kw | low_relevance | not_critical
+    filter_reason = Column(String, nullable=True)   # 例如：被「政治」排除關鍵字過濾
+
+
 # --- Database Helpers ---
 
 def init_db():
@@ -440,6 +464,20 @@ def _migrate_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_articles_source_url "
             "ON articles(source_url) "
             "WHERE source_url IS NOT NULL AND source_url != ''"
+        ))
+        conn.commit()
+
+        # raw_articles：篩選前資料（滾動 7 天）。Base.metadata.create_all 已建表，這裡只補索引。
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_raw_articles_fetched_at ON raw_articles(fetched_at)"
+        ))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_raw_articles_source_url "
+            "ON raw_articles(source_url) "
+            "WHERE source_url IS NOT NULL AND source_url != ''"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_raw_articles_source ON raw_articles(source)"
         ))
         conn.commit()
 

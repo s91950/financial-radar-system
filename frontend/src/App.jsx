@@ -13,6 +13,7 @@ import ReportsPage from './pages/ReportsPage'
 import YouTubePage from './pages/YouTubePage'
 import AnalysisPage from './pages/AnalysisPage'
 import FeedbackPage from './pages/FeedbackPage'
+import RawArticlesPage from './pages/RawArticlesPage'
 import useWebSocket from './hooks/useWebSocket'
 import { radarAPI } from './services/api'
 
@@ -25,6 +26,7 @@ const pageConfig = {
   '/youtube': { title: 'YouTube 頻道監控', subtitle: '定期偵測頻道新影片，即時通知' },
   '/analysis': { title: '分析結果', subtitle: 'NotebookLM AI 深度分析報告' },
   '/feedback': { title: '意見回饋', subtitle: '提交改善建議與問題回報' },
+  '/raw-articles': { title: '篩選前資料', subtitle: '雷達抓回的原始資料（滾動 7 天）' },
   '/settings': { title: '系統設定', subtitle: '管理資料來源、通知與偏好設定' },
 }
 
@@ -138,6 +140,12 @@ export default function App() {
               <PageWrapper path="/feedback" wsConnected={isConnected} alertStats={alertStats}
                 onToggleNotifications={() => setNotificationsOpen(true)}>
                 <FeedbackPage />
+              </PageWrapper>
+            } />
+            <Route path="/raw-articles" element={
+              <PageWrapper path="/raw-articles" wsConnected={isConnected} alertStats={alertStats}
+                onToggleNotifications={() => setNotificationsOpen(true)}>
+                <RawArticlesPage />
               </PageWrapper>
             } />
             <Route path="/settings" element={

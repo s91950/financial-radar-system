@@ -19,6 +19,7 @@ from backend.database import (
     MarketWatchItem,
     MonitorSource,
     NotificationSetting,
+    RawArticle,
     ResearchReport,
     SessionLocal,
     SignalCondition,
@@ -140,6 +141,16 @@ def start_scheduler(ws_manager):
         next_run_time=gemini_first_run,
     )
 
+    # 篩選前資料每日清理：保留近 7 天，超過則刪除
+    scheduler.add_job(
+        cleanup_raw_articles,
+        "cron",
+        hour=4,
+        minute=15,
+        id="raw_articles_cleanup",
+        name="篩選前資料每日清理",
+    )
+
     scheduler.start()
     logger.info("Scheduler started with radar and daily news jobs")
 
@@ -149,6 +160,102 @@ def stop_scheduler():
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("Scheduler stopped")
+
+
+def _record_raw_articles(db, articles: list[dict], source_type: str) -> int:
+    """寫入篩選前資料表（INSERT OR IGNORE，URL 已存在則跳過）。
+
+    回傳實際插入筆數（資訊用）。失敗不擋掃描流程。
+    """
+    if not articles:
+        return 0
+    from sqlalchemy import text
+    inserted = 0
+    now = datetime.utcnow()
+    for a in articles:
+        url = (a.get("source_url") or "").strip()
+        title = (a.get("title") or "").strip()
+        if not url or not title:
+            continue
+        # 取 RSS summary 或前 500 字內文（節省磁碟空間）
+        summary = (a.get("summary") or a.get("content") or "")[:500]
+        published_at = _parse_datetime(a.get("published_at"))
+        try:
+            db.execute(
+                text(
+                    "INSERT OR IGNORE INTO raw_articles "
+                    "(title, summary, source, source_url, source_type, published_at, fetched_at, matched_keyword, filter_status) "
+                    "VALUES (:title, :summary, :source, :url, :stype, :pub, :fetched, :kw, NULL)"
+                ),
+                {
+                    "title": title,
+                    "summary": summary,
+                    "source": a.get("source", ""),
+                    "url": url,
+                    "stype": source_type,
+                    "pub": published_at,
+                    "fetched": now,
+                    "kw": a.get("matched_keyword") or None,
+                },
+            )
+            inserted += 1
+        except Exception:
+            pass
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+    return inserted
+
+
+def _mark_raw_articles_passed(db, urls: list[str]) -> None:
+    """把最終通過所有篩選的 URL，在 raw_articles 標記為 passed。"""
+    if not urls:
+        return
+    from sqlalchemy import text
+    try:
+        # SQLite expanding IN clause via named params requires manual list expansion
+        # 為避免 IN clause 太長，分批處理
+        BATCH = 200
+        for i in range(0, len(urls), BATCH):
+            chunk = [u for u in urls[i:i + BATCH] if u]
+            if not chunk:
+                continue
+            placeholders = ",".join([f":u{j}" for j in range(len(chunk))])
+            params = {f"u{j}": u for j, u in enumerate(chunk)}
+            db.execute(
+                text(f"UPDATE raw_articles SET filter_status='passed' WHERE source_url IN ({placeholders})"),
+                params,
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+async def cleanup_raw_articles():
+    """每日清理：刪除 fetched_at 超過 7 天的 raw_articles，並做 incremental_vacuum。"""
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        result = db.execute(
+            text("DELETE FROM raw_articles WHERE fetched_at < :cutoff"),
+            {"cutoff": cutoff},
+        )
+        deleted = result.rowcount or 0
+        db.commit()
+        # 嘗試回收空間（auto_vacuum 模式才有效；非 incremental 模式會 no-op）
+        try:
+            db.execute(text("PRAGMA incremental_vacuum"))
+            db.commit()
+        except Exception:
+            pass
+        logger.info(f"raw_articles cleanup: deleted {deleted} rows older than 7 days")
+        _flog(f"[CLEANUP] raw_articles: 刪除 {deleted} 筆 7 天前資料")
+    except Exception as e:
+        logger.warning(f"raw_articles cleanup failed: {e}")
+    finally:
+        db.close()
 
 
 async def radar_scan(force: bool = False):
@@ -390,6 +497,8 @@ async def _radar_scan_inner(force: bool = False):
             rss_results, _raw_rss_articles = await rss_feed.fetch_multiple_feeds(
                 feeds, hours_back=gn_hours_back, global_topics=_global_topics, return_raw=True
             )
+            # 寫入篩選前資料表（所有抓到的 RSS 文章，未經任何篩選）
+            _record_raw_articles(db, _raw_rss_articles, "rss")
             _rss_skip_empty = 0
             _rss_skip_seen = 0
             _rss_skip_db_url = 0
@@ -443,6 +552,8 @@ async def _radar_scan_inner(force: bool = False):
                 # 確保 _source_fixed_sev 查找可命中（與 RSS fetch_multiple_feeds 邏輯一致）
                 for _a in mops_articles:
                     _a["source"] = mops_source.name
+                # 寫入篩選前資料表（所有 MOPS 文章，未經篩選）
+                _record_raw_articles(db, mops_articles, "mops")
                 mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
                 mops_fetch_all = bool(getattr(mops_source, "fetch_all", False))
                 if mops_fetch_all:
@@ -495,6 +606,8 @@ async def _radar_scan_inner(force: bool = False):
                     # 確保 _source_fixed_sev 查找可命中（與 RSS fetch_multiple_feeds 一致）
                     for _a in ws_articles:
                         _a["source"] = ws.name
+                    # 寫入篩選前資料表（所有 website 文章，未經 source keyword/global topic 篩選）
+                    _record_raw_articles(db, ws_articles, "website")
                     ws_kws = json.loads(ws.keywords) if ws.keywords else []
                     if ws_fetch_all:
                         # 全文讀取：合併來源關鍵字+雷達主題做徽章標記
@@ -576,6 +689,11 @@ async def _radar_scan_inner(force: bool = False):
                 *[_fetch_radar_topic(t, "zh-TW", "TW") for t in topics],
                 *[_fetch_radar_topic(t, "en", "US") for t in us_topics],
             )
+
+            # 寫入篩選前資料表（所有 GN 文章，未經 critical-only 等篩選）
+            for _topic, _headlines in topic_batches:
+                if _headlines:
+                    _record_raw_articles(db, _headlines, "gn")
 
             for topic, headlines in topic_batches:
                 for article_data in headlines:
@@ -677,6 +795,10 @@ async def _radar_scan_inner(force: bool = False):
             except Exception as e:
                 logger.warning(f"Topic '{topic.name}' Google News search error: {e}")
                 continue
+
+            # 寫入篩選前資料表（Pass B 主題 GN 搜尋結果）
+            if topic_results:
+                _record_raw_articles(db, topic_results, "gn")
 
             for a in topic_results:
                 text = f"{a.get('title', '')} {a.get('content', '')}".lower()
@@ -780,6 +902,11 @@ async def _radar_scan_inner(force: bool = False):
                     _a["finance_relevance"] = compute_finance_relevance(
                         _a.get("title", ""), _a.get("content", "")
                     )
+
+        # 把通過所有篩選的 URL 在 raw_articles 標記為 passed（讓「篩選前資料」頁可以區分）
+        _passed_urls = [a.get("source_url", "") for a in new_articles if a.get("source_url")]
+        if _passed_urls:
+            _mark_raw_articles_passed(db, _passed_urls)
 
         # 3. Save new articles to Article DB（用 SAVEPOINT 逐筆寫入，遇重複跳過）
         _now_for_scores = datetime.utcnow()

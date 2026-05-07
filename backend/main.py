@@ -82,6 +82,9 @@ app.include_router(line_webhook.router, prefix="/api", tags=["LINE Webhook"])
 from backend.routers import feedback
 app.include_router(feedback.router, prefix="/api/feedback", tags=["意見回饋"])
 
+from backend.routers import raw_articles
+app.include_router(raw_articles.router, prefix="/api/raw-articles", tags=["篩選前資料"])
+
 
 @app.get("/api/health")
 async def health_check():
