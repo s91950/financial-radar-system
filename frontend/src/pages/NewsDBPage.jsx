@@ -440,6 +440,9 @@ export default function NewsDBPage() {
           <option value={24}>24 小時</option>
           <option value={48}>48 小時</option>
           <option value={72}>72 小時</option>
+          <option value={168}>7 天</option>
+          <option value={336}>14 天</option>
+          <option value={720}>30 天</option>
         </select>
 
         {/* 搜尋輸入 */}

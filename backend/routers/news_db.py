@@ -205,20 +205,67 @@ async def _gn_fetch_topic(topic: str, hours_back: int) -> list[dict]:
         return []
 
 
-def _split_query_terms(query: str) -> list[str]:
-    """拆分查詢字串：空格分詞 + ASCII/CJK 邊界拆分，回傳 OR 比對詞組。
+_PUNCT_TRIM_RE = None  # populated lazily
 
-    "AI產業下一個瓶頸" → ["AI", "產業下一個瓶頸"]
-    "Fed 升息"         → ["Fed", "升息"]
-    "台積電"            → ["台積電"]
+def _normalize_query_text(s: str) -> str:
+    """文字正規化：用於查詢與被比對文字。
+    - 全形→半形（標點與空白）
+    - 移除所有空白
+    - 小寫
+    讓「美股收紅！」與「美股收紅!」、「台積 電」與「台積電」能對上。
     """
-    import re
+    import re, unicodedata
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = re.sub(r"\s+", "", s)
+    return s.lower()
+
+
+def _split_query_terms(query: str) -> list[str]:
+    """拆分查詢字串：先做空白/全半形正規化，再切 ASCII/CJK 邊界，
+    對長段中文額外產生 n-gram（4 字、6 字）做寬鬆比對。
+
+    使用方式：呼叫端應對被比對文字也套用 `_normalize_query_text()`，
+    然後檢查任一 term 是否為 substring（OR 邏輯）。
+    """
+    import re, unicodedata
+    if not query:
+        return []
+    # 正規化但保留可分詞的空白資訊：先 NFKC，但暫不 strip 空白
+    norm = unicodedata.normalize("NFKC", query)
     parts: list[str] = []
-    for token in query.split():
-        # Split at ASCII↔CJK boundary
-        sub = re.split(r'(?<=[A-Za-z0-9])(?=[^\x00-\x7F])|(?<=[^\x00-\x7F])(?=[A-Za-z0-9])', token)
-        parts.extend(s for s in sub if len(s) >= 2)
-    return parts if parts else [query]
+    for token in norm.split():
+        # 切 ASCII↔CJK 邊界（含底線/破折號的英數視為一塊）
+        sub = re.split(
+            r'(?<=[A-Za-z0-9])(?=[^\x00-\x7F])|(?<=[^\x00-\x7F])(?=[A-Za-z0-9])',
+            token,
+        )
+        for s in sub:
+            s = s.strip().lower()
+            if len(s) < 2:
+                continue
+            parts.append(s)
+            # 長中文段：補 n-gram 讓「貼整段標題」也能用部分文字命中
+            if len(s) >= 6 and not re.match(r'^[\x00-\x7F]+$', s):
+                # 4-gram 取首尾與中段，避免完全 O(n²) 爆量
+                grams = {s[:4], s[-4:]}
+                if len(s) >= 8:
+                    grams.add(s[len(s)//2 - 2: len(s)//2 + 2])
+                # 6-gram 取首尾（給更長的標題段使用）
+                if len(s) >= 12:
+                    grams.add(s[:6])
+                    grams.add(s[-6:])
+                parts.extend(g for g in grams if len(g) >= 4)
+    # 去重保序
+    seen = set()
+    out = []
+    for p in parts:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out if out else [_normalize_query_text(query)]
 
 
 def _tag_matched_keywords(articles: list[dict], topics: list[str], query: str | None) -> None:
@@ -252,6 +299,13 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
     articles_data = []
     all_topics = _load_radar_topics(db)
 
+    def _query_match(article: dict, terms: list[str]) -> bool:
+        """以正規化文字 + OR 子字串比對；任一 term 命中即過。"""
+        text = _normalize_query_text(
+            (article.get("title", "") or "") + " " + (article.get("content", "") or "")
+        )
+        return any(t in text for t in terms)
+
     if req.source_type == "gn_only":
         if req.query:
             news_results = await search_google_news(query=req.query, hours_back=req.hours_back, max_results=50)
@@ -266,10 +320,12 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
             for r in results:
                 articles_data.extend(r)
     else:
-        # sources_only 模式：RSS + website（鉅亨網等）
+        # sources_only 模式：RSS + social + website + MOPS（與雷達掃描來源範圍一致）
+        # 1) RSS / social：兩者皆為 feedparser 流程
         rss_sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
-            MonitorSource.type == "rss",
+            MonitorSource.is_deleted == False,
+            MonitorSource.type.in_(["rss", "social"]),
         ).all()
         feeds = [
             {"name": s.name, "url": s.url, "keywords": json.loads(s.keywords) if s.keywords else [],
@@ -282,29 +338,30 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
                 # 避免因來源設定了不同的關鍵字而漏掉使用者想找的文章。
                 terms = _split_query_terms(req.query)
                 _, raw_articles = await rss_feed.fetch_multiple_feeds(feeds, hours_back=req.hours_back, return_raw=True)
-                articles_data = [
-                    a for a in raw_articles
-                    if any(t.lower() in (a.get("title", "") + " " + a.get("content", "")).lower() for t in terms)
-                ]
+                articles_data = [a for a in raw_articles if _query_match(a, terms)]
             else:
                 rss_results, _ = await rss_feed.fetch_multiple_feeds(
                     feeds, hours_back=req.hours_back, global_topics=all_topics, return_raw=True
                 )
                 articles_data = rss_results
 
-        # website 類型來源（含鉅亨網 JSON API）
+        # 2) website 類型來源（含鉅亨網 JSON API、Fed、FSC、Caixin、太報、UDN…）
         ws_sources = db.query(MonitorSource).filter(
             MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
             MonitorSource.type == "website",
         ).all()
         for ws in ws_sources:
             try:
                 from backend.scheduler.jobs import _fetch_website_source
                 ws_articles = await _fetch_website_source(ws.url, req.hours_back)
+                # 用 MonitorSource.name 覆蓋爬蟲寫死的 source 名稱（與雷達一致）
+                for _a in ws_articles:
+                    _a["source"] = ws.name
                 ws_kws = json.loads(ws.keywords) if ws.keywords else []
                 if req.query:
                     terms = _split_query_terms(req.query)
-                    ws_articles = [a for a in ws_articles if any(t.lower() in (a.get("title","") + " " + a.get("content","")).lower() for t in terms)]
+                    ws_articles = [a for a in ws_articles if _query_match(a, terms)]
                 elif ws_kws and not getattr(ws, "fetch_all", False):
                     from backend.services.rss_feed import _filter_by_keywords
                     ws_articles = _filter_by_keywords(ws_articles, ws_kws)
@@ -312,6 +369,32 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
                     from backend.services.rss_feed import _filter_by_topic_strings
                     ws_articles = _filter_by_topic_strings(ws_articles, all_topics)
                 articles_data.extend(ws_articles)
+            except Exception:
+                pass
+
+        # 3) MOPS 公開資訊觀測站（與雷達一致，僅取啟用中的 mops 來源）
+        mops_source = db.query(MonitorSource).filter(
+            MonitorSource.is_active == True,
+            MonitorSource.is_deleted == False,
+            MonitorSource.type == "mops",
+        ).first()
+        if mops_source:
+            try:
+                from backend.services.mops_scraper import fetch_mops_material_news
+                mops_articles = await fetch_mops_material_news(hours_back=req.hours_back)
+                for _a in mops_articles:
+                    _a["source"] = mops_source.name
+                mops_kws = json.loads(mops_source.keywords) if mops_source.keywords else []
+                if req.query:
+                    terms = _split_query_terms(req.query)
+                    mops_articles = [a for a in mops_articles if _query_match(a, terms)]
+                elif mops_kws and not getattr(mops_source, "fetch_all", False):
+                    from backend.services.rss_feed import _filter_by_keywords
+                    mops_articles = _filter_by_keywords(mops_articles, mops_kws)
+                elif all_topics and not getattr(mops_source, "fetch_all", False):
+                    from backend.services.rss_feed import _filter_by_topic_strings
+                    mops_articles = _filter_by_topic_strings(mops_articles, all_topics)
+                articles_data.extend(mops_articles)
             except Exception:
                 pass
 

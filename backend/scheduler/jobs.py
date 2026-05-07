@@ -289,8 +289,17 @@ async def _radar_scan_inner(force: bool = False):
         _all_tw_topics = json.loads(_tw_cfg.value) if _tw_cfg else ["金融", "股市", "經濟"]
         _us_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics_us").first()
         _all_us_topics = json.loads(_us_cfg.value) if _us_cfg else []
+        # 主題追蹤關鍵字：併入 global fallback，讓 RSS/website/MOPS 在
+        # 「source keywords 沒命中、radar_topics 也沒命中、但有命中主題追蹤」時不會被丟掉
+        from backend.database import Topic as TopicModel
+        _topic_kws_for_global: list[str] = []
+        for _t in db.query(TopicModel).filter(TopicModel.is_active == True).all():
+            try:
+                _topic_kws_for_global.extend(json.loads(_t.keywords) if _t.keywords else [])
+            except Exception:
+                pass
         # Combined topic list passed to RSS filter as global fallback (boolean semantics preserved)
-        _global_topics = _all_tw_topics + _all_us_topics
+        _global_topics = _all_tw_topics + _all_us_topics + _topic_kws_for_global
         # RSS-only mode: skip all Google News fetching
         _rss_only_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_rss_only").first()
         _rss_only = (_rss_only_cfg.value == "true") if _rss_only_cfg else False
