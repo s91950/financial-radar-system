@@ -70,6 +70,11 @@ def start_scheduler(ws_manager):
     # preventing the race condition where two processes both scan at startup.
     first_run = datetime.utcnow() + timedelta(minutes=3)
 
+    # APScheduler 預設 misfire_grace_time 只有 1 秒；當 event loop 被其他 job
+    # 暫時佔住（例如雷達掃描跑到 5-30 秒）就會 silent-skip。設為 600 秒讓
+    # 延遲 10 分鐘內的觸發仍會執行。coalesce=True 確保多次堆積的觸發只跑一次。
+    _GRACE = 600
+
     # Radar scan every N minutes (使用 DB 儲存的間隔，非 .env)
     scheduler.add_job(
         radar_scan,
@@ -78,6 +83,8 @@ def start_scheduler(ws_manager):
         id="radar_scan",
         name="即時偵測雷達掃描",
         next_run_time=first_run,
+        misfire_grace_time=_GRACE,
+        coalesce=True,
     )
 
     # Daily news collection at configured time
@@ -88,6 +95,8 @@ def start_scheduler(ws_manager):
         minute=settings.NEWS_SCHEDULE_MINUTE,
         id="daily_news",
         name="每日新聞蒐集",
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
     # Daily research report collection at 10:00
@@ -98,6 +107,8 @@ def start_scheduler(ws_manager):
         minute=0,
         id="daily_research",
         name="每日研究報告蒐集",
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
     # Market data refresh every hour (or configured interval)
@@ -108,6 +119,8 @@ def start_scheduler(ws_manager):
         id="market_check",
         name="市場指標檢查",
         next_run_time=first_run,
+        misfire_grace_time=_GRACE,
+        coalesce=True,
     )
 
     # YouTube channel check every 30 minutes
@@ -118,6 +131,8 @@ def start_scheduler(ws_manager):
         id="youtube_check",
         name="YouTube 頻道新影片偵測",
         next_run_time=first_run,
+        misfire_grace_time=_GRACE,
+        coalesce=True,
     )
 
     # YouTube 影片每日清除新標記：台北時間 07:00（UTC 23:00 前一日）
@@ -128,6 +143,8 @@ def start_scheduler(ws_manager):
         minute=0,
         id="youtube_mark_seen",
         name="YouTube 新影片標記每日清除",
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
     # Gemini 深度分析每 3 小時（VM 端自動執行，無需本地電腦）
@@ -139,6 +156,8 @@ def start_scheduler(ws_manager):
         id="gemini_analysis",
         name="Gemini 新聞深度分析",
         next_run_time=gemini_first_run,
+        misfire_grace_time=_GRACE,
+        coalesce=True,
     )
 
     # 篩選前資料每日清理：保留近 7 天，超過則刪除
@@ -149,6 +168,8 @@ def start_scheduler(ws_manager):
         minute=15,
         id="raw_articles_cleanup",
         name="篩選前資料每日清理",
+        misfire_grace_time=3600,
+        coalesce=True,
     )
 
     scheduler.start()
@@ -1381,7 +1402,11 @@ async def daily_research_fetch():
 
 
 async def youtube_check():
-    """Check all active YouTube channels for new videos (runs every 30 min)."""
+    """Check all active YouTube channels for new videos (runs every 30 min).
+
+    並行抓取（concurrency=5）以縮短佔用 event loop 的時間，
+    避免拖到下一輪雷達掃描或自身被 misfire 跳過。
+    """
     from backend.database import YoutubeChannel, YoutubeVideo
     from backend.services.youtube_feed import fetch_channel_videos
 
@@ -1391,30 +1416,41 @@ async def youtube_check():
         if not channels:
             return
 
+        # 並行抓取所有頻道（限 5 條同時連線，避免被 YouTube ban）
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_one(ch):
+            async with sem:
+                try:
+                    return ch, await fetch_channel_videos(ch.channel_id), None
+                except Exception as e:
+                    return ch, [], e
+
+        results = await asyncio.gather(*[_fetch_one(ch) for ch in channels])
+
         total_new = 0
-        for channel in channels:
-            try:
-                videos = await fetch_channel_videos(channel.channel_id)
-                new_count = 0
-                for v in videos:
-                    if not db.query(YoutubeVideo).filter(YoutubeVideo.video_id == v["video_id"]).first():
-                        db.add(YoutubeVideo(
-                            channel_db_id=channel.id,
-                            video_id=v["video_id"],
-                            title=v["title"],
-                            description=v["description"],
-                            url=v["url"],
-                            thumbnail_url=v["thumbnail_url"],
-                            published_at=v["published_at"],
-                            is_new=True,
-                        ))
-                        new_count += 1
-                channel.last_checked_at = datetime.utcnow()
-                total_new += new_count
-                if new_count:
-                    _flog(f"[YOUTUBE] {channel.name}: {new_count} new video(s)")
-            except Exception as e:
-                logger.error(f"YouTube check error for {channel.channel_id}: {e}")
+        for channel, videos, err in results:
+            if err is not None:
+                logger.error(f"YouTube check error for {channel.channel_id}: {err}")
+                continue
+            new_count = 0
+            for v in videos:
+                if not db.query(YoutubeVideo).filter(YoutubeVideo.video_id == v["video_id"]).first():
+                    db.add(YoutubeVideo(
+                        channel_db_id=channel.id,
+                        video_id=v["video_id"],
+                        title=v["title"],
+                        description=v["description"],
+                        url=v["url"],
+                        thumbnail_url=v["thumbnail_url"],
+                        published_at=v["published_at"],
+                        is_new=True,
+                    ))
+                    new_count += 1
+            channel.last_checked_at = datetime.utcnow()
+            total_new += new_count
+            if new_count:
+                _flog(f"[YOUTUBE] {channel.name}: {new_count} new video(s)")
 
         db.commit()
         if total_new > 0 and _ws_manager:
