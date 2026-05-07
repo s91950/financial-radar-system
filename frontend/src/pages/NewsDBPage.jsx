@@ -679,9 +679,9 @@ export default function NewsDBPage() {
       </div>
 
       {/* Articles List */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
-        {/* List */}
-        <div className={`space-y-2 ${selectedArticle ? 'hidden lg:block lg:col-span-1' : 'lg:col-span-3'}`}>
+      <div>
+        {/* List — always full width; detail panel is a fixed drawer (see bottom) */}
+        <div className="space-y-2">
           {loading ? (
             Array(5).fill(0).map((_, i) => (
               <div key={i} className="card animate-pulse">
@@ -791,17 +791,17 @@ export default function NewsDBPage() {
           )}
         </div>
 
-        {/* Detail Panel */}
-        {selectedArticle && (
-          <div className="lg:col-span-2 card lg:sticky lg:top-24 max-h-[calc(100vh-8rem)] overflow-y-auto">
-            {/* Mobile back button */}
-            <button onClick={() => setSelectedArticle(null)}
-              className="lg:hidden flex items-center gap-1 text-sm text-primary-400 mb-3">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              返回列表
-            </button>
+      </div>
+
+      {/* Detail Drawer — fixed overlay on the right side of viewport (desktop) / full-screen modal (mobile) */}
+      {selectedArticle && (
+        <>
+          {/* Backdrop — closes drawer on click; on mobile dims background, on desktop is transparent */}
+          <div
+            className="fixed inset-0 z-40 bg-black/50 lg:bg-transparent lg:pointer-events-none"
+            onClick={() => setSelectedArticle(null)}
+          />
+          <div className="fixed z-50 card overflow-y-auto inset-x-3 top-16 bottom-3 lg:inset-auto lg:right-6 lg:top-24 lg:bottom-6 lg:w-[min(900px,55vw)] shadow-2xl">
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <h3 className="text-base md:text-lg font-bold text-gray-100 line-clamp-2" title={selectedArticle.title}>{selectedArticle.title}</h3>
@@ -889,8 +889,8 @@ export default function NewsDBPage() {
               {selectedArticle.content || '（無內容）'}
             </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   )
 }
