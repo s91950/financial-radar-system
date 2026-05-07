@@ -701,8 +701,7 @@ export default function NewsDBPage() {
               return (
                 <div
                   key={article.id}
-                  onClick={() => setSelectedArticle(article)}
-                  className={`card-hover cursor-pointer ${
+                  className={`card ${
                     selectedArticle?.id === article.id ? 'border-primary-500/50 bg-primary-500/5' : ''
                   } ${isSelected ? 'ring-1 ring-primary-500/30' : ''}`}
                 >
@@ -712,7 +711,6 @@ export default function NewsDBPage() {
                       type="checkbox"
                       checked={isSelected}
                       onChange={(e) => handleToggleDbSelect(e, article.id)}
-                      onClick={(e) => e.stopPropagation()}
                       className="mt-1 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 shrink-0"
                     />
                     <SeverityBadge severity={sev} />
@@ -732,9 +730,40 @@ export default function NewsDBPage() {
                       </div>
                       <h4 className="font-medium text-sm text-gray-200 line-clamp-2">{article.title}</h4>
                     </div>
-                    <span className="text-xs text-dark-500 whitespace-nowrap">
-                      {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
-                    </span>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <span className="text-xs text-dark-500 whitespace-nowrap">
+                        {article.published_at && new Date(article.published_at).toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' })}
+                      </span>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          onClick={() => {
+                            setSelectedArticle(article)
+                            window.scrollTo({ top: 0, behavior: 'smooth' })
+                          }}
+                          className="p-1 rounded text-dark-400 hover:text-primary-400 hover:bg-dark-700 transition-colors"
+                          title="展開內容"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9M20.25 20.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                          </svg>
+                        </button>
+                        {article.source_url && (
+                          <a
+                            href={article.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1 rounded text-dark-400 hover:text-primary-400 hover:bg-dark-700 transition-colors"
+                            title="原始來源"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                            </svg>
+                          </a>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )

@@ -583,20 +583,25 @@ export default function RadarPage({ wsSubscribe }) {
                               ? numberedLines.filter(l => l.severity === filterSeverity)
                               : numberedLines
                             const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
+                            let kwCount = 0
                             return (
                               <>
-                                {showLines.map((line, i) => (
-                                  <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
-                                    {line.severity && lineSeverityBadge(line.severity)}
-                                    <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
-                                    {line.kw && (
-                                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
-                                        {line.kw}
-                                      </span>
-                                    )}
-                                  </p>
-                                ))}
+                                {showLines.map((line, i) => {
+                                  const hasKw = !!line.kw
+                                  if (hasKw) kwCount++
+                                  return (
+                                    <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                      {line.severity && lineSeverityBadge(line.severity)}
+                                      <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
+                                      <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                      {hasKw && kwCount <= 4 && (
+                                        <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
+                                          {line.kw}
+                                        </span>
+                                      )}
+                                    </p>
+                                  )
+                                })}
                                 {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
                                   <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
                                 )}
@@ -637,25 +642,15 @@ export default function RadarPage({ wsSubscribe }) {
                             ? numberedLines.filter(l => l.severity === filterSeverity)
                             : numberedLines
                           const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
-                          let kwCount = 0
                           return (
                             <>
-                              {showLines.map((line, i) => {
-                                const hasKw = !!line.kw
-                                if (hasKw) kwCount++
-                                return (
-                                  <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
-                                    {line.severity && lineSeverityBadge(line.severity)}
-                                    <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
-                                    {hasKw && kwCount <= 2 && (
-                                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
-                                        {line.kw}
-                                      </span>
-                                    )}
-                                  </p>
-                                )
-                              })}
+                              {showLines.map((line, i) => (
+                                <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                  {line.severity && lineSeverityBadge(line.severity)}
+                                  <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
+                                  <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                </p>
+                              ))}
                               {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
                                 <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
                               )}
