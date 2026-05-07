@@ -589,6 +589,7 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
         from backend.services.ctee_scraper import is_ctee_url, fetch_ctee_news
         from backend.services.nownews_scraper import is_nownews_url, fetch_nownews_news
         from backend.services.treasury_scraper import is_treasury_url, fetch_treasury_news
+        from backend.services.businessweekly_scraper import is_businessweekly_url, fetch_businessweekly_news
 
         # 路由到對應爬蟲
         scraper_map = [
@@ -604,6 +605,7 @@ async def test_rss_source(source_id: int, db: Session = Depends(get_db)):
             (is_ctee_url, lambda: fetch_ctee_news(source.url, hours_back=24), "工商時報 RSS"),
             (is_nownews_url, lambda: fetch_nownews_news(hours_back=24), "NOWnews News Sitemap"),
             (is_treasury_url, lambda: fetch_treasury_news(hours_back=168), "US Treasury 新聞稿"),
+            (is_businessweekly_url, lambda: fetch_businessweekly_news(hours_back=24), "商周今日最新"),
         ]
         for check_fn, fetch_fn, label in scraper_map:
             if check_fn(source.url):

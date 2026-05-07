@@ -16,6 +16,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 需要更新 VM：`backend/`、`frontend/`、`deploy/` 下的任何檔案修改
 - 不需要更新 VM：`scripts/` 下的本地腳本、`CLAUDE.md`、`README.md`、純本地設定檔
 
+## 設定資料以 VM 為主
+
+除非使用者特別指示「改本地」或「以本地為準」，否則 **VM 上的設定永遠是唯一的真實來源 (source of truth)**：
+
+- 涉及 `monitor_sources`、`SystemConfig`、`Topic`、`NotificationSetting` 等 DB 內的設定資料時，預設要改 VM（不要先動本地 DB 再叫使用者同步）。
+- 查詢「目前用的是哪個來源 / URL / 設定值」，要先看 VM（`ssh -i C:\Users\User\.ssh\google_compute_engine s9195000409898@<VM_IP>` 進入 `/opt/financial-radar`），不要根據本地 `data/financial_radar.db` 推論。
+- 本地 DB 可能因長時間未同步而與 VM 不一致，引述本地 DB 內容時要明確標注「（本地，可能過時）」。
+- 變更建議優先順序：(1) 引導使用者在 VM 設定頁 UI 上改；(2) SSH 進 VM 直接 SQL 更新；(3) 萬不得已才本地改 + `python scripts/sync_vm_settings.py http://<VM_IP>` 推上去。
+
 ## Project Overview
 
 金融即時偵測系統 (Financial Real-time Detection System) — a multi-module system for monitoring financial markets, aggregating news, tracking research papers, and matching position exposure. Built for senior financial analysts who need real-time alerts via LINE/Email/Web with event summaries, position exposure, and source links.
@@ -128,9 +137,11 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `ctee_scraper.py` — 工商時報 RSS scraper. Fetches `ctee.com.tw/rss_web/livenews/{category}` (官方 livenews RSS, ~15 articles per refresh, 分鐘級新鮮度). Built as a custom scraper instead of generic RSS path because `<pubDate>` lacks timezone marker (e.g. `2026-05-06T11:57:13`) but is actually Taiwan local time — must convert TW+8 → UTC. `is_ctee_url()` matches `ctee.com.tw/rss_web` or `ctee.com.tw/livenews`; if a livenews page URL is given, auto-rewrites to the matching `rss_web` endpoint. Categories: `ctee` (綜合，預設), `policy`, `stock`, `finance`, `p-tax`, `industry`, `house`, `world`, `china`, `tech`, `life`. Replaces previous Google News `site:ctee.com.tw` proxy (1-3h lag).
   - `nownews_scraper.py` — NOWnews 今日新聞 Google News Sitemap scraper. Fetches `nownews.com/newsSitemap-daily.xml` — the sitemap embeds `<news:title>` and `<news:publication_date>` per `<url>` so no per-article fetch is needed. Returns ~50-60 articles within 2h on a busy day, freshness within 5-15 minutes. Replaces GN `site:nownews.com` proxy. `is_nownews_url()` matches `nownews.com` + `sitemap` substring. NowNews has no public RSS; the sitemap path is listed in `robots.txt`.
   - `treasury_scraper.py` — US Treasury 美國財政部新聞稿爬蟲. `home.treasury.gov/rss.xml` 內容主要是 admin/reference 頁面更新（Tribal/Capital Program summaries、FAQ），不是實際的新聞稿。改抓 `home.treasury.gov/news/press-releases` 的 server-side rendered HTML，每篇包在 `<div class="mm-news-row">` 內，含 `<time datetime="...">` 與 `<a href="/news/press-releases/sbXXXX">`。每頁約 16 篇新聞稿，涵蓋約 1-2 週。`is_treasury_url()` matches `home.treasury.gov` + (`press-releases` | `rss`).
-  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `fed_scraper` | `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | `storm_scraper` | `taisounds_scraper` | `linetoday_scraper` | `udn_scraper` | `ctee_scraper` | `nownews_scraper` | `treasury_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
+  - `businessweekly_scraper.py` — 商業周刊「今日最新」HTML 爬蟲。商周提供的 cmsapi RSS（`cmsapi.businessweekly.com.tw/?CategoryId=...`）內容偏向 `/focus/`、`/style/` 子站，會跳過 `/business/` 與雜誌主刊。改抓 `https://www.businessweekly.com.tw/latest` 頁面，該頁面由 jQuery 動態載入，後端透過 `POST https://www.businessweekly.com.tw/latest/SearchList` (`{CurPage: 0|20|40}`) 取得 HTML 片段（每頁 20 篇 figure.Article-figure 區塊），解析標題、URL、`Article-date`（YYYY.MM.DD，無時間，當地 00:00 → UTC）與 `Article-author`。`_MAX_PAGES=3`，最多抓 60 篇；遇到 `IsLast=Y` 或文章日期早於 cutoff 即停止。`is_businessweekly_url()` matches `businessweekly.com.tw/latest`.
+  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `fed_scraper` | `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | `storm_scraper` | `taisounds_scraper` | `linetoday_scraper` | `udn_scraper` | `ctee_scraper` | `nownews_scraper` | `treasury_scraper` | `businessweekly_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
   - `research_feed.py` — dual-mode RSS/HTML scraper for research institutions
   - `article_fetcher.py` — **full-body enrichment** for radar candidates. After dedup, runs `enrich_articles_with_full_body(articles, concurrency=5, timeout=5.0)` on the 5-30 surviving articles: parallel HTTP GET each `source_url`, extract `<article>`/`<main>` text and overwrite `article['content']`; also salvages `published_at` from JSON-LD `"datePublished"` / `<meta property="article:published_time">` / `<meta itemprop="datePublished">` / `<time datetime>` (in that order) when RSS didn't supply one (e.g. Nikkei Asia RSS 1.0 has no pubDate). Skips when content ≥ 500 chars AND `published_at` already set, or when URL is still `news.google.com` (unresolved). Failure is silent — falls back to RSS summary. **This is what makes exclusion-keyword filtering and severity assessment see real article body**, since RSS `summary` is usually only the title + first one or two sentences.
+  - `source_health.py` — `mark_attempt(url, success, error=None)` writes `MonitorSource.last_attempt_at` / `last_success_at` / `last_error`. Called by every scraper's HTTP try/except branch (success → update both timestamps + clear error; failure → update attempt + set error, keep last_success_at). Best-effort: own session, swallows DB errors so health-tracking failures never break a scan. Used by `GET /api/settings/source-health` and the LINE 「來源」 command to surface silently-dead sources.
   - `google_news.py` — Google News RSS search + URL decode. Two-tier decode for GN article IDs: (1) base64 protobuf direct extraction for old format (no network), (2) **individual** `batchexecute` per article for new `AU_yq...` format — each article decoded independently to avoid batch response ordering issues that cause title/URL mismatch. `_DECODE_CONCURRENCY=5` limits parallel requests.
   - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` as-is (no cleaning/stripping — user-defined names like "經濟日報 - 國際" are preserved verbatim). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied. `_resolve_gn_article_urls(articles)` — called after standard redirect resolution in `fetch_rss_feed()`; extracts article IDs from `news.google.com/rss/articles/CBMi...` URLs and decodes them via `google_news._resolve_google_news_urls()` (same two-tier decode). **Keyword matching helpers**: `_term_in_text(term, text_lower)` — uses word-boundary regex for pure-ASCII terms so "Coup" does not match "Couple"; CJK terms use substring match. `_strip_not_terms(topic)` — extracts `NOT term` / `NOT "multi word"` clauses from a keyword string before group parsing; returns `(cleaned_topic, [not_terms])`. Used by `_matches_topic()` (fail-fast if any NOT term appears in text), `_extract_display_kw()`, and `_annotate_matched_terms()`.
 - **`scheduler/jobs.py`** — Seven async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily, hour from `NEWS_SCHEDULE_HOUR` in server timezone — VM is UTC), `daily_research_fetch` (daily 10:00), `youtube_check` (30min), `mark_all_youtube_seen` (daily 23:00 UTC = 07:00 Taipei — bulk-clears `YoutubeVideo.is_new=False`), `gemini_analysis` (every 3h, first run 5min after startup).
@@ -229,6 +240,26 @@ Returns `critical`, `high`, or `low` only — `medium` is not used by the scan e
 
 The frontend (`NewsDBPage`, `RadarPage`) mirrors keyword lists client-side for display purposes.
 
+### Source Health Monitoring
+
+Existed to solve the "silent failure" problem: WSJ `feeds.a.dj.com` froze in Jan 2025, ctee.com.tw `/feed` returned 000, Politico `economy.xml` stagnated — none reported anywhere outside `journalctl`.
+
+**Tracking** — three columns on `MonitorSource` (added via `_migrate_db()` ALTER):
+- `last_attempt_at` — every HTTP attempt (success or failure)
+- `last_success_at` — only HTTP 200 (article count irrelevant; an empty feed within the time window is still "alive")
+- `last_error` — failure message (truncated to 500 chars), cleared on next success
+
+`backend/services/source_health.py::mark_attempt(url, success, error=None)` is called from every scraper's HTTP try/except. Match key is `MonitorSource.url`; for the one source where the DB URL ≠ scraper URL (MOPS uses legacy `mops/web/t05sr01` as identifier but actually calls `mops/api/home_page/t05sr01_1`), the scraper hardcodes the DB URL alias and only marks success if **either** sii or otc API returned data.
+
+**Threshold** — `SystemConfig["source_health_threshold_hours"]` (default `"48"`, range 1-720). Sources where `last_success_at < now - threshold` OR `last_success_at IS NULL` (active sources never tried yet) count as stale.
+
+**Surfacing** — three places:
+1. `GET /api/settings/source-health` — JSON summary (`healthy_count`, `stale_count`, `unknown_count`, full `stale[]` list with `hours_since_success` per source). `GET/PUT /api/settings/source-health-threshold` for the threshold itself.
+2. LINE bot `來源` command — `_build_health_reply(db)` returns formatted text listing stale sources with age + error.
+3. SettingsPage source list — colour-coded dot before each source name (green if last_success < threshold/2, yellow if half-to-full, red if over or never). `computeSourceHealth(source, threshold)` helper. Threshold input UI in the radar settings panel ("來源健康監控閾值").
+
+**Important caveat**: sources fetched only by `daily_research_fetch` (research papers from Fed/IMF/BIS/etc., once per day at 10am UTC) will show as stale during the ~22h between fetches. This is expected and not a real failure.
+
 ### `SystemConfig` — Runtime Config Store
 
 Besides app settings in `.env`, many runtime preferences are stored in `SystemConfig` (key/value table):
@@ -259,6 +290,7 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `nlm_yt_latest_report` | Full Markdown text of the latest NotebookLM YouTube analysis report |
 | `nlm_yt_report_generated_at` | ISO timestamp of when the YT report was generated |
 | `nlm_yt_report_source_title` | Source title string used when the YT report was created |
+| `source_health_threshold_hours` | Source health monitoring threshold in hours (default `"48"`, range 1-720). Sources whose `last_success_at` is older than this are flagged as stale. |
 
 ### LINE Webhook Command System (`routers/line_webhook.py`)
 
@@ -272,9 +304,10 @@ Bot only responds to specific commands — all other messages are silently ignor
 | `yt` / `YT` / `yt通知` | Unread YouTube videos since last query (updates `line_last_yt_reply_at`) |
 | `yt分析` | Latest NotebookLM **YouTube** analysis report from `SystemConfig["nlm_yt_latest_report"]` |
 | `yt1天` / `yt今日` / `yt3小時` | YouTube videos from that time range |
+| `來源` / `健檢` (text containing `來源`) | 來源健康狀態：超過閾值未成功的來源清單（`_build_health_reply`） |
 | anything else | no reply |
 
-Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_news = not is_yt and not is_analysis and "通知" in user_text`. Inside the `is_yt` branch, `yt分析` (i.e. `"分析" in remainder`) takes priority over the video list. The `分析` command takes priority over `通知` so "分析通知" triggers news analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each. Article titles in news notifications are capped at 80 characters (truncated to 78 + `…`) in `_parse_articles()` — prevents social media posts (e.g. Trump tweets from Nitter) from flooding the notification with full post text.
+Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_health = not is_yt and not is_analysis and "來源" in user_text` → `is_news = not is_yt and not is_analysis and not is_health and "通知" in user_text`. Inside the `is_yt` branch, `yt分析` (i.e. `"分析" in remainder`) takes priority over the video list. The `分析` command takes priority over `通知` so "分析通知" triggers news analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each. Article titles in news notifications are capped at 80 characters (truncated to 78 + `…`) in `_parse_articles()` — prevents social media posts (e.g. Trump tweets from Nitter) from flooding the notification with full post text.
 
 ### Database (SQLite)
 
@@ -286,7 +319,7 @@ Fourteen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`,
 
 **Two-tier freshness architecture**: Direct RSS/scraper sources provide <1h freshness (Reuters, Bloomberg, Fed, 鉅亨網, 聯合新聞網, 工商時報 livenews, NowNews sitemap, WSJ Markets, Politico Morning Money, etc.). Google News `site:` search sources are now reserved for outlets that fully block direct scraping (IMF — Akamai-blocked) or whose direct feeds are stale/broken (財訊 — wealth.com.tw RSS serves 30 entries with the same stale 4-month-old `pubDate`). Multi-publisher keyword GN searches (e.g. PBOC monetary policy across all outlets) are also kept as GN. All GN `site:` searches use `when:3d` (not `when:7d`) for tighter time windows.
 
-**Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:3d` RSS as proxy. 風傳媒 (`storm.mg`) — CloudFront/WAF blocks GCP IP ranges (all paths return 403 from VM, 200 from local), forced back to GN proxy `site:storm.mg when:3d`. 商周 (`businessweekly.com.tw`) — switched to direct RSS `cmsapi.businessweekly.com.tw` (GN proxy no longer needed). 財訊 (`wealth.com.tw`) — `/rss` returns a feed but every entry shares the same 4-month-old `pubDate` (CMS export bug); kept on GN proxy `site:wealth.com.tw when:3d`. Politico's `economy.xml` feed has stagnated (single stale entry) — radar now uses `morningmoney.xml` (daily 8am ET financial-policy newsletter, ~30 entries) instead. WSJ's `feeds.a.dj.com` froze in Jan 2025 — radar now uses `feeds.content.dowjones.io/public/rss/RSSMarketsMain` (>60 fresh entries). UDN financial RSS (`udn.com/rssfeed`) returns valid XML but empty entries — use the category page HTML scraper (`udn.com/news/cate/2/6644` via `udn_scraper.py`) instead. `money.udn.com/rssfeed` works for the finance sub-site.
+**Scraping limitations**: IMF (`imf.org`) is fully blocked by Akamai Bot Manager (all endpoints return 403) — uses Google News `site:imf.org when:3d` RSS as proxy. 風傳媒 (`storm.mg`) — CloudFront/WAF blocks GCP IP ranges (all paths return 403 from VM, 200 from local), forced back to GN proxy `site:storm.mg when:3d`. 商周 (`businessweekly.com.tw`) — `cmsapi.businessweekly.com.tw` RSS feed 內容只覆蓋 `/focus/`、`/style/` 子站（漏掉 `/business/` 與雜誌主刊），改用 `businessweekly_scraper.py` 抓 `/latest/SearchList` AJAX 端點（每頁 20 篇）。 財訊 (`wealth.com.tw`) — `/rss` returns a feed but every entry shares the same 4-month-old `pubDate` (CMS export bug); kept on GN proxy `site:wealth.com.tw when:3d`. Politico's `economy.xml` feed has stagnated (single stale entry) — radar now uses `morningmoney.xml` (daily 8am ET financial-policy newsletter, ~30 entries) instead. WSJ's `feeds.a.dj.com` froze in Jan 2025 — radar now uses `feeds.content.dowjones.io/public/rss/RSSMarketsMain` (>60 fresh entries). UDN financial RSS (`udn.com/rssfeed`) returns valid XML but empty entries — use the category page HTML scraper (`udn.com/news/cate/2/6644` via `udn_scraper.py`) instead. `money.udn.com/rssfeed` works for the finance sub-site.
 
 `MonitorSource.fetch_all` — boolean (default `False`). When `True`, skips keyword filtering so all articles from the source enter the radar; keyword badges are still annotated but only when the full boolean condition matches. Applies to **all source types** including `mops`. Added via `_migrate_db()` `ALTER TABLE`.
 
@@ -295,6 +328,8 @@ Fourteen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`,
 `MonitorSource.sort_order` — integer (default `0`). User-controlled display order in SettingsPage; lower = earlier. Initialized from `id` order on first migration. Updated via `PUT /api/settings/sources/reorder` (list of IDs in desired order).
 
 `MonitorSource.fixed_severity` — `VARCHAR`, nullable (default `None`). Dual role as severity floor and source credibility signal: `"critical"` → always critical (skip dynamic); `"high"` → floor high + `source_weight_override=1.6` enabling high keywords to reach critical; `"low"` → floor only. Final severity = `max(floor, dynamic)`. Set via dropdown in SettingsPage expanded source view.
+
+`MonitorSource.last_attempt_at` / `last_success_at` / `last_error` — health tracking columns (DATETIME, DATETIME, VARCHAR(500), all nullable). Written by `services/source_health.py::mark_attempt()` from inside each scraper's HTTP try/except. See "Source Health Monitoring" section above.
 
 `TopicArticle.add_source`: `"radar"` (added by scheduler) or `"manual"` (added by user search).
 
@@ -338,7 +373,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
 | `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
-| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle, radar exclusion keywords. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to fed/cnyes/worldbank/fsc/caixin/storm/taisounds/linetoday/udn scrapers via same `is_*_url()` routing), and `rss`/`social`. `GET /radar-topics` response includes `exclusion_keywords` field; `PUT /radar-topics` accepts it. |
+| `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order`, `last_success_at`/`last_attempt_at`/`last_error` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle, radar exclusion keywords. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to fed/cnyes/worldbank/fsc/caixin/storm/taisounds/linetoday/udn/ctee/nownews/treasury scrapers via same `is_*_url()` routing), and `rss`/`social`. The stale-warning logic uses the **latest** entry across `entries[:20]` (not `entries[:3]` as before — that bug caused false alarms on daily-newsletter feeds like Politico Morning Money). `GET /radar-topics` response includes `exclusion_keywords` field; `PUT /radar-topics` accepts it. **Source health**: `GET /source-health` returns `{threshold_hours, healthy_count, stale_count, unknown_count, stale[]}`; `GET/PUT /source-health-threshold` for the threshold (1-720 hours). |
 | `/api/feedback` | `routers/feedback.py` | User feedback CRUD (GET list, POST create, DELETE by id) |
 | `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
 | `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |

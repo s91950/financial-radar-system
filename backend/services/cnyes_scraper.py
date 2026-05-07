@@ -5,7 +5,9 @@
 
 支援的分類代碼：
   tw_stock  台股
-  us_stock  美股
+  us_stock  美股雷達（單一子分類）
+  wd_stock  美股股市新聞（聚合美股雷達+國際政經+歐亞股，較廣）
+  headline  頭條
   macro     總經
   forex     外匯
   global    國際
