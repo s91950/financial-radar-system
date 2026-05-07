@@ -25,6 +25,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 本地 DB 可能因長時間未同步而與 VM 不一致，引述本地 DB 內容時要明確標注「（本地，可能過時）」。
 - 變更建議優先順序：(1) 引導使用者在 VM 設定頁 UI 上改；(2) SSH 進 VM 直接 SQL 更新；(3) 萬不得已才本地改 + `python scripts/sync_vm_settings.py http://<VM_IP>` 推上去。
 
+### `_migrate_db()` 會覆寫部分 monitor_sources URL — 必須同步改預設值
+
+`backend/database.py::_migrate_db()` 在每次服務啟動時會強制重整某些指定來源的 URL，
+若只下 SQL 改 DB 不改程式碼預設值，**下次重啟必被回覆**。今天踩過的坑：手動 SQL 把
+鉅亨網 - 美股改成 `wd_stock_all`，重啟後 migration 沒找到舊 URL，退而以名稱查找
+並把 URL 寫回預設 `category/us_stock`。
+
+修改任何下列 migration 區塊涵蓋的來源時，**必須同時改 `database.py` 內的預設常數**：
+- `_rss_url_fixes`（鏡新聞、財訊、商周、經濟學人、Politico、自由時報等）
+- `_cnyes_api`（鉅亨網台股 / 頭條 / 美股）
+- `_ctee_migrate`（工商時報）
+- `_broken_urls`（已停用清單，列在裡面就會被 `is_active=0`）
+- 其他任何含 `UPDATE monitor_sources SET url=...` 或 `UPDATE monitor_sources SET is_active=...` 的常數列表
+
+若新 URL 與遷移名單上某條既有 URL 不同，記得也把舊 URL 加進對應的 dedup / 停用清單，
+避免遷移後留下無作用的孤兒列。
+
 ## Project Overview
 
 金融即時偵測系統 (Financial Real-time Detection System) — a multi-module system for monitoring financial markets, aggregating news, tracking research papers, and matching position exposure. Built for senior financial analysts who need real-time alerts via LINE/Email/Web with event summaries, position exposure, and source links.
@@ -125,7 +142,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `finance_filter.py` — local financial relevance scoring (TF-IDF approximation, no API): `compute_finance_relevance(title, content) → float`. Three-tier vocabulary: `FINANCE_CORE` (×3 weight), `FINANCE_CONTEXT` (×1), `NON_FINANCE_INDICATORS` (−2 penalty). Formula: `(core×3 + context − non_fin×2) / sqrt(word_count)`, clipped to [0, 1].
   - `simple_ner.py` — rule-based entity extraction (stock codes, companies, central banks, currencies) used to enrich `exposure_summary` when no position match is found
   - `mops_scraper.py` — 公開資訊觀測站 material disclosure scraper. MOPS fully migrated to Vue SPA in late 2025; the old AJAX HTML endpoint (`mops/web/ajax_t05sr01`) is blocked by security policy. Uses new JSON API: `POST https://mops.twse.com.tw/mops/api/home_page/t05sr01_1` with `{"count": N, "marketKind": "sii"|"otc"}`. Dates in 民國 format (`115/04/11`). Fetches up to 100 items per market type (sii + otc). **URL includes date+time** (`?TYPEK=sii&co_id=2330&d=1150411&t=1050`) so multiple disclosures from the same company each get a unique URL (prevents dedup collision in `seen_urls`).
-  - `cnyes_scraper.py` — 鉅亨網 JSON API fetcher. Uses `api.cnyes.com/media/api/v1/newslist/category/{category}`.
+  - `cnyes_scraper.py` — 鉅亨網 JSON API fetcher. 主端點 `api.cnyes.com/media/api/v1/newslist/category/{category}`；支援的分類見模組 docstring（`tw_stock` / `us_stock` / `wd_stock` / `headline` / `forex` / 等）。`is_cnyes_api_url()` 同時匹配網頁分類頁 URL（`news.cnyes.com/news/cat/{slug}`），透過 `_resolve_api_url()` 內部轉成 API URL；`_PAGE_SLUG_MAP` 處理 slug ≠ API 代碼的例外（目前只有 `wd_stock_all` → `wd_stock`，因為網頁聚合頁 slug 帶 `_all` 後綴 API 不接受）。DB 端可填網頁 URL 讓使用者直觀辨識。
   - `worldbank_scraper.py` — World Bank JSON API fetcher. Uses `search.worldbank.org/api/v2/news?format=json`. Fields use `{"cdata!": "..."}` wrapper. Filters English-only in code (API `lang_exact` param is unstable).
   - `fsc_scraper.py` — 金管會 (FSC) HTML scraper. FSC RSS feed is broken (returns HTML), so scrapes `news_list.jsp` page with BeautifulSoup. ~15 news links per page. Dates in 民國 format.
   - `caixin_scraper.py` — 財新 Caixin Global HTML scraper. Caixin RSS returns 403, so scrapes `/news/` page. Article URLs contain date patterns (`/YYYY-MM-DD/`). ~25 articles per page.
