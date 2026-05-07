@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8" />
+  <title>金融雷達 NLM 助手</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <h1>金融雷達 NLM 助手</h1>
+    <a href="#" id="open-options" class="link">⚙ 設定</a>
+  </header>
+
+  <section class="kind-selector">
+    <label class="kind-option">
+      <input type="radio" name="kind" value="news" checked />
+      <span>📰 新聞 notebook</span>
+    </label>
+    <label class="kind-option">
+      <input type="radio" name="kind" value="yt" />
+      <span>📺 YouTube notebook</span>
+    </label>
+  </section>
+
+  <section class="actions">
+    <button id="btn-import" class="btn btn-primary">📥 匯入剪貼簿 URL</button>
+    <button id="btn-clear" class="btn btn-warning">🗑 清空 sources（保留 [SKILL]）</button>
+    <button id="btn-generate" class="btn btn-success">🧠 產生分析報告 → 推送 VM</button>
+  </section>
+
+  <section id="status" class="status hidden">
+    <div id="status-text"></div>
+    <div id="status-detail" class="detail"></div>
+  </section>
+
+  <footer>
+    <span id="config-hint" class="hint"></span>
+  </footer>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

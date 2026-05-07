@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8" />
+  <title>金融雷達 NLM 助手 — 設定</title>
+  <style>
+    body {
+      max-width: 720px;
+      margin: 24px auto;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+      font-size: 14px;
+      color: #1f2937;
+    }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .sub { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    .hint { color: #6b7280; font-size: 12px; margin-bottom: 4px; }
+    input, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+      box-sizing: border-box;
+    }
+    textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .field { margin-bottom: 18px; }
+    button {
+      padding: 8px 16px;
+      background: #6366f1;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover { background: #4f46e5; }
+    button.secondary { background: #e5e7eb; color: #1f2937; margin-left: 8px; }
+    button.secondary:hover { background: #d1d5db; }
+    .status { margin-top: 12px; padding: 8px 12px; border-radius: 4px; display: none; }
+    .status.ok { background: #d1fae5; color: #065f46; display: block; }
+    .status.err { background: #fee2e2; color: #991b1b; display: block; }
+    code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>金融雷達 NLM 助手 — 設定</h1>
+  <p class="sub">填入 NotebookLM notebook ID 與 VM API URL。本擴充功能與系統 hourly 自動排程獨立，不會影響 LINE「分析」指令。</p>
+
+  <div class="field">
+    <label for="notebookIdNews">新聞 notebook ID</label>
+    <div class="hint">從 NotebookLM 網址 <code>notebooklm.google.com/notebook/<b>{ID}</b></code> 抓出來</div>
+    <input id="notebookIdNews" type="text" placeholder="例如 a1b2c3d4-..." />
+  </div>
+
+  <div class="field">
+    <label for="notebookIdYt">YouTube notebook ID</label>
+    <div class="hint">建議用獨立的 notebook 給 YT 影片分析</div>
+    <input id="notebookIdYt" type="text" placeholder="例如 e5f6g7h8-..." />
+  </div>
+
+  <div class="field">
+    <label for="vmBaseUrl">VM API Base URL</label>
+    <div class="hint">產生報告後會 POST 到 <code>{base}/api/radar/extension-report</code></div>
+    <input id="vmBaseUrl" type="text" placeholder="http://34.23.154.194" />
+  </div>
+
+  <div class="field">
+    <label for="newsPrompt">新聞分析提示詞</label>
+    <div class="hint">留空使用內建預設（繁體中文 / 最多 2 分類 / 固定 3 點格式）</div>
+    <textarea id="newsPrompt" placeholder="留空使用預設"></textarea>
+  </div>
+
+  <div class="field">
+    <label for="ytPrompt">YouTube 分析提示詞</label>
+    <div class="hint">留空使用內建預設</div>
+    <textarea id="ytPrompt" placeholder="留空使用預設"></textarea>
+  </div>
+
+  <button id="save">儲存設定</button>
+  <button id="reset" class="secondary">恢復預設提示詞</button>
+
+  <div id="status" class="status"></div>
+
+  <script src="options.js" type="module"></script>
+</body>
+</html>

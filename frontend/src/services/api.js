@@ -40,6 +40,10 @@ export const radarAPI = {
   listGeminiReports: (type = 'gemini_news') => api.get('/radar/gemini-reports', { params: { report_type: type } }),
   getGeminiReportById: (id) => api.get(`/radar/gemini-reports/${id}`),
   triggerGeminiAnalysis: () => api.post('/radar/gemini-analyze'),
+  // Extension 手動分析報告（Chrome Extension 推送）
+  getExtensionReport: () => api.get('/radar/extension-report'),
+  listExtensionReports: () => api.get('/radar/extension-reports'),
+  getExtensionReportById: (id) => api.get(`/radar/extension-reports/${id}`),
 }
 
 // --- Search APIs ---

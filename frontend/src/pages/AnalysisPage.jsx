@@ -104,6 +104,17 @@ const TAB_CONFIG = {
     getById: (id) => radarAPI.getGeminiReportById(id),
     group: 'gemini',
   },
+  // Extension 手動分析（Chrome Extension）
+  extension: {
+    label: '🧩 Extension 分析',
+    emptyMsg: '尚無 Extension 手動分析報告',
+    emptyHint: '安裝 Chrome Extension 後，按下「產生分析報告」會推送至此',
+    reportType: 'extension_manual',
+    getLatest: () => radarAPI.getExtensionReport(),
+    listHistory: () => radarAPI.listExtensionReports(),
+    getById: (id) => radarAPI.getExtensionReportById(id),
+    group: 'extension',
+  },
 }
 
 export default function AnalysisPage() {
@@ -118,17 +129,19 @@ export default function AnalysisPage() {
   useEffect(() => {
     const loadHistory = async () => {
       try {
-        const [nList, yList, gnList, gyList] = await Promise.all([
+        const [nList, yList, gnList, gyList, extList] = await Promise.all([
           radarAPI.listNlmReports('news'),
           radarAPI.listNlmReports('yt'),
           radarAPI.listGeminiReports('gemini_news'),
           radarAPI.listGeminiReports('gemini_yt'),
+          radarAPI.listExtensionReports(),
         ])
         setHistories({
           nlm_news: nList.data || [],
           nlm_yt: yList.data || [],
           gemini_news: gnList.data || [],
           gemini_yt: gyList.data || [],
+          extension: extList.data || [],
         })
       } catch {
         // 靜默失敗
@@ -194,6 +207,8 @@ export default function AnalysisPage() {
                 tab === key
                   ? c.group === 'gemini'
                     ? 'bg-blue-600 text-white'
+                    : c.group === 'extension'
+                    ? 'bg-violet-600 text-white'
                     : 'bg-primary-600 text-white'
                   : 'text-dark-400 hover:text-white'
               }`}
@@ -225,6 +240,8 @@ export default function AnalysisPage() {
                 (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
                   ? cfg.group === 'gemini'
                     ? 'bg-blue-600/20 text-blue-400 border border-blue-600/40'
+                    : cfg.group === 'extension'
+                    ? 'bg-violet-600/20 text-violet-400 border border-violet-600/40'
                     : 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
                   : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800 border border-dark-700'
               }`}
@@ -243,7 +260,7 @@ export default function AnalysisPage() {
             </div>
           ) : !report?.content ? (
             <div className="text-center py-16 text-dark-500">
-              <div className="text-4xl mb-3">{cfg.group === 'gemini' ? '🤖' : '📋'}</div>
+              <div className="text-4xl mb-3">{cfg.group === 'gemini' ? '🤖' : cfg.group === 'extension' ? '🧩' : '📋'}</div>
               <div className="text-sm">{cfg.emptyMsg}</div>
               <div className="text-xs text-dark-600 mt-1">{cfg.emptyHint}</div>
             </div>
@@ -256,9 +273,11 @@ export default function AnalysisPage() {
                     <span className={`px-2 py-0.5 rounded text-xs font-medium ${
                       cfg.group === 'gemini'
                         ? 'bg-blue-600/20 text-blue-400'
+                        : cfg.group === 'extension'
+                        ? 'bg-violet-600/20 text-violet-400'
                         : 'bg-primary-600/20 text-primary-400'
                     }`}>
-                      {cfg.group === 'gemini' ? 'Gemini' : 'NotebookLM'}
+                      {cfg.group === 'gemini' ? 'Gemini' : cfg.group === 'extension' ? 'Extension' : 'NotebookLM'}
                     </span>
                     <span>生成時間：<span className="text-dark-400">
                       {report.generated_at ? new Date(report.generated_at).toLocaleString('zh-TW') : '—'}

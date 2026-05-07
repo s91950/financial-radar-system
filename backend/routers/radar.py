@@ -614,6 +614,105 @@ async def get_gemini_yt_report(db: Session = Depends(get_db)):
     return {"content": None, "generated_at": None, "source_title": None}
 
 
+# ── Extension（Chrome Extension 手動分析）報告端點 ─────────────────────────
+# 與 hourly 自動排程完全獨立：不寫入 nlm_latest_report / nlm_yt_latest_report，
+# 不影響 LINE「分析」指令。儲存在 NlmReport(report_type="extension_manual") +
+# 獨立的 SystemConfig keys（extension_*）。
+
+
+@router.post("/extension-report")
+async def save_extension_report(payload: dict, db: Session = Depends(get_db)):
+    """接收並儲存 Chrome Extension 手動產生的分析報告。"""
+    content = payload.get("content", "")
+    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
+    source_title = payload.get("source_title", "")
+    notebook_kind = payload.get("notebook_kind") or "news"  # "news" | "yt"
+    if notebook_kind not in ("news", "yt"):
+        notebook_kind = "news"
+
+    try:
+        gen_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except Exception:
+        gen_dt = datetime.utcnow()
+
+    # 來源批次帶上 notebook_kind 前綴方便辨識
+    full_title = f"[{notebook_kind}] {source_title}" if source_title else f"[{notebook_kind}]"
+    db.add(NlmReport(
+        report_type="extension_manual",
+        content=content,
+        generated_at=gen_dt,
+        source_title=full_title,
+    ))
+
+    for key, value in [
+        ("extension_latest_report", content),
+        ("extension_report_generated_at", generated_at),
+        ("extension_report_source_title", full_title),
+        ("extension_report_kind", notebook_kind),
+    ]:
+        _upsert_config(db, key, value)
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.get("/extension-report")
+async def get_extension_report(db: Session = Depends(get_db)):
+    """取得最新 Extension 手動分析報告。"""
+    row = (
+        db.query(NlmReport)
+        .filter(NlmReport.report_type == "extension_manual")
+        .order_by(NlmReport.id.desc())
+        .first()
+    )
+    if row:
+        return {
+            "id": row.id,
+            "content": row.content,
+            "generated_at": _iso_utc(row.generated_at),
+            "source_title": row.source_title,
+        }
+    return {"content": None, "generated_at": None, "source_title": None}
+
+
+@router.get("/extension-reports")
+async def list_extension_reports(
+    limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    """列出歷史 Extension 分析報告清單（最新在前）。"""
+    rows = (
+        db.query(NlmReport)
+        .filter(NlmReport.report_type == "extension_manual")
+        .order_by(NlmReport.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "generated_at": _iso_utc(r.generated_at),
+            "source_title": r.source_title,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/extension-reports/{report_id}")
+async def get_extension_report_by_id(report_id: int, db: Session = Depends(get_db)):
+    """取得指定 ID 的 Extension 報告完整內容。"""
+    row = db.query(NlmReport).filter(NlmReport.id == report_id).first()
+    if not row or row.report_type != "extension_manual":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="報告不存在")
+    return {
+        "id": row.id,
+        "report_type": row.report_type,
+        "content": row.content,
+        "generated_at": _iso_utc(row.generated_at),
+        "source_title": row.source_title,
+    }
+
+
 @router.post("/gemini-analyze")
 async def manual_gemini_analyze(background_tasks: BackgroundTasks):
     """手動觸發一次 Gemini 深度分析。"""

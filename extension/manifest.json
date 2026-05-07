@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "金融雷達 NotebookLM 助手",
+  "version": "0.1.0",
+  "description": "三顆按鈕：匯入剪貼簿 URL、清空 sources（保留 [SKILL]）、產生分析報告並推送至金融雷達系統。與 hourly 自動排程獨立。",
+  "permissions": [
+    "storage",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://notebooklm.google.com/*",
+    "http://34.23.154.194/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "金融雷達 NotebookLM 助手"
+  },
+  "options_page": "options.html"
+}
