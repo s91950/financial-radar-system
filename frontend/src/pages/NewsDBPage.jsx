@@ -736,10 +736,7 @@ export default function NewsDBPage() {
                       </span>
                       <div className="flex items-center gap-0.5">
                         <button
-                          onClick={() => {
-                            setSelectedArticle(article)
-                            window.scrollTo({ top: 0, behavior: 'smooth' })
-                          }}
+                          onClick={() => setSelectedArticle(article)}
                           className="p-1 rounded text-dark-400 hover:text-primary-400 hover:bg-dark-700 transition-colors"
                           title="展開內容"
                         >
