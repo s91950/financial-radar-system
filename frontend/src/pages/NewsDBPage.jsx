@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
 import { newsAPI, settingsAPI, resolveUrl, copyToClipboard } from '../services/api'
 
@@ -70,6 +70,14 @@ export default function NewsDBPage() {
   // DB article multi-select + severity filter state
   const [selectedDbIds, setSelectedDbIds] = useState(new Set())
   const [dbSeverityFilter, setDbSeverityFilter] = useState('all')
+
+  // Reset drawer scroll to top whenever a different article is opened
+  const drawerRef = useRef(null)
+  useEffect(() => {
+    if (selectedArticle && drawerRef.current) {
+      drawerRef.current.scrollTop = 0
+    }
+  }, [selectedArticle?.id])
 
   // Reset to page 0 when pageSize or severity filter changes
   const handlePageSizeChange = (newSize) => { setPageSize(newSize); setPage(0) }
@@ -792,7 +800,7 @@ export default function NewsDBPage() {
             className="fixed inset-0 z-40 bg-black/50 lg:bg-transparent lg:pointer-events-none"
             onClick={() => setSelectedArticle(null)}
           />
-          <div className="fixed z-50 card overflow-y-auto inset-x-3 top-16 bottom-3 lg:inset-auto lg:right-6 lg:top-20 lg:bottom-3 lg:w-[min(680px,42vw)] shadow-2xl !p-0">
+          <div ref={drawerRef} className="fixed z-50 card overflow-y-auto inset-x-3 top-16 bottom-3 lg:inset-auto lg:right-6 lg:top-20 lg:bottom-3 lg:w-[min(680px,42vw)] shadow-2xl !p-0">
             {/* Sticky header: title + actions stay pinned while content scrolls */}
             <div className="sticky top-0 z-10 bg-dark-800 border-b border-dark-700 px-4 md:px-5 pt-4 pb-3">
               <div className="flex items-start justify-between gap-3 mb-3">
