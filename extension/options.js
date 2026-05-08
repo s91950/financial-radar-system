@@ -1,12 +1,16 @@
-const FIELDS = ['notebookIdNews', 'notebookIdYt', 'vmBaseUrl', 'newsPrompt', 'ytPrompt'];
+const TEXT_FIELDS = ['notebookIdNews', 'notebookIdYt', 'vmBaseUrl', 'newsPrompt', 'ytPrompt'];
+const BOOL_FIELDS = ['skipVmPush'];
 
 async function load() {
-  const data = await chrome.storage.local.get(FIELDS);
-  for (const f of FIELDS) {
+  const data = await chrome.storage.local.get([...TEXT_FIELDS, ...BOOL_FIELDS]);
+  for (const f of TEXT_FIELDS) {
     const el = document.getElementById(f);
     if (el) el.value = data[f] || '';
   }
-  // VM URL 預設值
+  for (const f of BOOL_FIELDS) {
+    const el = document.getElementById(f);
+    if (el) el.checked = !!data[f];
+  }
   if (!document.getElementById('vmBaseUrl').value) {
     document.getElementById('vmBaseUrl').value = 'http://34.23.154.194';
   }
@@ -14,11 +18,14 @@ async function load() {
 
 async function save() {
   const out = {};
-  for (const f of FIELDS) {
+  for (const f of TEXT_FIELDS) {
     const el = document.getElementById(f);
     out[f] = (el?.value || '').trim();
   }
-  // 規範化 VM URL
+  for (const f of BOOL_FIELDS) {
+    const el = document.getElementById(f);
+    out[f] = !!el?.checked;
+  }
   if (out.vmBaseUrl) out.vmBaseUrl = out.vmBaseUrl.replace(/\/$/, '');
   await chrome.storage.local.set(out);
   showStatus('已儲存', 'ok');

@@ -63,8 +63,16 @@
 
   <div class="field">
     <label for="vmBaseUrl">VM API Base URL</label>
-    <div class="hint">產生報告後會 POST 到 <code>{base}/api/radar/extension-report</code></div>
+    <div class="hint">產生報告後會 POST 到 <code>{base}/api/radar/extension-report</code>。如果你沒有自己的金融雷達 VM，請勾下方「不推送」。</div>
     <input id="vmBaseUrl" type="text" placeholder="http://34.23.154.194" />
+  </div>
+
+  <div class="field">
+    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal;">
+      <input id="skipVmPush" type="checkbox" style="width: auto; margin: 0;" />
+      <span><b>不推送到 VM（純本機模式）</b></span>
+    </label>
+    <div class="hint">勾起來：產生的報告只下載 / 顯示在 popup，不會嘗試 POST 給 VM。沒有架設金融雷達服務的使用者請勾這個。</div>
   </div>
 
   <div class="field">
