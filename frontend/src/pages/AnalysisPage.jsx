@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { toast } from 'react-hot-toast'
 import { radarAPI } from '../services/api'
 
 // 將文字片段中的 URL 轉成可點擊的 <a> 連結
@@ -105,13 +106,23 @@ const TAB_CONFIG = {
     group: 'gemini',
   },
   // Extension 手動分析（Chrome Extension）
-  extension: {
-    label: '🧩 Extension 分析',
-    emptyMsg: '尚無 Extension 手動分析報告',
-    emptyHint: '安裝 Chrome Extension 後，按下「產生分析報告」會推送至此',
+  extension_news: {
+    label: '🧩 Extension 新聞',
+    emptyMsg: '尚無 Extension 新聞分析報告',
+    emptyHint: 'Chrome Extension 選擇「新聞 notebook」後產生的報告會出現在這裡',
     reportType: 'extension_manual',
-    getLatest: () => radarAPI.getExtensionReport(),
-    listHistory: () => radarAPI.listExtensionReports(),
+    getLatest: () => radarAPI.getExtensionReport('news'),
+    listHistory: () => radarAPI.listExtensionReports('news'),
+    getById: (id) => radarAPI.getExtensionReportById(id),
+    group: 'extension',
+  },
+  extension_yt: {
+    label: '🧩 Extension YT',
+    emptyMsg: '尚無 Extension YouTube 分析報告',
+    emptyHint: 'Chrome Extension 選擇「YouTube notebook」後產生的報告會出現在這裡',
+    reportType: 'extension_manual',
+    getLatest: () => radarAPI.getExtensionReport('yt'),
+    listHistory: () => radarAPI.listExtensionReports('yt'),
     getById: (id) => radarAPI.getExtensionReportById(id),
     group: 'extension',
   },
@@ -126,29 +137,29 @@ export default function AnalysisPage() {
   const [analyzing, setAnalyzing] = useState(false)
 
   // 載入所有 tab 的歷史清單
-  useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const [nList, yList, gnList, gyList, extList] = await Promise.all([
-          radarAPI.listNlmReports('news'),
-          radarAPI.listNlmReports('yt'),
-          radarAPI.listGeminiReports('gemini_news'),
-          radarAPI.listGeminiReports('gemini_yt'),
-          radarAPI.listExtensionReports(),
-        ])
-        setHistories({
-          nlm_news: nList.data || [],
-          nlm_yt: yList.data || [],
-          gemini_news: gnList.data || [],
-          gemini_yt: gyList.data || [],
-          extension: extList.data || [],
-        })
-      } catch {
-        // 靜默失敗
-      }
+  const loadHistory = async () => {
+    try {
+      const [nList, yList, gnList, gyList, extNewsList, extYtList] = await Promise.all([
+        radarAPI.listNlmReports('news'),
+        radarAPI.listNlmReports('yt'),
+        radarAPI.listGeminiReports('gemini_news'),
+        radarAPI.listGeminiReports('gemini_yt'),
+        radarAPI.listExtensionReports('news'),
+        radarAPI.listExtensionReports('yt'),
+      ])
+      setHistories({
+        nlm_news: nList.data || [],
+        nlm_yt: yList.data || [],
+        gemini_news: gnList.data || [],
+        gemini_yt: gyList.data || [],
+        extension_news: extNewsList.data || [],
+        extension_yt: extYtList.data || [],
+      })
+    } catch {
+      // 靜默失敗
     }
-    loadHistory()
-  }, [])
+  }
+  useEffect(() => { loadHistory() }, [])
 
   // 載入選定報告內容（或最新報告）
   useEffect(() => {
@@ -194,6 +205,22 @@ export default function AnalysisPage() {
     }
   }
 
+  const handleDeleteReport = async (id, label) => {
+    if (!id) return
+    if (!confirm(`確定刪除「${label}」這份分析報告嗎？此動作無法復原。`)) return
+    try {
+      await radarAPI.deleteReport(id)
+      toast.success('已刪除')
+      // 若刪的是目前選中的報告，切回該 tab 的最新（清掉 selectedId）
+      if (selectedIds[tab] === id) {
+        setSelectedIds((prev) => ({ ...prev, [tab]: null }))
+      }
+      await loadHistory()
+    } catch {
+      toast.error('刪除失敗')
+    }
+  }
+
   return (
     <div className="max-w-4xl mx-auto space-y-4">
       {/* 分析引擎切換 */}
@@ -232,23 +259,33 @@ export default function AnalysisPage() {
       {history.length > 1 && (
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
           <span className="text-xs text-dark-500 whitespace-nowrap shrink-0">歷史（{history.length}）</span>
-          {history.map((h) => (
-            <button
-              key={h.id}
-              onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
-              className={`shrink-0 px-3 py-1.5 rounded-lg text-xs transition-colors whitespace-nowrap ${
-                (selectedId === h.id || (!selectedId && h.id === history[0]?.id))
-                  ? cfg.group === 'gemini'
-                    ? 'bg-blue-600/20 text-blue-400 border border-blue-600/40'
-                    : cfg.group === 'extension'
-                    ? 'bg-violet-600/20 text-violet-400 border border-violet-600/40'
-                    : 'bg-primary-600/20 text-primary-400 border border-primary-600/40'
-                  : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800 border border-dark-700'
-              }`}
-            >
-              {fmtDate(h.generated_at)}
-            </button>
-          ))}
+          {history.map((h) => {
+            const isActive = selectedId === h.id || (!selectedId && h.id === history[0]?.id)
+            const wrapperCls = isActive
+              ? cfg.group === 'gemini'
+                ? 'bg-blue-600/20 text-blue-400 border-blue-600/40'
+                : cfg.group === 'extension'
+                ? 'bg-violet-600/20 text-violet-400 border-violet-600/40'
+                : 'bg-primary-600/20 text-primary-400 border-primary-600/40'
+              : 'text-dark-400 hover:text-dark-200 hover:bg-dark-800 border-dark-700'
+            return (
+              <div key={h.id} className={`shrink-0 inline-flex items-stretch group/item rounded-lg whitespace-nowrap border ${wrapperCls} transition-colors`}>
+                <button
+                  onClick={() => setSelectedId(selectedId === h.id ? null : h.id)}
+                  className="px-3 py-1.5 text-xs"
+                >
+                  {fmtDate(h.generated_at)}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDeleteReport(h.id, fmtDate(h.generated_at)) }}
+                  className="pl-1 pr-2 py-1.5 text-xs opacity-0 group-hover/item:opacity-100 hover:text-red-400 transition-opacity"
+                  title="刪除這份報告"
+                >
+                  ×
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -287,9 +324,20 @@ export default function AnalysisPage() {
                     <div>來源批次：<span className="text-dark-400">{report.source_title}</span></div>
                   )}
                 </div>
-                {history.length > 0 && (
-                  <div className="text-xs text-dark-600">共 {history.length} 份歷史報告</div>
-                )}
+                <div className="flex items-center gap-3">
+                  {history.length > 0 && (
+                    <div className="text-xs text-dark-600">共 {history.length} 份歷史報告</div>
+                  )}
+                  {report?.id && (
+                    <button
+                      onClick={() => handleDeleteReport(report.id, fmtDate(report.generated_at))}
+                      className="text-xs text-dark-500 hover:text-red-400 transition-colors px-2 py-1 rounded border border-dark-700 hover:border-red-500/40"
+                      title="刪除這份報告"
+                    >
+                      🗑 刪除
+                    </button>
+                  )}
+                </div>
               </div>
               {/* 報告本文 */}
               <div className="space-y-0">

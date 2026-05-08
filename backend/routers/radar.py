@@ -655,15 +655,31 @@ async def save_extension_report(payload: dict, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+def _extension_kind_filter(query, kind: str | None):
+    """以 source_title 的 `[news]` / `[yt]` 前綴篩選 Extension 報告。
+
+    舊資料若沒有前綴，預設算 `news`（向後相容）。
+    """
+    if kind == "yt":
+        return query.filter(NlmReport.source_title.like("[yt]%"))
+    if kind == "news":
+        # 包含明確標 [news] 的、以及舊資料（無前綴或不是 [yt] 開頭）
+        return query.filter(
+            (NlmReport.source_title.like("[news]%"))
+            | (~NlmReport.source_title.like("[yt]%"))
+        )
+    return query
+
+
 @router.get("/extension-report")
-async def get_extension_report(db: Session = Depends(get_db)):
-    """取得最新 Extension 手動分析報告。"""
-    row = (
-        db.query(NlmReport)
-        .filter(NlmReport.report_type == "extension_manual")
-        .order_by(NlmReport.id.desc())
-        .first()
-    )
+async def get_extension_report(
+    kind: str | None = None,  # "news" | "yt" | None=any
+    db: Session = Depends(get_db),
+):
+    """取得最新 Extension 手動分析報告。kind=news/yt 可分別取得。"""
+    q = db.query(NlmReport).filter(NlmReport.report_type == "extension_manual")
+    q = _extension_kind_filter(q, kind)
+    row = q.order_by(NlmReport.id.desc()).first()
     if row:
         return {
             "id": row.id,
@@ -677,16 +693,13 @@ async def get_extension_report(db: Session = Depends(get_db)):
 @router.get("/extension-reports")
 async def list_extension_reports(
     limit: int = 500,
+    kind: str | None = None,  # "news" | "yt" | None=any
     db: Session = Depends(get_db),
 ):
-    """列出歷史 Extension 分析報告清單（最新在前）。"""
-    rows = (
-        db.query(NlmReport)
-        .filter(NlmReport.report_type == "extension_manual")
-        .order_by(NlmReport.id.desc())
-        .limit(limit)
-        .all()
-    )
+    """列出歷史 Extension 分析報告清單（最新在前）。kind=news/yt 可分別篩選。"""
+    q = db.query(NlmReport).filter(NlmReport.report_type == "extension_manual")
+    q = _extension_kind_filter(q, kind)
+    rows = q.order_by(NlmReport.id.desc()).limit(limit).all()
     return [
         {
             "id": r.id,
@@ -711,6 +724,52 @@ async def get_extension_report_by_id(report_id: int, db: Session = Depends(get_d
         "generated_at": _iso_utc(row.generated_at),
         "source_title": row.source_title,
     }
+
+
+@router.delete("/reports/{report_id}")
+async def delete_report(report_id: int, db: Session = Depends(get_db)):
+    """通用刪除：移除任何類型的 NlmReport（NLM / Gemini / Extension 通用）。
+
+    若被刪除的是「最新」一筆（被某個 SystemConfig.*_latest_report 引用），
+    把該 SystemConfig 改指向同 report_type 中下一筆最新的；
+    沒有下一筆就清空，避免 LINE 指令拿到空白或舊資料。
+    """
+    from fastapi import HTTPException
+    row = db.query(NlmReport).filter(NlmReport.id == report_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="報告不存在")
+
+    rtype = row.report_type
+    db.delete(row)
+    db.flush()
+
+    # 刪掉的若是該 type 目前最新的，補上下一筆（或清空）
+    config_keys = {
+        "news": ("nlm_latest_report", "nlm_report_generated_at", "nlm_report_source_title"),
+        "yt": ("nlm_yt_latest_report", "nlm_yt_report_generated_at", "nlm_yt_report_source_title"),
+        "gemini_news": ("gemini_latest_report", "gemini_report_generated_at", "gemini_report_source_title"),
+        "gemini_yt": ("gemini_yt_latest_report", "gemini_yt_report_generated_at", "gemini_yt_report_source_title"),
+        "extension_manual": ("extension_latest_report", "extension_report_generated_at", "extension_report_source_title"),
+    }.get(rtype)
+    if config_keys:
+        next_row = (
+            db.query(NlmReport)
+            .filter(NlmReport.report_type == rtype)
+            .order_by(NlmReport.id.desc())
+            .first()
+        )
+        ck_content, ck_at, ck_title = config_keys
+        if next_row:
+            _upsert_config(db, ck_content, next_row.content or "")
+            _upsert_config(db, ck_at, _iso_utc(next_row.generated_at) or "")
+            _upsert_config(db, ck_title, next_row.source_title or "")
+        else:
+            _upsert_config(db, ck_content, "")
+            _upsert_config(db, ck_at, "")
+            _upsert_config(db, ck_title, "")
+
+    db.commit()
+    return {"status": "ok", "deleted_id": report_id}
 
 
 @router.post("/gemini-analyze")

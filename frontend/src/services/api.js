@@ -41,9 +41,11 @@ export const radarAPI = {
   getGeminiReportById: (id) => api.get(`/radar/gemini-reports/${id}`),
   triggerGeminiAnalysis: () => api.post('/radar/gemini-analyze'),
   // Extension 手動分析報告（Chrome Extension 推送）
-  getExtensionReport: () => api.get('/radar/extension-report'),
-  listExtensionReports: () => api.get('/radar/extension-reports'),
+  getExtensionReport: (kind) => api.get('/radar/extension-report', { params: kind ? { kind } : {} }),
+  listExtensionReports: (kind) => api.get('/radar/extension-reports', { params: kind ? { kind } : {} }),
   getExtensionReportById: (id) => api.get(`/radar/extension-reports/${id}`),
+  // 通用刪除：可刪 NLM / Gemini / Extension 任何一份歷史報告
+  deleteReport: (id) => api.delete(`/radar/reports/${id}`),
 }
 
 // --- Search APIs ---

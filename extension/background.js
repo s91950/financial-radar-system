@@ -224,9 +224,10 @@ async function generateAndPushReport({ kind }) {
   const prompt = pickPrompt(settings, kind);
   const { artifactId } = await client.generateReport(notebookId, prompt, 'zh-TW');
 
+  const GENERATE_TIMEOUT_MS = 600_000;  // 10 分鐘：NLM 在 200+ sources 時可能遠超 5 分鐘
   const startedAt = Date.now();
   await client.waitForCompletion(notebookId, artifactId, {
-    timeout: 300_000,
+    timeout: GENERATE_TIMEOUT_MS,
     onTick: async (statusCode) => {
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
       const statusLabel = statusCode === 1 ? '生成中'
@@ -237,8 +238,8 @@ async function generateAndPushReport({ kind }) {
       await setRunState({
         phase: 'generate',
         current: elapsed,
-        total: 300,
-        message: `🧠 ${statusLabel}（已等候 ${elapsed}s / 上限 300s）`,
+        total: GENERATE_TIMEOUT_MS / 1000,
+        message: `🧠 ${statusLabel}（已等候 ${elapsed}s / 上限 ${GENERATE_TIMEOUT_MS / 1000}s）`,
       });
     },
   });
@@ -407,9 +408,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await startRun('一鍵 清空 → 匯入 → 分析');
         try {
           const data = await withKeepalive(() => runCombined({ kind: msg.kind, urls: msg.urls }));
-          const allOk = (data.generate.skipped || data.generate.pushed) && data.import.failed === 0 && data.clear.failed === 0;
-          await finishRun({ ok: allOk, summary: fmtCombined(data) });
-          notify(allOk ? '✅ 一鍵流程完成' : '⚠ 一鍵流程有問題', fmtCombined(data), allOk ? 'basic' : 'err');
+          // 成功標準：分析有產出且推送成功（或本機模式跳過推送）就算成功；
+          // 匯入 / 清空有少量失敗只當警告，不把整體判為失敗（NLM 偶爾會有個位數 URL 失敗，
+          // 但只要分析報告產出來就有價值）。
+          const generateOk = data.generate.skipped || data.generate.pushed;
+          const hasWarning = data.import.failed > 0 || data.clear.failed > 0;
+          const summary = hasWarning && generateOk
+            ? `${fmtCombined(data)}（含警告）`
+            : fmtCombined(data);
+          await finishRun({ ok: generateOk, summary });
+          const titleIcon = generateOk ? (hasWarning ? '✅' : '✅') : '❌';
+          const titleText = generateOk
+            ? (hasWarning ? '一鍵流程完成（含警告）' : '一鍵流程完成')
+            : '一鍵流程失敗';
+          notify(`${titleIcon} ${titleText}`, summary, generateOk ? 'basic' : 'err');
           sendResponse({ ok: true, data });
         } catch (e) {
           await finishRun({ ok: false, error: String(e?.message || e), summary: `❌ ${e?.message || e}` });
