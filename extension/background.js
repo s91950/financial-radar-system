@@ -156,6 +156,63 @@ async function generateAndPushReport({ kind }) {
   };
 }
 
+async function runCombined({ kind, urls }) {
+  // 1️⃣ 清空
+  const clearResult = await clearSources({ kind });
+  // 2️⃣ 匯入
+  const importResult = await importClipboardUrls({ kind, urls });
+  // 3️⃣ 產生 + 推送
+  const generateResult = await generateAndPushReport({ kind });
+  return { clear: clearResult, import: importResult, generate: generateResult };
+}
+
+// ── 桌面通知 ────────────────────────────────────────────────────────────
+
+let _notifyCounter = 0;
+
+function notify(title, message, kind = 'basic') {
+  _notifyCounter += 1;
+  const id = `nlm-helper-${Date.now()}-${_notifyCounter}`;
+  try {
+    chrome.notifications.create(id, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('lib/icon128.png'),  // 缺檔時 Chrome 會 fallback
+      title,
+      message,
+      priority: kind === 'err' ? 2 : 1,
+    }, () => {
+      if (chrome.runtime.lastError) {
+        // 沒 icon 也不影響，安靜失敗
+        // 試 fallback：完全不指定 iconUrl
+        chrome.notifications.create(id + '-fb', {
+          type: 'basic',
+          iconUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII=',
+          title, message,
+        }, () => {});
+      }
+    });
+  } catch { /* 忽略 */ }
+}
+
+function notifyResult(actionLabel, result, ok = true) {
+  const lines = [];
+  if (result.clear) lines.push(`清空：${result.clear.deleted}/${result.clear.total}`);
+  if (result.import) lines.push(`匯入：${result.import.succeeded}/${result.import.total}`);
+  if (result.generate) lines.push(`分析：${result.generate.contentLength}字${result.generate.pushed ? '，已推送' : '，推送失敗'}`);
+  if (typeof result.deleted === 'number') lines.push(`刪除 ${result.deleted}/${result.total}`);
+  if (typeof result.succeeded === 'number') lines.push(`成功 ${result.succeeded}/${result.total}`);
+  if (typeof result.contentLength === 'number') lines.push(`${result.contentLength} 字${result.pushed ? '，已推送 VM' : '，推送 VM 失敗'}`);
+  notify(
+    ok ? `✅ ${actionLabel}完成` : `❌ ${actionLabel}失敗`,
+    lines.length > 0 ? lines.join('｜') : '',
+    ok ? 'basic' : 'err',
+  );
+}
+
+function notifyError(actionLabel, error) {
+  notify(`❌ ${actionLabel}失敗`, String(error?.message || error || '').slice(0, 200), 'err');
+}
+
 // ── Message router ─────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -166,18 +223,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       if (msg?.action === 'import_urls') {
-        const data = await importClipboardUrls({ kind: msg.kind, urls: msg.urls });
-        sendResponse({ ok: true, data });
+        try {
+          const data = await importClipboardUrls({ kind: msg.kind, urls: msg.urls });
+          notifyResult('匯入剪貼簿 URL', data);
+          sendResponse({ ok: true, data });
+        } catch (e) { notifyError('匯入剪貼簿 URL', e); throw e; }
         return;
       }
       if (msg?.action === 'clear_sources') {
-        const data = await clearSources({ kind: msg.kind });
-        sendResponse({ ok: true, data });
+        try {
+          const data = await clearSources({ kind: msg.kind });
+          notifyResult('清空 sources', data);
+          sendResponse({ ok: true, data });
+        } catch (e) { notifyError('清空 sources', e); throw e; }
         return;
       }
       if (msg?.action === 'generate_report') {
-        const data = await generateAndPushReport({ kind: msg.kind });
-        sendResponse({ ok: true, data });
+        try {
+          const data = await generateAndPushReport({ kind: msg.kind });
+          notifyResult('產生分析報告', data, data.pushed);
+          sendResponse({ ok: true, data });
+        } catch (e) { notifyError('產生分析報告', e); throw e; }
+        return;
+      }
+      if (msg?.action === 'run_combined') {
+        try {
+          const data = await runCombined({ kind: msg.kind, urls: msg.urls });
+          const allOk = data.generate.pushed && data.import.failed === 0;
+          notifyResult('一鍵清空→匯入→分析', data, allOk);
+          sendResponse({ ok: true, data });
+        } catch (e) { notifyError('一鍵清空→匯入→分析', e); throw e; }
         return;
       }
       if (msg?.action === 'get_settings') {

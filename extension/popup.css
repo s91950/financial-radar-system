@@ -78,6 +78,10 @@ h1 { margin: 0; font-size: 14px; font-weight: 600; color: #c4b5fd; }
 .btn-primary { background: #6366f1; }
 .btn-warning { background: #b45309; }
 .btn-success { background: #059669; }
+.btn-combined {
+  background: linear-gradient(90deg, #b45309, #6366f1, #059669);
+  font-weight: 600;
+}
 
 .status {
   padding: 8px 10px;
@@ -88,12 +92,13 @@ h1 { margin: 0; font-size: 14px; font-weight: 600; color: #c4b5fd; }
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 220px;
+  min-height: 36px;
+  max-height: 240px;
   overflow-y: auto;
 }
-.status.hidden { display: none; }
-.status.ok { border-color: #059669; }
-.status.err { border-color: #dc2626; }
+.status.ok { border-color: #059669; background: #052e1f; }
+.status.err { border-color: #dc2626; background: #2c0b0b; }
+.status.run { border-color: #6366f1; background: #0c1029; }
 .status .detail { color: #9ca3af; font-size: 11px; margin-top: 4px; }
 
 footer { margin-top: 6px; }

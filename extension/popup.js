@@ -1,4 +1,4 @@
-// popup.js — 三顆按鈕的 UI binding。實際執行委派給 background.js。
+// popup.js — 三顆原始按鈕 + 一鍵 combined。實際執行委派給 background.js。
 
 const $ = (sel) => document.querySelector(sel);
 const statusBox = $('#status');
@@ -6,8 +6,8 @@ const statusText = $('#status-text');
 const statusDetail = $('#status-detail');
 const configHint = $('#config-hint');
 
-function setStatus(text, kind = '', detail = '') {
-  statusBox.classList.remove('hidden', 'ok', 'err');
+function setStatus(text, kind = 'run', detail = '') {
+  statusBox.classList.remove('ok', 'err', 'run');
   if (kind) statusBox.classList.add(kind);
   statusText.textContent = text;
   statusDetail.textContent = detail || '';
@@ -30,14 +30,13 @@ async function bgSend(action, payload = {}) {
 }
 
 function disableButtons(disabled) {
-  ['#btn-import', '#btn-clear', '#btn-generate'].forEach((s) => {
+  ['#btn-import', '#btn-clear', '#btn-generate', '#btn-combined'].forEach((s) => {
     $(s).disabled = disabled;
   });
 }
 
 async function rememberKind() {
-  const kind = getKind();
-  await chrome.storage.local.set({ lastKind: kind });
+  await chrome.storage.local.set({ lastKind: getKind() });
 }
 
 async function restoreKind() {
@@ -68,28 +67,32 @@ function openOptions(e) {
   chrome.runtime.openOptionsPage();
 }
 
+async function readClipboardUrls() {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (e) {
+    throw new Error(`無法讀取剪貼簿：${e?.message || e}（首次使用會跳權限提示，請允許）`);
+  }
+  const ext = await bgSend('extract_urls_from_text', { text });
+  if (!ext.ok) throw new Error(ext.error);
+  return ext.data;
+}
+
 // ── 動作 ──────────────────────────────────────────────────────────────
 
 async function handleImport() {
   await rememberKind();
   const kind = getKind();
-  setStatus('讀取剪貼簿…', '', '');
+  setStatus('讀取剪貼簿…', 'run');
   disableButtons(true);
   try {
-    let text = '';
-    try {
-      text = await navigator.clipboard.readText();
-    } catch (e) {
-      throw new Error(`無法讀取剪貼簿：${e?.message || e}（首次使用會跳權限提示，請允許）`);
-    }
-    const extractResp = await bgSend('extract_urls_from_text', { text });
-    if (!extractResp.ok) throw new Error(extractResp.error);
-    const urls = extractResp.data;
+    const urls = await readClipboardUrls();
     if (urls.length === 0) {
       setStatus('剪貼簿沒有 URL', 'err', '請先複製含 URL 的文字到剪貼簿');
       return;
     }
-    setStatus(`匯入中… 找到 ${urls.length} 個 URL`, '', urls.slice(0, 3).join('\n') + (urls.length > 3 ? '\n…' : ''));
+    setStatus(`匯入中… 找到 ${urls.length} 個 URL`, 'run', urls.slice(0, 3).join('\n') + (urls.length > 3 ? '\n…' : ''));
     const resp = await bgSend('import_urls', { kind, urls });
     if (!resp.ok) throw new Error(resp.error);
     const r = resp.data;
@@ -108,7 +111,7 @@ async function handleClear() {
   await rememberKind();
   const kind = getKind();
   if (!confirm(`確定要清空 ${kind === 'yt' ? 'YouTube' : '新聞'} notebook 內所有非 [SKILL] sources？`)) return;
-  setStatus('清空中…', '');
+  setStatus('清空中…', 'run');
   disableButtons(true);
   try {
     const resp = await bgSend('clear_sources', { kind });
@@ -129,7 +132,7 @@ async function handleClear() {
 async function handleGenerate() {
   await rememberKind();
   const kind = getKind();
-  setStatus('產生報告中…（最久 5 分鐘）', '', '請保持 popup 開啟，否則 service worker 可能被關閉');
+  setStatus('產生報告中…（最久 5 分鐘）', 'run', '可以關閉 popup，完成後桌面通知會通知你');
   disableButtons(true);
   try {
     const resp = await bgSend('generate_report', { kind });
@@ -146,11 +149,41 @@ async function handleGenerate() {
   }
 }
 
+async function handleCombined() {
+  await rememberKind();
+  const kind = getKind();
+  if (!confirm(`一鍵流程：\n1️⃣ 清空 ${kind === 'yt' ? 'YouTube' : '新聞'} notebook 內所有非 [SKILL] sources\n2️⃣ 匯入剪貼簿 URL（請先複製好）\n3️⃣ 產生分析報告並推送 VM\n\n總時間最久 5 分鐘，要繼續嗎？`)) return;
+  setStatus('讀取剪貼簿…', 'run');
+  disableButtons(true);
+  try {
+    const urls = await readClipboardUrls();
+    if (urls.length === 0) {
+      setStatus('剪貼簿沒有 URL', 'err', '請先複製含 URL 的文字到剪貼簿');
+      return;
+    }
+    setStatus('一鍵流程啟動…', 'run', `找到 ${urls.length} 個 URL，將依序執行 清空 → 匯入 → 分析`);
+    const resp = await bgSend('run_combined', { kind, urls });
+    if (!resp.ok) throw new Error(resp.error);
+    const r = resp.data;
+    const lines = [
+      `🗑 清空：刪除 ${r.clear.deleted}/${r.clear.total}（保留 [SKILL] ${r.clear.skipped}）`,
+      `📥 匯入：${r.import.succeeded}/${r.import.total} 成功${r.import.failed > 0 ? `、${r.import.failed} 失敗` : ''}`,
+      `🧠 分析：${r.generate.contentLength} 字${r.generate.pushed ? '，已推送 VM' : `，⚠ 推送失敗：${r.generate.pushError || ''}`}`,
+    ];
+    setStatus('✅ 一鍵流程完成', r.generate.pushed && r.import.failed === 0 ? 'ok' : 'err', lines.join('\n'));
+  } catch (e) {
+    setStatus(`❌ ${e?.message || e}`, 'err');
+  } finally {
+    disableButtons(false);
+  }
+}
+
 // ── 綁定 ──────────────────────────────────────────────────────────────
 
 $('#btn-import').addEventListener('click', handleImport);
 $('#btn-clear').addEventListener('click', handleClear);
 $('#btn-generate').addEventListener('click', handleGenerate);
+$('#btn-combined').addEventListener('click', handleCombined);
 $('#open-options').addEventListener('click', openOptions);
 document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', rememberKind));
 

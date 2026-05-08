@@ -1,10 +1,13 @@
 # 金融雷達 NotebookLM 助手（Chrome Extension）
 
-三顆按鈕讓你可以**手動**對 NotebookLM 做：
+四顆按鈕讓你可以**手動**對 NotebookLM 做：
 
-1. **匯入剪貼簿 URL** — 讀剪貼簿，抽出所有 URL，逐個匯入到指定 notebook
-2. **清空 sources** — 刪除 notebook 內所有非 `[SKILL] ` 開頭的 sources（保留分析框架）
-3. **產生分析報告** — 用設定的提示詞產生一份報告，下載後 POST 到 VM `/api/radar/extension-report`，可在 `/analysis` 頁面「Extension 分析」tab 看到
+1. **📥 匯入剪貼簿 URL** — 讀剪貼簿，抽出所有 URL，逐個匯入到指定 notebook
+2. **🗑 清空 sources** — 刪除 notebook 內所有非 `[SKILL] ` 開頭的 sources（保留分析框架）
+3. **🧠 產生分析報告** — 用設定的提示詞產生一份報告，下載後 POST 到 VM `/api/radar/extension-report`，可在 `/analysis` 頁面「Extension 分析」tab 看到
+4. **🚀 一鍵 清空 → 匯入 → 分析** — 把上面三個動作依序串起來執行
+
+完成後會跳**桌面通知**，所以即使關閉 popup 也知道結果。
 
 > 與系統現有的 hourly 自動排程（`scripts/notebooklm_hourly.py`）**完全獨立**：
 > - 不寫入 `nlm_latest_report` / `nlm_yt_latest_report`，LINE「分析」指令永遠拿到 hourly 的最新版

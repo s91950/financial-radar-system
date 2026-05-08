@@ -154,11 +154,16 @@ export const youtubeAPI = {
 
 /**
  * Resolve a URL to its final destination (follow HTTP redirects).
- * Useful for converting RSS feed redirect URLs into actual article URLs
- * that AI tools like Gemini can read directly.
+ *
+ * 現況：雷達掃描時 `_resolve_gn_article_urls()` 已用 batchexecute 把 Google News
+ * 重導 URL 解碼成最終網址寫進 DB，所以絕大多數複製場景 URL 已經是原始連結。
+ * 只有極少數歷史資料還可能是 `news.google.com/rss/articles/...` 沒解到，那種
+ * 才需要走 HTTP redirect。對其他網域直接 pass through 可以省下 N×（最多 10s）
+ * 的等待，不再每次複製都跑「解析連結中…」。
  */
 export async function resolveUrl(url) {
   if (!url) return url
+  if (!url.includes('news.google.com')) return url
   try {
     const { data } = await api.get('/utils/resolve-url', { params: { url }, timeout: 10000 })
     return data.url
