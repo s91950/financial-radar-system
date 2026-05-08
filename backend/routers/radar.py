@@ -4,8 +4,8 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.database import Alert, MarketWatchItem, NlmReport, SignalCondition, SystemConfig, get_db
@@ -407,14 +407,31 @@ def _upsert_config(db, key, value):
         db.add(SystemConfig(key=key, value=value))
 
 
+# 分析報告 payload 大小上限（防止任意外部呼叫塞爆 SystemConfig / NlmReport）
+# 5 MB 對 Markdown 報告綽綽有餘（典型報告 5-50 KB），但能擋掉惡意灌爆攻擊
+_REPORT_CONTENT_MAX = 5_000_000
+_REPORT_TITLE_MAX = 1000
+_REPORT_TS_MAX = 64
+
+
+class _ReportPayload(BaseModel):
+    """通用報告寫入 payload。多餘欄位（如 alert_ids）忽略以保留向後相容。"""
+    model_config = {"extra": "ignore"}
+
+    content: str = Field(default="", max_length=_REPORT_CONTENT_MAX)
+    generated_at: str | None = Field(default=None, max_length=_REPORT_TS_MAX)
+    source_title: str = Field(default="", max_length=_REPORT_TITLE_MAX)
+    notebook_kind: str | None = Field(default=None, max_length=16)
+
+
 @router.post("/notebooklm-report")
-async def save_nlm_report(payload: dict, db: Session = Depends(get_db)):
+async def save_nlm_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 NotebookLM 分析報告（由本機 notebooklm_hourly.py 推送）。
     累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
     """
-    content = payload.get("content", "")
-    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
-    source_title = payload.get("source_title", "")
+    content = payload.content or ""
+    generated_at = payload.generated_at or datetime.utcnow().isoformat()
+    source_title = payload.source_title or ""
 
     # 累積寫入歷史表
     try:
@@ -496,13 +513,13 @@ async def get_nlm_report_by_id(report_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/notebooklm-yt-report")
-async def save_nlm_yt_report(payload: dict, db: Session = Depends(get_db)):
+async def save_nlm_yt_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 NotebookLM YouTube 分析報告（由本機 notebooklm_hourly.py 推送）。
     累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
     """
-    content = payload.get("content", "")
-    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
-    source_title = payload.get("source_title", "")
+    content = payload.content or ""
+    generated_at = payload.generated_at or datetime.utcnow().isoformat()
+    source_title = payload.source_title or ""
 
     # 累積寫入歷史表
     try:
@@ -621,12 +638,12 @@ async def get_gemini_yt_report(db: Session = Depends(get_db)):
 
 
 @router.post("/extension-report")
-async def save_extension_report(payload: dict, db: Session = Depends(get_db)):
+async def save_extension_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 Chrome Extension 手動產生的分析報告。"""
-    content = payload.get("content", "")
-    generated_at = payload.get("generated_at") or datetime.utcnow().isoformat()
-    source_title = payload.get("source_title", "")
-    notebook_kind = payload.get("notebook_kind") or "news"  # "news" | "yt"
+    content = payload.content or ""
+    generated_at = payload.generated_at or datetime.utcnow().isoformat()
+    source_title = payload.source_title or ""
+    notebook_kind = payload.notebook_kind or "news"  # "news" | "yt"
     if notebook_kind not in ("news", "yt"):
         notebook_kind = "news"
 

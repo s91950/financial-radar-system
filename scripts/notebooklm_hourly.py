@@ -91,6 +91,9 @@ NOTEBOOK_ID_YT   = os.environ.get("NOTEBOOK_ID_YT", "")
 RESULT_PUSH_LINE = os.environ.get("RESULT_PUSH_LINE", "false").lower() == "true"
 HOURS_BACK       = int(os.environ.get("HOURS_BACK", "1"))
 MIN_SEVERITY     = os.environ.get("MIN_SEVERITY", "low")
+# 若 VM 後端啟用了 API token 驗證，請在 .env.local 設 API_TOKEN；沒啟用就留空
+_API_TOKEN       = os.environ.get("API_TOKEN", "")
+VM_HEADERS       = {"X-API-Key": _API_TOKEN} if _API_TOKEN else {}
 
 _SEV_RANK   = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 _STATE_FILE = os.path.join(_script_dir, ".nlm_state.json")
@@ -591,7 +594,8 @@ async def _run_news_analysis(articles: list[dict], cutoff: datetime, requests_mo
                 "source_title": source_title,
             }
             resp = requests_mod.post(
-                f"{API_BASE_URL}/api/radar/notebooklm-report", json=payload, timeout=10
+                f"{API_BASE_URL}/api/radar/notebooklm-report", json=payload, timeout=10,
+                headers=VM_HEADERS or None,
             )
             if resp.status_code in (200, 201):
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 新聞分析已寫回 VM API")
@@ -809,7 +813,8 @@ async def _run_yt_analysis(videos: list[dict], cutoff: datetime, requests_mod) -
                 "source_title": source_title,
             }
             resp = requests_mod.post(
-                f"{API_BASE_URL}/api/radar/notebooklm-yt-report", json=payload, timeout=10
+                f"{API_BASE_URL}/api/radar/notebooklm-yt-report", json=payload, timeout=10,
+                headers=VM_HEADERS or None,
             )
             if resp.status_code in (200, 201):
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] YT 分析已寫回 VM API")
@@ -1045,6 +1050,7 @@ def main():
                 f"{API_BASE_URL}/api/news/articles",
                 params={"limit": 500, "fetched_after": news_cutoff.isoformat()},
                 timeout=20,
+                headers=VM_HEADERS or None,
             )
             resp.raise_for_status()
             all_articles = resp.json().get("articles", [])
@@ -1092,6 +1098,7 @@ def main():
                 f"{API_BASE_URL}/api/youtube/videos",
                 params={"limit": 50},
                 timeout=15,
+                headers=VM_HEADERS or None,
             )
             resp.raise_for_status()
             all_videos = resp.json()

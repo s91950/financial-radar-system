@@ -4,6 +4,7 @@ import { Toaster, toast } from 'react-hot-toast'
 import Sidebar from './components/Layout/Sidebar'
 import Header from './components/Layout/Header'
 import NotificationCenter from './components/Layout/NotificationCenter'
+import TokenGate from './components/Layout/TokenGate'
 import RadarPage from './pages/RadarPage'
 import SearchPage from './pages/SearchPage'
 import NewsDBPage from './pages/NewsDBPage'
@@ -90,6 +91,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <TokenGate>
       <div className="min-h-screen overflow-x-hidden">
         <Sidebar />
         <main className="ml-0 md:ml-64 pb-16 md:pb-0">
@@ -164,6 +166,7 @@ export default function App() {
 
         <Toaster position="top-right" />
       </div>
+      </TokenGate>
     </BrowserRouter>
   )
 }

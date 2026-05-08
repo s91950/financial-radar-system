@@ -12,6 +12,7 @@ VM 設定同步腳本
 """
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -24,6 +25,9 @@ except ImportError:
 
 # ── 設定 ─────────────────────────────────────────────────────────────────────
 LOCAL_DB = Path(__file__).parent.parent / "data" / "financial_radar.db"
+# 若 VM 後端啟用了 API token 驗證，從環境變數 API_TOKEN 或 VM_API_TOKEN 讀；沒設就留空
+_API_TOKEN = os.environ.get("API_TOKEN") or os.environ.get("VM_API_TOKEN") or ""
+VM_HEADERS = {"X-API-Key": _API_TOKEN} if _API_TOKEN else None
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -42,13 +46,13 @@ def api(vm: str, method: str, path: str, data: dict = None):
     url = vm + path
     try:
         if method == "GET":
-            r = requests.get(url, timeout=15)
+            r = requests.get(url, timeout=15, headers=VM_HEADERS)
         elif method == "PUT":
-            r = requests.put(url, json=data, timeout=15)
+            r = requests.put(url, json=data, timeout=15, headers=VM_HEADERS)
         elif method == "POST":
-            r = requests.post(url, json=data, timeout=15)
+            r = requests.post(url, json=data, timeout=15, headers=VM_HEADERS)
         elif method == "DELETE":
-            r = requests.delete(url, timeout=15)
+            r = requests.delete(url, timeout=15, headers=VM_HEADERS)
         else:
             raise ValueError(f"Unknown method: {method}")
         r.raise_for_status()

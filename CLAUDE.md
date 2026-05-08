@@ -16,6 +16,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 需要更新 VM：`backend/`、`frontend/`、`deploy/` 下的任何檔案修改
 - 不需要更新 VM：`scripts/` 下的本地腳本、`CLAUDE.md`、`README.md`、純本地設定檔
 
+## API Token 驗證（opt-in）
+
+後端 [backend/auth.py](backend/auth.py) 提供 opt-in 的 `X-API-Key` header 驗證，套用在 [backend/main.py](backend/main.py) 所有 router 上（**LINE webhook 除外**，它有自己的 HMAC 簽章）。
+
+**啟用流程**：
+1. 各端 client 先升級到帶 token 的版本（已改完，預設沒設 token 時行為等同舊版）
+2. 在 VM `.env` 加入：`API_TOKEN=<隨機長字串>`（產生：`python -c "import secrets; print(secrets.token_urlsafe(32))"`）
+3. 同一把 token 設到：
+   - 前端：第一次開頁時 axios 收到 401 → TokenGate 跳出輸入框，貼入後存 localStorage
+   - Chrome Extension：options 頁的 `VM API Token` 欄位
+   - `scripts/.env.local`（給 `notebooklm_hourly.py`）：`API_TOKEN=...`
+   - 跑 `sync_vm_settings.py` 時 export `API_TOKEN=...` 環境變數
+4. `sudo systemctl restart financial-radar` 生效
+
+**未啟用時**：所有 client 都送空 header / 不送 header；後端 dependency 看到 `os.getenv("API_TOKEN")` 為空就直接放行。可零中斷漸進啟用。
+
+**永遠不擋的端點**（即使啟用）：`GET /api/health`、`POST /api/line/webhook`、`/ws` WebSocket。
+
 ## 設定資料以 VM 為主
 
 除非使用者特別指示「改本地」或「以本地為準」，否則 **VM 上的設定永遠是唯一的真實來源 (source of truth)**：
@@ -130,9 +148,11 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 4. **研究報告 (Research)** `/reports` — Daily auto-fetch from IMF, BIS, Fed, ECB, BOJ, BOE, NBER. Dual-mode: RSS for working feeds, **RePEc/IDEAS HTML scraping** for institutions with broken RSS (IMF, ECB, NBER). Same preview → select → save flow.
 5. **市場儀表板 (Dashboard)** `/dashboard` — Market indicators, sentiment charts, heat map.
 6. **YouTube 監控** `/youtube` — Monitors YouTube channels for new videos, stores in `YoutubeVideo` table with `is_new` flag.
-7. **分析結果** `/analysis` — Displays AI analysis reports. Four tabs: NLM 新聞 / NLM YouTube / Gemini 新聞 / Gemini YouTube + 手動觸發 Gemini 分析按鈕. History row for browsing past reports by date. NLM reports from local `notebooklm_hourly.py`; Gemini reports from VM-side `gemini_analysis.py` (every 3h auto). Lazy-loads from `GET /api/radar/notebooklm-report`, `GET /api/radar/notebooklm-yt-report`, `GET /api/radar/gemini-report`, `GET /api/radar/gemini-yt-report`.
+7. **分析結果** `/analysis` — Displays AI analysis reports. **Six tabs**: NLM 新聞 / NLM YouTube / Gemini 新聞 / Gemini YouTube / 🧩 Extension 新聞 / 🧩 Extension YT + 手動觸發 Gemini 分析按鈕（只在 Gemini tab 顯示）. Each history pill has a hover-revealed × delete button; single-report view has a 「🗑 刪除」 button in the header. Calls `DELETE /api/radar/reports/{id}` (generic — works for NLM/Gemini/Extension), which also re-points the relevant `SystemConfig.*_latest_report` to the next-newest row of the same `report_type` (or clears it if none) so LINE commands and other consumers don't see stale data. NLM reports from local `notebooklm_hourly.py` (auto, every 3h); Gemini reports from VM-side `gemini_analysis.py` (auto, every 3h); **Extension 分析** from the Chrome Extension (`extension/`, manual via popup, fully isolated from hourly — see "Chrome Extension" section); the news/YT split is filtered server-side by `source_title` prefix `[news]` / `[yt]` (推送時 `notebook_kind` 帶入). Lazy-loads from `GET /api/radar/notebooklm-report`, `GET /api/radar/notebooklm-yt-report`, `GET /api/radar/gemini-report`, `GET /api/radar/gemini-yt-report`, `GET /api/radar/extension-report?kind=news|yt`. Tab colours: NLM = primary（紫紅）, Gemini = blue, Extension = violet.
 8. **意見回饋 (Feedback)** `/feedback` — User submits improvement suggestions with category (功能建議/問題回報/介面改善/其他意見). History list with delete. Backend: `Feedback` model in `database.py`, `routers/feedback.py` (`GET /api/feedback/`, `POST /api/feedback/`, `DELETE /api/feedback/{id}`).
-9. **篩選前資料 (Raw Articles)** `/raw-articles` — 雷達在 RSS/MOPS/website/GN 各取得點 INSERT OR IGNORE 寫入 `RawArticle` 表的所有原始文章（任何篩選之前），滾動保留 7 天。每天 04:15 UTC 自動清理 7 天前資料 + `incremental_vacuum`。最終通過所有篩選的 URL 在掃描末尾標記 `filter_status='passed'`，讓使用者能區分哪些被指紋去重 / 排除關鍵字 / 財經篩選擋掉。頁面含總覽卡（總筆數 / 進雷達 / 被篩掉 / 最新抓取）+ 來源類型分布 + 搜尋（沿用 NewsDB normalize+n-gram 容錯）+ 篩選 + 列表。Backend：`RawArticle` model（`source_url` 唯一索引、`fetched_at`/`source` 索引）、`routers/raw_articles.py`（GET /articles, /stats, /sources; DELETE /articles/{id}; POST /cleanup）、`scheduler/jobs.py` 中的 `_record_raw_articles`、`_mark_raw_articles_passed`、`cleanup_raw_articles`。設計原則：不存全文 body（只存 RSS summary 或前 500 字），單列 ~500 B–1.5 KB，7 天估 <100 MB。
+9. **篩選前資料 (Raw Articles)** `/raw-articles` — 雷達在 RSS/MOPS/website/GN 各取得點 INSERT OR IGNORE 寫入 `RawArticle` 表的所有原始文章（任何篩選之前），滾動保留 7 天。每天 04:15 UTC 自動清理 7 天前資料 + `incremental_vacuum`。最終通過所有篩選的 URL 在掃描末尾標記 `filter_status='passed'`，讓使用者能區分哪些被指紋去重 / 排除關鍵字 / 財經篩選擋掉。頁面含總覽卡（總筆數 / 進雷達 / 被篩掉 / 最新抓取）+ 來源類型分布 + 搜尋（沿用 NewsDB normalize+n-gram 容錯）+ 篩選 + 列表（**來源篩選用下拉選單**，從 `GET /raw-articles/sources` 動態載入已出現過的來源 + 計數）。Backend：`RawArticle` model（`(source_url, title)` 部分 UNIQUE 索引、`fetched_at` / `source` 普通索引）、`routers/raw_articles.py`（GET /articles, /stats, /sources; DELETE /articles/{id}; POST /cleanup）、`scheduler/jobs.py` 中的 `_record_raw_articles`、`_mark_raw_articles_passed`、`cleanup_raw_articles`。設計原則：不存全文 body（只存 RSS summary 或前 500 字），單列 ~500 B–1.5 KB，7 天估 <100 MB。
+
+**dedup 索引必須走 `_migrate_db()`，不能用 model 的 `index=True`**：歷史上 `Column(source_url, index=True)` 讓 `Base.metadata.create_all` 搶建非 UNIQUE 索引 `ix_raw_articles_source_url`，後續 migration 的 `CREATE UNIQUE INDEX IF NOT EXISTS` 看到同名就跳過、`INSERT OR IGNORE` 形同無效。雷達各 step（RSS / Pass A2 / GN / Topic Pass B）會對同一批文章重複呼叫 `_record_raw_articles`，沒有 UNIQUE 守門時每次掃就乘倍數（VM 觀察到 9k 筆膨脹成 30 萬筆）。修法：model 拿掉 `index=True`，migration 裡先 DELETE dup → DROP 舊普通索引 → CREATE UNIQUE INDEX `ix_raw_articles_url_title` ON `(source_url, title)` WHERE source_url 非空。新增任何 `(col, index=True)` 同時又在 migration 想建 UNIQUE 的欄位，請複製這個踩坑案例的處理方式。
 10. **系統設定 (Settings)** `/settings` — Sources, notifications, Google Sheets, AI model, radar topics.
 
 ### Backend Layer Structure
@@ -311,6 +331,10 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `nlm_yt_latest_report` | Full Markdown text of the latest NotebookLM YouTube analysis report |
 | `nlm_yt_report_generated_at` | ISO timestamp of when the YT report was generated |
 | `nlm_yt_report_source_title` | Source title string used when the YT report was created |
+| `extension_latest_report` | Latest Chrome Extension manual analysis report (Markdown). Written by `POST /api/radar/extension-report` from the extension's `background.js` |
+| `extension_report_generated_at` | ISO timestamp of when the extension report was generated |
+| `extension_report_source_title` | Source titles batch label, prefixed with `[news]` or `[yt]` for the kind |
+| `extension_report_kind` | `"news"` 或 `"yt"`, indicating which notebook the manual report came from |
 | `source_health_threshold_hours` | Source health monitoring threshold in hours (default `"48"`, range 1-720). Sources whose `last_success_at` is older than this are flagged as stale. |
 
 ### LINE Webhook Command System (`routers/line_webhook.py`)
@@ -360,13 +384,13 @@ Fourteen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`,
 
 - **Pages:** `RadarPage`, `SearchPage`, `NewsDBPage`, `ReportsPage`, `DashboardPage`, `YouTubePage`, `AnalysisPage`, `FeedbackPage`, `SettingsPage`
 - **Responsive layout**: `RadarPage` has separate mobile (`sm:hidden`) and desktop (`hidden sm:flex`) card layouts. Mobile: date+delete on top row, title below full-width, keyword tags limited to 2. Desktop: original horizontal flex (title+article lines in `flex-1`, date+delete on right as `shrink-0`). Global layout: sidebar `hidden md:flex`, mobile bottom tab bar `md:hidden` with "更多" panel for secondary pages.
-- **API client:** `frontend/src/services/api.js` — Axios instance with 60s timeout, exports `radarAPI`, `searchAPI`, `newsAPI`, `settingsAPI`, `topicsAPI`, `reportsAPI`, plus `resolveUrl()` utility for Google News redirect resolution. `radarAPI` includes `getNlmReport()` and `getNlmYtReport()` for fetching NLM analysis reports. `copyToClipboard(text)` utility: uses `navigator.clipboard.writeText()` in HTTPS/localhost, falls back to `document.execCommand('copy')` for HTTP (VM) — all copy buttons across pages use this function.
+- **API client:** `frontend/src/services/api.js` — Axios instance with 60s timeout, exports `radarAPI`, `searchAPI`, `newsAPI`, `settingsAPI`, `topicsAPI`, `reportsAPI`, `rawArticlesAPI`, `youtubeAPI`, plus `resolveUrl()` utility. `radarAPI` includes NLM (`getNlmReport / getNlmYtReport / listNlmReports / getNlmReportById`), Gemini (`getGeminiReport / getGeminiYtReport / listGeminiReports / getGeminiReportById / triggerGeminiAnalysis`), and **Extension** (`getExtensionReport / listExtensionReports / getExtensionReportById`) endpoints. **`resolveUrl()` 重要行為**：只在 URL 含 `news.google.com` 才打 backend `/api/utils/resolve-url`（HTTP redirect 解析），其他網域直接 pass-through 不出網路。理由：雷達掃描階段 `_resolve_gn_article_urls()` 已用 batchexecute 把 GN URL 解碼成最終網址再寫進 DB，DB 內 99% 都是原始連結；以前每個複製動作對 N 個 URL 都打 backend、每個最多 10s 等待，56 個並行就拖很久。`copyToClipboard(text)` utility: uses `navigator.clipboard.writeText()` in HTTPS/localhost, falls back to `document.execCommand('copy')` for HTTP (VM).
 - **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts.
 - **Styling:** Tailwind CSS dark theme, custom classes `card`, `card-hover`, `btn-primary`, `btn-secondary`, `btn-danger`, `input` defined in `index.css`.
 - **Severity display** (`NewsDBPage`): `assessSeverity(title, content)` runs client-side with the same keyword lists as the backend. `SeverityBadge` renders text pills (緊急/高/低). Not a server field — computed on render.
 - **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle and a `fixed_severity` dropdown (動態評估 / 緊急 / 高風險 / 低風險). Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category. Source expanded view includes a type dropdown (RSS / 網頁爬蟲 / 社群) for non-mops/research sources.
 - **SettingsPage radar keywords**: Category-based structure — keywords are organized into named categories (`[{name, lang: "tw"|"en", keywords: [...]}]`), stored in `SystemConfig["radar_topic_categories"]` via `GET/PUT /api/settings/radar-topic-categories`. On save, TW categories flatten to `radar_topics`, EN categories to `radar_topics_us`. Each category renders as a coloured card (`CAT_COLORS`, 8 colours) with TW/EN badge; simple keywords as pills, boolean combos via `GroupedKeywordCard`. Backward-compatible: old flat lists auto-migrate to a single "未分類" category on load. `stripNotTerms(kw)` extracts `NOT term` / `NOT "multi word"` clauses from boolean keyword strings; `serializeGroups(groups, notTerms)` appends them at the end. Boolean keyword cards show NOT terms as red chips; the edit panel has a dedicated "排除詞（NOT）" input section. Global exclusion keywords are managed in a red-bordered section below the categories — saved alongside topics via `updateRadarTopics(..., exclusion_keywords)`. `parseGroupedKeyword(kw)` calls `stripNotTerms` before regex parsing so NOT clauses don't break group detection.
-- **AnalysisPage** (`/analysis`): Two tabs (新聞分析 / YouTube 影片分析). History row (horizontal scroll) lets users select past reports by date. `renderReport()` renders Markdown headings, dividers, bold text; `renderInline()` handles `**bold**` and URLs in the same line; `linkify()` converts bare URLs to `<a>` links. Shows `generated_at` timestamp and `source_title` metadata. Empty state shown when no report exists. All `generated_at` timestamps are tagged with `Z` by `_iso_utc()` in `radar.py` so JavaScript interprets them as UTC, not local time.
+- **AnalysisPage** (`/analysis`): **Five tabs** in `TAB_CONFIG`: `nlm_news` / `nlm_yt` / `gemini_news` / `gemini_yt` / `extension`. Each tab config has `{label, emptyMsg, emptyHint, reportType, getLatest, listHistory, getById, group}` shape; `group` is one of `'nlm'` (primary 紫紅) / `'gemini'` (blue) / `'extension'` (violet) and drives all colour styling. History row (horizontal scroll) lets users select past reports by date. `renderReport()` renders Markdown headings, dividers, bold text; `renderInline()` handles `**bold**` and URLs in the same line; `linkify()` converts bare URLs to `<a>` links. Shows `generated_at` timestamp and `source_title` metadata. Empty state shown when no report exists. All `generated_at` timestamps are tagged with `Z` by `_iso_utc()` in `radar.py` so JavaScript interprets them as UTC, not local time.
 - **Routing constraint**: `PUT /api/settings/sources/reorder` must be declared **before** `PUT /api/settings/sources/{source_id}` in `settings.py` or FastAPI will match `"reorder"` as a source ID.
 
 ## Configuration
@@ -387,7 +411,7 @@ Copy `.env.example` to `.env`. Key variables:
 
 | Prefix | Router | Purpose |
 |--------|--------|---------|
-| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. NLM: `POST/GET /notebooklm-report`, `POST/GET /notebooklm-yt-report`. Gemini: `GET /gemini-report`, `GET /gemini-yt-report`, `GET /gemini-reports?report_type=`, `GET /gemini-reports/{id}`, `POST /gemini-analyze` (manual trigger). All stored in `NlmReport` table + `SystemConfig`. |
+| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. NLM: `POST/GET /notebooklm-report`, `POST/GET /notebooklm-yt-report`. Gemini: `GET /gemini-report`, `GET /gemini-yt-report`, `GET /gemini-reports?report_type=`, `GET /gemini-reports/{id}`, `POST /gemini-analyze` (manual trigger). **Extension** (Chrome ext 手動推入): `POST/GET /extension-report?kind=news\|yt`, `GET /extension-reports?kind=news\|yt`, `GET /extension-reports/{id}` — `kind` 篩選依 `source_title` 前綴 `[news]` / `[yt]`（推送時 `notebook_kind` 帶入，舊資料無前綴歸 news）。Completely isolated from hourly: writes `NlmReport(report_type="extension_manual")` + `SystemConfig["extension_*"]` keys, never touches `nlm_latest_report` / `nlm_yt_latest_report`, so LINE「分析」指令一直拿到 hourly 的最新版. **`DELETE /reports/{id}`** — 通用刪除（NLM / Gemini / Extension 任一份 `NlmReport`），刪掉的若是該 type 目前最新的，會把對應的 `SystemConfig.*_latest_report` 系列重新指向同 type 下一筆最新；沒有下一筆就清空。All reports stored in `NlmReport` table + `SystemConfig`. |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
 | `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. `POST /fetch` supports `source_type`: `"sources_only"` (RSS + social + website + MOPS — 與雷達掃描範圍對齊) or `"gn_only"` (Google News). When no query, uses radar_topics + active Topic keywords. **Search 容錯邏輯**：`_normalize_query_text()` 對 query 與被比對文字做 NFKC（全形→半形）+ 移除空白 + lower，讓「美股收紅！」與「美股收紅!」視為相同；`_split_query_terms()` 切 ASCII↔CJK 邊界後對 ≥6 字 CJK 段補 4-gram、≥12 字補 6-gram，讓貼整段標題能由部分文字命中。OR 比對：任一 term 為 substring 即過。Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. `GET /sources` returns configured source names + `__other__` with counts; `GET /keywords` returns unique `matched_keyword` values with counts. `GET /articles` accepts `source` and `keyword` query params for filtering. |
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
@@ -466,3 +490,71 @@ Runs on the **VM** via APScheduler (every 3 hours, first run 5 min after startup
 **`_iso_utc()` in `radar.py`**: All NlmReport datetime fields are serialized via `_iso_utc(dt)` which appends `Z` if absent — ensures JavaScript interprets the timestamp as UTC, not local time (SQLite stores naive UTC datetimes that `isoformat()` would return without timezone marker).
 
 **`youtube_feed.py` UTC fix**: `_parse_published()` uses `calendar.timegm()` (not `time.mktime()`) to convert `published_parsed` struct from feedparser — feedparser returns UTC structs, `mktime()` would treat them as local time causing an 8-hour offset. `_video_dict()` in `youtube.py` also appends `Z` to `isoformat()` output for the same reason.
+
+## Chrome Extension (`extension/`) — 手動 NotebookLM 分析
+
+MV3 Chrome 擴充功能，給使用者**手動**對 NotebookLM 做四件事：(1) 匯入剪貼簿 URL、(2) 清空 sources（保留 `[SKILL] ` 前綴的框架檔）、(3) 產生分析報告 → 推送 VM、(4) 一鍵把 (1)(2)(3) 串起來。**與 hourly 自動排程完全獨立**：不寫入 `nlm_latest_report` / `nlm_yt_latest_report` / `gemini_*` 任何 SystemConfig，LINE「分析」指令永遠拿到 hourly 的最新版。
+
+### 認證模型 — 大幅簡化於 hourly 腳本
+
+直接吃**瀏覽器既有的 NotebookLM 登入 cookies**：`background.js` 進入點先 `fetch('https://notebooklm.google.com/')`，從 HTML regex 抽出 `SNlM0e`（CSRF）+ `FdrFJe`（session ID），再以瀏覽器自動帶上的 cookies 呼叫 `batchexecute` RPC。**不需** `~/.notebooklm/storage_state.json`、Playwright headed 模式、PSIDRTS cookie 保活那些 hack（hourly 腳本仍需要那套，因為它跑在無頭 Python 環境）。
+
+### 結構
+
+| 檔案 | 角色 |
+|---|---|
+| `manifest.json` | MV3，permissions: `storage` / `clipboardRead` / `notifications` / `alarms`；host_permissions: `notebooklm.google.com` + VM URL |
+| `popup.html/js/css` | 工具列 popup UI：4 顆按鈕 + 新聞/YT segmented control + 常駐狀態框 + 設定齒輪 |
+| `options.html/js` | 設定頁：notebook ID（新聞 / YT）、VM URL、自訂提示詞、`skipVmPush` 勾選 |
+| `background.js` | Service worker — 統一處理 NotebookLM API + 推送 VM + 桌面通知；popup/options 都透過 `chrome.runtime.sendMessage` 委派 |
+| `lib/notebooklm.js` | `class NotebookLMClient` — 從 `notebooklm-py` 0.3.4 抄出的 batchexecute RPC 客戶端（`init` / `listSources` / `addUrlSource` / `addTextSource` / `deleteSource` / `generateReport` / `waitForCompletion` / `downloadReport`），含 chunked response 解碼（strip `)]}'\n` → 解析 byte-count + JSON 交替 → 抽 `wrb.fr` rpcId 對應結果） |
+| `INSTALL.md` | 給拿到 zip 的使用者照著做的安裝 / 使用 / 故障排除手冊 |
+| `README.md` | 給開發者看的設計說明 + 故障排除 |
+
+對應的打包腳本：`scripts/package_extension.sh`（純 Python 不依賴 zip 命令）→ 產出 `dist/nlm-helper-v{version}.zip`，從 `manifest.json` 抓版本號自動命名。
+
+### MV3 Service Worker idle timeout — 必修陷阱
+
+**問題**：MV3 service worker 30 秒沒事做就會被 Chrome 殺掉。當使用者按下「匯入幾十個 URL」或「產生分析報告」（涉及 `waitForCompletion` 內每 2-10 秒輪詢），popup 關掉後 SW 在 sleep 期間就死了，迴圈當場斷掉，使用者看到的就是「匯入到一半就停」。
+
+**修法（[extension/background.js](extension/background.js#L74)）**：
+```
+chrome.alarms.create('nlm-keepalive', { periodInMinutes: 0.4 })  // 每 24 秒喚醒
+```
+搭配 `withKeepalive(fn)` wrapper：每個長操作開始前 startKeepalive、結束後 stopKeepalive；引用計數讓巢狀（一鍵流程內呼三個動作）也安全。
+
+**配套保險**：
+- 每個 URL 包 `withTimeout(promise, 30_000)`，單個卡死的 URL 不會凍結整批
+- 連續呼叫之間 sleep 300ms，避免 NotebookLM 端 rate limiting
+
+### 進度持久化 — popup 關閉重開能還原
+
+每一步都把 `{phase, label, current, total, message, startedAt, finishedAt?, ok?, error?}` 寫進 `chrome.storage.local.lastRun` 並透過 `chrome.runtime.sendMessage({action:'progress', state})` 廣播。Popup 收到廣播即時刷新；popup 重新開啟時呼 `get_last_run` 還原；popup 內每秒 tick 一次更新「已 Xs」計時。`phase` 集合 `{starting, clear, import, generate, download, push, combined-start, between, done}`，`renderRunState()` 看 phase 決定 UI（進行中 / 已完成 / 待機）。
+
+### 一鍵流程的成功標準 — 寬鬆判定
+
+`run_combined`（清空 → 匯入 → 分析）的成功標準是 **`generate.skipped || generate.pushed`**，不要求 import / clear 都 0 失敗。理由：NLM 對 200+ sources 偶發個位數 URL 失敗（4/193 之類），整體分析報告仍能正常產出且推送到 VM、進到「分析結果」頁——這種情況硬判失敗是誤報。改為「分析有產出且推送成功」即算成功，匯入 / 清空有失敗只在標題加「（含警告）」。**單獨**呼叫 `import_urls` / `clear_sources` 時仍維持嚴格判定（任一失敗即失敗），因為使用者明確只想做這一件事。
+
+### `waitForCompletion` 超時 — 600s
+
+`generateAndPushReport()` 等待 NotebookLM 產生報告的超時是 600 秒（10 分鐘），不是 300 秒。200+ sources 時 NLM 經常超過 5 分鐘還在跑，300s 會把好好的執行誤判為超時。改參數時注意 popup 顯示也要對齊（`message` 寫的「上限 N s」）。
+
+### `skipVmPush` 設計（給沒有自架 VM 的使用者用）
+
+Options 頁有「不推送到 VM（純本機模式）」勾選，存 `chrome.storage.local.skipVmPush`。`generateAndPushReport()` 跑完下載報告後讀此 flag：勾起來就直接顯示在 popup（不打 VM），沒勾才 POST 到 `${vmBaseUrl}/api/radar/extension-report`。**分發 zip 給朋友時必須叮嚀對方勾起來**，不然他們的報告會推到你的 VM 雷達系統。
+
+### 分發策略（已決：方式 C — zip + Load unpacked）
+
+開發者帳號費 $5 + Chrome Web Store 一週審查不划算（且 NotebookLM 內部 RPC 反向工程可能被 reviewer 質疑），先用 zip 分發：
+1. `bash scripts/package_extension.sh` → `dist/nlm-helper-v{ver}.zip`
+2. 對方收到 zip → 解壓 → `chrome://extensions/` → 開發人員模式 → 載入未封裝項目 → 選資料夾
+3. 對方 options 設定自己的 notebook ID + 勾「不推送到 VM」（如不需要推 VM）
+4. 對方需自行登入 NotebookLM（每個使用者用自己帳號）
+
+更新版本：bump `manifest.json::version` → 重新打包 → 對方下載新 zip 蓋掉舊資料夾 → `chrome://extensions/` 按重新整理；`chrome.storage.local` 內的設定不會被清掉。
+
+### 改動 Extension 時的注意事項
+
+- **改 NotebookLM RPC**（`lib/notebooklm.js` 的 RPC ID 常數 + 各方法 params 結構）：對應 `notebooklm-py` 同版本（pip show notebooklm-py 看 0.3.x），若 Google 改了內部 API、`notebooklm-py` 升版時，這邊要同步抄
+- **改 background → popup 訊息協定**：popup.js 的 `bgSend()` + `onMessage` 監聽要一起改；`progress` 廣播 state 結構保持向後相容比較好
+- **新增 chrome permission**：對方升級時 Chrome 會強制停用 extension 直到使用者手動重新啟用，盡量避免無意義加 permission

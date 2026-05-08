@@ -1,4 +1,4 @@
-const TEXT_FIELDS = ['notebookIdNews', 'notebookIdYt', 'vmBaseUrl', 'newsPrompt', 'ytPrompt'];
+const TEXT_FIELDS = ['notebookIdNews', 'notebookIdYt', 'vmBaseUrl', 'apiToken', 'newsPrompt', 'ytPrompt'];
 const BOOL_FIELDS = ['skipVmPush'];
 
 async function load() {

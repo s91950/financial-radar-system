@@ -68,6 +68,12 @@
   </div>
 
   <div class="field">
+    <label for="apiToken">VM API Token（可選）</label>
+    <div class="hint">若 VM 後端啟用了 API token 驗證，請貼上對應 token。若 VM 沒啟用就留空。</div>
+    <input id="apiToken" type="password" placeholder="留空 = VM 沒啟用 token 驗證" />
+  </div>
+
+  <div class="field">
     <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal;">
       <input id="skipVmPush" type="checkbox" style="width: auto; margin: 0;" />
       <span><b>不推送到 VM（純本機模式）</b></span>

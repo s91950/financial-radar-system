@@ -41,12 +41,13 @@ const DEFAULT_YT_PROMPT = `你是一個資深金融分析師團隊。請根據�
 async function getSettings() {
   const data = await chrome.storage.local.get([
     'notebookIdNews', 'notebookIdYt',
-    'vmBaseUrl', 'newsPrompt', 'ytPrompt', 'skipVmPush',
+    'vmBaseUrl', 'apiToken', 'newsPrompt', 'ytPrompt', 'skipVmPush',
   ]);
   return {
     notebookIdNews: data.notebookIdNews || '',
     notebookIdYt: data.notebookIdYt || '',
     vmBaseUrl: (data.vmBaseUrl || 'http://34.23.154.194').replace(/\/$/, ''),
+    apiToken: data.apiToken || '',
     newsPrompt: data.newsPrompt || DEFAULT_NEWS_PROMPT,
     ytPrompt: data.ytPrompt || DEFAULT_YT_PROMPT,
     skipVmPush: !!data.skipVmPush,
@@ -267,9 +268,11 @@ async function generateAndPushReport({ kind }) {
     vmUrl = `${settings.vmBaseUrl}/api/radar/extension-report`;
     await setRunState({ phase: 'push', message: `📤 推送至 VM：${vmUrl}` });
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (settings.apiToken) headers['X-API-Key'] = settings.apiToken;
       const resp = await withTimeout(fetch(vmUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           content: markdown,
           generated_at: new Date().toISOString(),

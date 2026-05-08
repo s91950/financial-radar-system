@@ -41,11 +41,18 @@ router = APIRouter()
 
 
 def _verify_signature(body: bytes, signature: str) -> bool:
-    """驗證 LINE Webhook 簽名（HMAC-SHA256）。"""
+    """驗證 LINE Webhook 簽名（HMAC-SHA256）。
+
+    Fail-closed：未設定 LINE_CHANNEL_SECRET 時拒絕所有請求。
+    若 VM 啟動發現 secret 缺失就要立刻在 LINE Developers Console
+    重設或補填 .env，避免攻擊者在 secret 未設定時直接送入偽造事件。
+    """
     secret = settings.LINE_CHANNEL_SECRET
     if not secret:
-        logger.warning("LINE_CHANNEL_SECRET 未設定，跳過簽名驗證")
-        return True
+        logger.error("LINE_CHANNEL_SECRET 未設定，拒絕 webhook 請求（fail-closed）")
+        return False
+    if not signature:
+        return False
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
     expected = base64.b64encode(digest).decode("utf-8")
     return hmac.compare_digest(expected, signature)

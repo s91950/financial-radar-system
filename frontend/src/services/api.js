@@ -6,6 +6,43 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// ── API Token (opt-in) ────────────────────────────────────────────────
+// 後端啟用 API_TOKEN 時，前端從 localStorage 讀取 token 自動帶 X-API-Key header。
+// 沒設 token 也不會壞掉（後端如果沒啟用 API_TOKEN 則照常放行）。
+// 收到 401 時清空本地 token 並廣播 'api-token-required' 事件，由 TokenGate 接管 UI。
+export const API_TOKEN_KEY = 'apiToken'
+
+export function getApiToken() {
+  try { return localStorage.getItem(API_TOKEN_KEY) || '' } catch { return '' }
+}
+
+export function setApiToken(token) {
+  try {
+    if (token) localStorage.setItem(API_TOKEN_KEY, token)
+    else localStorage.removeItem(API_TOKEN_KEY)
+  } catch { /* ignore */ }
+}
+
+api.interceptors.request.use((config) => {
+  const token = getApiToken()
+  if (token) {
+    config.headers = config.headers || {}
+    config.headers['X-API-Key'] = token
+  }
+  return config
+})
+
+api.interceptors.response.use(
+  (resp) => resp,
+  (err) => {
+    if (err?.response?.status === 401) {
+      setApiToken('')
+      try { window.dispatchEvent(new CustomEvent('api-token-required')) } catch {}
+    }
+    return Promise.reject(err)
+  },
+)
+
 // --- Radar APIs ---
 export const radarAPI = {
   getAlerts: (params) => api.get('/radar/alerts', { params }),
