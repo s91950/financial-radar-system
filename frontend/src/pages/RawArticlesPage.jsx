@@ -26,6 +26,7 @@ export default function RawArticlesPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(0)
+  const [sourceOptions, setSourceOptions] = useState([])
 
   // Filters
   const [search, setSearch] = useState('')
@@ -39,6 +40,13 @@ export default function RawArticlesPage() {
     try {
       const { data } = await rawArticlesAPI.stats()
       setStats(data)
+    } catch { /* ignore */ }
+  }, [])
+
+  const loadSources = useCallback(async () => {
+    try {
+      const { data } = await rawArticlesAPI.sources()
+      setSourceOptions(Array.isArray(data) ? data : [])
     } catch { /* ignore */ }
   }, [])
 
@@ -64,6 +72,7 @@ export default function RawArticlesPage() {
   }, [page, search, sourceType, source, filterStatus, hoursBack])
 
   useEffect(() => { loadStats() }, [loadStats])
+  useEffect(() => { loadSources() }, [loadSources])
   useEffect(() => { loadArticles() }, [loadArticles])
 
   const handleSearch = (e) => {
@@ -181,13 +190,18 @@ export default function RawArticlesPage() {
             <option value="72">近 3 天</option>
           </select>
 
-          <input
-            type="text"
+          <select
             value={source}
             onChange={(e) => { setSource(e.target.value); setPage(0) }}
-            placeholder="來源名稱（可選）"
-            className="input w-40"
-          />
+            className="input w-56"
+          >
+            <option value="">所有來源</option>
+            {sourceOptions.map(s => (
+              <option key={s.name} value={s.name}>
+                {s.name}（{s.count}）
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
