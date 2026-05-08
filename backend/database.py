@@ -257,7 +257,9 @@ class RawArticle(Base):
     title = Column(String, nullable=False)
     summary = Column(Text)                          # RSS summary 或前 500 字
     source = Column(String, index=True)
-    source_url = Column(String, index=True)
+    # source_url 的索引由 _migrate_db() 統一管理（複合 UNIQUE: source_url + title），
+    # 這裡不加 index=True 以免 create_all 搶建普通索引、讓 UNIQUE 永遠建不起來。
+    source_url = Column(String)
     source_type = Column(String, nullable=True)     # rss | social | website | mops | gn
     published_at = Column(DateTime, nullable=True)
     fetched_at = Column(DateTime, default=datetime.utcnow, index=True)
@@ -467,19 +469,45 @@ def _migrate_db():
         ))
         conn.commit()
 
-        # raw_articles：篩選前資料（滾動 7 天）。Base.metadata.create_all 已建表，這裡只補索引。
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_raw_articles_fetched_at ON raw_articles(fetched_at)"
-        ))
-        conn.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_raw_articles_source_url "
-            "ON raw_articles(source_url) "
-            "WHERE source_url IS NOT NULL AND source_url != ''"
-        ))
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_raw_articles_source ON raw_articles(source)"
-        ))
-        conn.commit()
+        # raw_articles：篩選前資料（滾動 7 天）。
+        # 注意：Base.metadata.create_all 不會替已存在的表加新索引，但歷史上 model 曾有
+        # `source_url=Column(..., index=True)` 建出非 UNIQUE 的 ix_raw_articles_source_url，
+        # 導致同名 CREATE UNIQUE INDEX IF NOT EXISTS 永遠被跳過、INSERT OR IGNORE 失效。
+        # 修法：先去重，DROP 舊普通索引，再建 (source_url, title) 複合 UNIQUE。
+        try:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_raw_articles_fetched_at ON raw_articles(fetched_at)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_raw_articles_source ON raw_articles(source)"
+            ))
+            conn.commit()
+
+            # 清除同 (source_url, title) 的重複資料，保留 id 最小者
+            conn.execute(text("""
+                DELETE FROM raw_articles
+                WHERE source_url IS NOT NULL AND source_url != ''
+                  AND id NOT IN (
+                    SELECT MIN(id) FROM raw_articles
+                    WHERE source_url IS NOT NULL AND source_url != ''
+                    GROUP BY source_url, title
+                  )
+            """))
+            conn.commit()
+
+            # 移除舊的非 UNIQUE source_url 索引（若存在）
+            conn.execute(text("DROP INDEX IF EXISTS ix_raw_articles_source_url"))
+            conn.commit()
+
+            # 建立 (source_url, title) 複合 UNIQUE 索引
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_raw_articles_url_title "
+                "ON raw_articles(source_url, title) "
+                "WHERE source_url IS NOT NULL AND source_url != ''"
+            ))
+            conn.commit()
+        except Exception as e:
+            print(f"raw_articles migration warning: {e}")
 
         # Create research_reports table
         conn.execute(text("""CREATE TABLE IF NOT EXISTS research_reports (
