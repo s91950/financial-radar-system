@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { radarAPI, resolveUrl, settingsAPI, copyToClipboard } from '../services/api'
+import { radarAPI, resolveUrl, settingsAPI, copyToClipboard, getCurrentUser } from '../services/api'
 
 export default function RadarPage({ wsSubscribe }) {
   const [alerts, setAlerts] = useState([])
@@ -22,6 +22,9 @@ export default function RadarPage({ wsSubscribe }) {
   const [selectedSourceUrls, setSelectedSourceUrls] = useState(new Set())
 
   useEffect(() => {
+    // 訪客（未登入）跳過：/settings/ai-model 是 admin-only，
+    // 訪客打會 401 觸發登入彈窗，破壞訪客體驗
+    if (!getCurrentUser()) return
     settingsAPI.getAIModel().then(({ data }) => {
       setAiLabel(data.model === 'gemini' ? 'Gemini' : 'Claude')
     }).catch(() => {})

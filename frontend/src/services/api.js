@@ -59,8 +59,14 @@ api.interceptors.response.use(
   (err) => {
     const status = err?.response?.status
     const url = err?.config?.url || ''
-    // 401 / 403 一律觸發 AuthGate；但 /auth/login 本身的 401 不要清登入狀態
-    if ((status === 401 || status === 403) && !url.includes('/auth/login')) {
+    const hadBearer = !!(err?.config?.headers?.['Authorization'])
+    const isLogin = url.includes('/auth/login')
+
+    // 觸發「請登入」彈窗的條件：請求帶了 Bearer 卻 401（token 過期/失效，需重登）
+    // 不觸發的情況：
+    //  - 沒帶 Bearer 的 401（訪客背景 fetch 撞 admin 端點，靜默不擾）
+    //  - 403（已登入但角色不夠，這是權限問題不是認證問題，不要叫人重登）
+    if (status === 401 && hadBearer && !isLogin) {
       clearAuth()
       try { window.dispatchEvent(new CustomEvent('auth-required', { detail: { status } })) } catch {}
     }

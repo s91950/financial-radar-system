@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { radarAPI, newsAPI } from '../services/api'
+import { radarAPI, newsAPI, getCurrentUser } from '../services/api'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import CategoryTabs from '../components/Radar/CategoryTabs'
 import MarketIndicatorCard from '../components/Radar/MarketIndicatorCard'
@@ -73,6 +73,8 @@ export default function DashboardPage({ wsSubscribe }) {
   }, [])
 
   const loadSentiment = useCallback(async () => {
+    // 訪客（未登入）跳過：/news/sentiment 是 regular+，會 401 觸發登入彈窗
+    if (!getCurrentUser()) return
     setSentimentLoading(true)
     try {
       const { data } = await newsAPI.getSentiment()
