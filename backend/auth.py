@@ -64,6 +64,13 @@ class AuthContext:
 
 
 def _try_jwt(authorization: Optional[str]) -> Optional[AuthContext]:
+    """嘗試解 Authorization: Bearer <jwt>。
+
+    過期 / 無效一律 return None（視為無認證），讓 endpoint 自己決定：
+      - 只要 guest 可看的 → 仍然回 200
+      - 需要登入的 → require_role 會回 401
+    這樣 JWT 自然過期不會把整個 UI 鎖到登入頁，只有點到需登入功能才提示。
+    """
     if not authorization:
         return None
     parts = authorization.split(None, 1)
@@ -74,17 +81,15 @@ def _try_jwt(authorization: Optional[str]) -> Optional[AuthContext]:
         return None
     try:
         payload = decode_access_token(token)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
     except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        return None  # 過期 / 簽章錯 / 格式錯都視同無認證
     role = payload.get("role", "regular")
     if role not in ROLE_ORDER:
-        raise HTTPException(status_code=401, detail="Invalid token role")
+        return None
     try:
         user_id = int(payload.get("sub"))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid token subject")
+        return None
     return AuthContext(
         role=role,
         user_id=user_id,
