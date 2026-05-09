@@ -68,9 +68,9 @@
   </div>
 
   <div class="field">
-    <label for="apiToken">VM API Token（可選）</label>
-    <div class="hint">若 VM 後端啟用了 API token 驗證，請貼上對應 token。若 VM 沒啟用就留空。</div>
-    <input id="apiToken" type="password" placeholder="留空 = VM 沒啟用 token 驗證" />
+    <label for="apiToken">VM API Key（建議用 Service API Key）</label>
+    <div class="hint">推薦：在 VM 前端「Service Keys」頁面建立一把專給 Extension 用的 key（<code>sk_…</code> 開頭），貼這裡。出事時可單獨撤銷不影響其他 client。也接受舊版單一 API_TOKEN（過渡期）。VM 沒啟用驗證就留空。</div>
+    <input id="apiToken" type="password" placeholder="sk_xxxxx... 或留空" />
   </div>
 
   <div class="field">

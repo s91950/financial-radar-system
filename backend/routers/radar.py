@@ -8,10 +8,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import Alert, MarketWatchItem, NlmReport, SignalCondition, SystemConfig, get_db
 from backend.services import market_data
 
 router = APIRouter()
+
+# Service Keys（含 admin role）也會通過 require_admin，所以 Extension/scripts 寫報告 OK
+_ADMIN = [Depends(require_admin)]
 
 CATEGORY_LABELS = {
     "equity": {"label": "股市", "icon": "chart-bar"},
@@ -97,7 +101,7 @@ async def get_alert_stats(db: Session = Depends(get_db)):
     return {"total": total, "unread": unread, "critical": critical}
 
 
-@router.put("/alerts/{alert_id}/save")
+@router.put("/alerts/{alert_id}/save", dependencies=_ADMIN)
 async def toggle_alert_save(alert_id: int, db: Session = Depends(get_db)):
     """Toggle the saved state of an alert."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
@@ -108,7 +112,7 @@ async def toggle_alert_save(alert_id: int, db: Session = Depends(get_db)):
     return {"success": True, "is_saved": alert.is_saved}
 
 
-@router.put("/alerts/{alert_id}/read")
+@router.put("/alerts/{alert_id}/read", dependencies=_ADMIN)
 async def mark_alert_read(alert_id: int, db: Session = Depends(get_db)):
     """Mark an alert as read."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
@@ -119,7 +123,7 @@ async def mark_alert_read(alert_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.put("/alerts/read-all")
+@router.put("/alerts/read-all", dependencies=_ADMIN)
 async def mark_all_read(db: Session = Depends(get_db)):
     """Mark all alerts as read."""
     db.query(Alert).filter(Alert.is_read == False).update({"is_read": True})
@@ -127,7 +131,7 @@ async def mark_all_read(db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.delete("/alerts/{alert_id}")
+@router.delete("/alerts/{alert_id}", dependencies=_ADMIN)
 async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
     """Delete an alert."""
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
@@ -138,7 +142,7 @@ async def delete_alert(alert_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.post("/alerts/{alert_id}/analyze")
+@router.post("/alerts/{alert_id}/analyze", dependencies=_ADMIN)
 async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
     """On-demand AI analysis for an alert (includes position exposure)."""
     from backend.services.ai_factory import get_ai_service
@@ -257,7 +261,7 @@ async def get_twse_data():
     return data or {"error": "TWSE data unavailable"}
 
 
-@router.post("/market/watchlist")
+@router.post("/market/watchlist", dependencies=_ADMIN)
 async def add_watchlist_item(req: WatchlistCreateRequest, db: Session = Depends(get_db)):
     """Add a new item to the market watchlist."""
     existing = db.query(MarketWatchItem).filter(MarketWatchItem.symbol == req.symbol).first()
@@ -279,7 +283,7 @@ async def add_watchlist_item(req: WatchlistCreateRequest, db: Session = Depends(
     return {"id": item.id, "symbol": item.symbol, "name": item.name, "category": item.category}
 
 
-@router.put("/market/watchlist/{item_id}")
+@router.put("/market/watchlist/{item_id}", dependencies=_ADMIN)
 async def update_watchlist_item(
     item_id: int, req: WatchlistUpdateRequest, db: Session = Depends(get_db),
 ):
@@ -295,7 +299,7 @@ async def update_watchlist_item(
     return {"success": True}
 
 
-@router.delete("/market/watchlist/{item_id}")
+@router.delete("/market/watchlist/{item_id}", dependencies=_ADMIN)
 async def delete_watchlist_item(item_id: int, db: Session = Depends(get_db)):
     """Remove an item from the watchlist (cascades to conditions)."""
     item = db.query(MarketWatchItem).filter(MarketWatchItem.id == item_id).first()
@@ -320,7 +324,7 @@ async def get_conditions(item_id: int, db: Session = Depends(get_db)):
     return [_condition_to_dict(c) for c in conditions]
 
 
-@router.post("/market/watchlist/{item_id}/conditions")
+@router.post("/market/watchlist/{item_id}/conditions", dependencies=_ADMIN)
 async def create_condition(
     item_id: int, req: ConditionCreateRequest, db: Session = Depends(get_db),
 ):
@@ -346,7 +350,7 @@ async def create_condition(
     return _condition_to_dict(cond)
 
 
-@router.put("/market/conditions/{cond_id}")
+@router.put("/market/conditions/{cond_id}", dependencies=_ADMIN)
 async def update_condition(
     cond_id: int, req: ConditionUpdateRequest, db: Session = Depends(get_db),
 ):
@@ -362,7 +366,7 @@ async def update_condition(
     return _condition_to_dict(cond)
 
 
-@router.delete("/market/conditions/{cond_id}")
+@router.delete("/market/conditions/{cond_id}", dependencies=_ADMIN)
 async def delete_condition(cond_id: int, db: Session = Depends(get_db)):
     """Delete a signal condition."""
     cond = db.query(SignalCondition).filter(SignalCondition.id == cond_id).first()
@@ -424,7 +428,7 @@ class _ReportPayload(BaseModel):
     notebook_kind: str | None = Field(default=None, max_length=16)
 
 
-@router.post("/notebooklm-report")
+@router.post("/notebooklm-report", dependencies=_ADMIN)
 async def save_nlm_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 NotebookLM 分析報告（由本機 notebooklm_hourly.py 推送）。
     累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
@@ -512,7 +516,7 @@ async def get_nlm_report_by_id(report_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/notebooklm-yt-report")
+@router.post("/notebooklm-yt-report", dependencies=_ADMIN)
 async def save_nlm_yt_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 NotebookLM YouTube 分析報告（由本機 notebooklm_hourly.py 推送）。
     累積寫入 nlm_reports 表（不覆蓋），同時更新 SystemConfig 供 LINE bot 使用最新報告。
@@ -637,7 +641,7 @@ async def get_gemini_yt_report(db: Session = Depends(get_db)):
 # 獨立的 SystemConfig keys（extension_*）。
 
 
-@router.post("/extension-report")
+@router.post("/extension-report", dependencies=_ADMIN)
 async def save_extension_report(payload: _ReportPayload, db: Session = Depends(get_db)):
     """接收並儲存 Chrome Extension 手動產生的分析報告。"""
     content = payload.content or ""
@@ -743,7 +747,7 @@ async def get_extension_report_by_id(report_id: int, db: Session = Depends(get_d
     }
 
 
-@router.delete("/reports/{report_id}")
+@router.delete("/reports/{report_id}", dependencies=_ADMIN)
 async def delete_report(report_id: int, db: Session = Depends(get_db)):
     """通用刪除：移除任何類型的 NlmReport（NLM / Gemini / Extension 通用）。
 
@@ -789,7 +793,7 @@ async def delete_report(report_id: int, db: Session = Depends(get_db)):
     return {"status": "ok", "deleted_id": report_id}
 
 
-@router.post("/gemini-analyze")
+@router.post("/gemini-analyze", dependencies=_ADMIN)
 async def manual_gemini_analyze(background_tasks: BackgroundTasks):
     """手動觸發一次 Gemini 深度分析。"""
     from backend.services.gemini_analysis import run_gemini_news_analysis, run_gemini_yt_analysis
@@ -802,7 +806,7 @@ async def manual_gemini_analyze(background_tasks: BackgroundTasks):
     return {"message": "Gemini 分析已啟動（背景執行中）"}
 
 
-@router.post("/scan")
+@router.post("/scan", dependencies=_ADMIN)
 async def manual_scan(background_tasks: BackgroundTasks):
     """Manually trigger a radar scan immediately (bypasses cross-process lock)."""
     from backend.scheduler.jobs import radar_scan

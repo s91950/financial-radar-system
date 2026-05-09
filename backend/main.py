@@ -8,15 +8,12 @@ from typing import Set
 from fastapi import BackgroundTasks, Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.auth import require_api_token
+from backend.auth import require_admin, require_owner, require_regular
 from backend.database import init_db
 from backend.routers import line_webhook, news_db, radar, research, search, settings, topics, youtube
+from backend.routers import auth_router, users as users_router, service_keys as service_keys_router
 from backend.scheduler.jobs import start_scheduler, stop_scheduler
 from backend.services.url_safety import is_safe_public_url
-
-# 套用到所有 router 的共用 dependency。API_TOKEN env 沒設定時 dependency 直接放行，
-# 所以 default 行為與舊版完全一致；要啟用就在 VM .env 加 API_TOKEN 即可。
-_API_DEPS = [Depends(require_api_token)]
 
 
 # --- WebSocket Connection Manager ---
@@ -79,21 +76,33 @@ if _ENV != "production":
         allow_headers=["*"],
     )
 
-# Register routers — 全部掛上 API token dependency，line_webhook 例外（自有 HMAC 簽章）
-app.include_router(radar.router, prefix="/api/radar", tags=["雷達"], dependencies=_API_DEPS)
-app.include_router(search.router, prefix="/api/search", tags=["搜尋"], dependencies=_API_DEPS)
-app.include_router(news_db.router, prefix="/api/news", tags=["新聞資料庫"], dependencies=_API_DEPS)
-app.include_router(settings.router, prefix="/api/settings", tags=["設定"], dependencies=_API_DEPS)
-app.include_router(topics.router, prefix="/api/topics", tags=["主題追蹤"], dependencies=_API_DEPS)
-app.include_router(research.router, prefix="/api/research", tags=["研究報告"], dependencies=_API_DEPS)
-app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube 頻道"], dependencies=_API_DEPS)
-app.include_router(line_webhook.router, prefix="/api", tags=["LINE Webhook"])  # 不掛 token
+# Register routers — 角色權限分層
+# 公開（不需登入）：
+app.include_router(auth_router.router, prefix="/api/auth", tags=["認證"])
+app.include_router(line_webhook.router, prefix="/api", tags=["LINE Webhook"])  # 自有 HMAC
+
+# 雷達：guest 可讀（不掛 router-level dep），但 router 內各 write endpoint 都自帶 require_admin
+app.include_router(radar.router, prefix="/api/radar", tags=["雷達"])
+
+# 一般使用者讀寫：登入後（regular+）即可
+app.include_router(search.router, prefix="/api/search", tags=["搜尋"], dependencies=[Depends(require_regular)])
+app.include_router(news_db.router, prefix="/api/news", tags=["新聞資料庫"], dependencies=[Depends(require_regular)])
+app.include_router(research.router, prefix="/api/research", tags=["研究報告"], dependencies=[Depends(require_regular)])
+app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube 頻道"], dependencies=[Depends(require_regular)])
+
+# 管理者 only：設定、主題管理（會改雷達掃描行為）
+app.include_router(settings.router, prefix="/api/settings", tags=["設定"], dependencies=[Depends(require_admin)])
+app.include_router(topics.router, prefix="/api/topics", tags=["主題追蹤"], dependencies=[Depends(require_admin)])
 
 from backend.routers import feedback
-app.include_router(feedback.router, prefix="/api/feedback", tags=["意見回饋"], dependencies=_API_DEPS)
+app.include_router(feedback.router, prefix="/api/feedback", tags=["意見回饋"], dependencies=[Depends(require_regular)])
 
 from backend.routers import raw_articles
-app.include_router(raw_articles.router, prefix="/api/raw-articles", tags=["篩選前資料"], dependencies=_API_DEPS)
+app.include_router(raw_articles.router, prefix="/api/raw-articles", tags=["篩選前資料"], dependencies=[Depends(require_regular)])
+
+# 擁有者 only：使用者與 service key 管理
+app.include_router(users_router.router, prefix="/api/users", tags=["使用者管理"], dependencies=[Depends(require_owner)])
+app.include_router(service_keys_router.router, prefix="/api/service-keys", tags=["Service Keys"], dependencies=[Depends(require_owner)])
 
 
 @app.get("/api/health")
@@ -101,7 +110,7 @@ async def health_check():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
-@app.get("/api/utils/resolve-url", dependencies=_API_DEPS)
+@app.get("/api/utils/resolve-url", dependencies=[Depends(require_regular)])
 async def resolve_url(url: str):
     """Follow HTTP redirects and return the final article URL.
 
@@ -129,7 +138,7 @@ async def resolve_url(url: str):
     return {"url": url, "resolved": False}
 
 
-@app.post("/api/utils/resolve-stored-urls", dependencies=_API_DEPS)
+@app.post("/api/utils/resolve-stored-urls", dependencies=[Depends(require_regular)])
 async def resolve_stored_urls(background_tasks: BackgroundTasks):
     """One-time background job to resolve all Google News redirect URLs
     stored in alerts (source_urls field) and articles (source_url field).

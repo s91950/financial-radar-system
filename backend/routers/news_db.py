@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import Article, get_db
 
 router = APIRouter()
@@ -163,7 +164,7 @@ async def update_article(
     return _article_to_dict(article)
 
 
-@router.delete("/articles/{article_id}")
+@router.delete("/articles/{article_id}", dependencies=[Depends(require_admin)])
 async def delete_article(article_id: int, db: Session = Depends(get_db)):
     """Delete an article from the database."""
     article = db.query(Article).filter(Article.id == article_id).first()

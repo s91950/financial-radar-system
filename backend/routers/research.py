@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import MonitorSource, ResearchReport, get_db
 from backend.services.research_feed import fetch_all_research_feeds
 
@@ -116,7 +117,7 @@ def update_report(report_id: int, body: UpdateReportRequest, db: Session = Depen
     return _to_dict(r)
 
 
-@router.delete("/{report_id}")
+@router.delete("/{report_id}", dependencies=[Depends(require_admin)])
 def delete_report(report_id: int, db: Session = Depends(get_db)):
     r = db.query(ResearchReport).filter(ResearchReport.id == report_id).first()
     if not r:

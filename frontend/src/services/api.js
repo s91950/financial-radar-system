@@ -6,28 +6,50 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// ── API Token (opt-in) ────────────────────────────────────────────────
-// 後端啟用 API_TOKEN 時，前端從 localStorage 讀取 token 自動帶 X-API-Key header。
-// 沒設 token 也不會壞掉（後端如果沒啟用 API_TOKEN 則照常放行）。
-// 收到 401 時清空本地 token 並廣播 'api-token-required' 事件，由 TokenGate 接管 UI。
-export const API_TOKEN_KEY = 'apiToken'
+// ── JWT 認證 ────────────────────────────────────────────────
+// 登入流程：
+//  1. 使用者在 LoginPage 輸入帳密 → POST /api/auth/login
+//  2. 拿到 access_token → setJwt 存 localStorage
+//  3. 之後 axios 自動帶 Authorization: Bearer <jwt>
+//  4. 收到 401 → setJwt('') 清掉並廣播 'auth-required'，由 AuthGate 跳登入頁
+const JWT_KEY = 'jwt'
+const USER_KEY = 'currentUser'
 
-export function getApiToken() {
-  try { return localStorage.getItem(API_TOKEN_KEY) || '' } catch { return '' }
+export function getJwt() {
+  try { return localStorage.getItem(JWT_KEY) || '' } catch { return '' }
 }
 
-export function setApiToken(token) {
+export function setJwt(token) {
   try {
-    if (token) localStorage.setItem(API_TOKEN_KEY, token)
-    else localStorage.removeItem(API_TOKEN_KEY)
+    if (token) localStorage.setItem(JWT_KEY, token)
+    else localStorage.removeItem(JWT_KEY)
   } catch { /* ignore */ }
 }
 
+export function getCurrentUser() {
+  try {
+    const raw = localStorage.getItem(USER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+export function setCurrentUser(user) {
+  try {
+    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user))
+    else localStorage.removeItem(USER_KEY)
+  } catch { /* ignore */ }
+}
+
+export function clearAuth() {
+  setJwt('')
+  setCurrentUser(null)
+}
+
 api.interceptors.request.use((config) => {
-  const token = getApiToken()
+  const token = getJwt()
   if (token) {
     config.headers = config.headers || {}
-    config.headers['X-API-Key'] = token
+    config.headers['Authorization'] = `Bearer ${token}`
   }
   return config
 })
@@ -35,13 +57,41 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (resp) => resp,
   (err) => {
-    if (err?.response?.status === 401) {
-      setApiToken('')
-      try { window.dispatchEvent(new CustomEvent('api-token-required')) } catch {}
+    const status = err?.response?.status
+    const url = err?.config?.url || ''
+    // 401 / 403 一律觸發 AuthGate；但 /auth/login 本身的 401 不要清登入狀態
+    if ((status === 401 || status === 403) && !url.includes('/auth/login')) {
+      clearAuth()
+      try { window.dispatchEvent(new CustomEvent('auth-required', { detail: { status } })) } catch {}
     }
     return Promise.reject(err)
   },
 )
+
+// --- Auth APIs ---
+export const authAPI = {
+  login: (username, password) => api.post('/auth/login', { username, password }),
+  me: () => api.get('/auth/me'),
+  changePassword: (current_password, new_password) =>
+    api.post('/auth/change-password', { current_password, new_password }),
+}
+
+// --- Users APIs (owner only) ---
+export const usersAPI = {
+  list: () => api.get('/users'),
+  create: (username, password, role = 'regular') =>
+    api.post('/users', { username, password, role }),
+  update: (id, data) => api.put(`/users/${id}`, data),
+  resetPassword: (id) => api.post(`/users/${id}/reset-password`),
+  delete: (id) => api.delete(`/users/${id}`),
+}
+
+// --- Service Keys APIs (owner only) ---
+export const serviceKeysAPI = {
+  list: () => api.get('/service-keys'),
+  create: (name, role = 'admin') => api.post('/service-keys', { name, role }),
+  revoke: (id) => api.delete(`/service-keys/${id}`),
+}
 
 // --- Radar APIs ---
 export const radarAPI = {

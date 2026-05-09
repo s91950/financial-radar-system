@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import YoutubeChannel, YoutubeVideo, get_db
 
 router = APIRouter()
+_ADMIN = [Depends(require_admin)]
 
 
 class ChannelCreate(BaseModel):
@@ -33,7 +35,7 @@ async def get_channels(db: Session = Depends(get_db)):
     return [_channel_dict(c, db) for c in channels]
 
 
-@router.post("/channels")
+@router.post("/channels", dependencies=_ADMIN)
 async def add_channel(req: ChannelCreate, db: Session = Depends(get_db)):
     """Add a new YouTube channel to monitor."""
     from backend.services.youtube_feed import fetch_channel_videos, get_channel_info, resolve_channel_id
@@ -76,7 +78,7 @@ async def add_channel(req: ChannelCreate, db: Session = Depends(get_db)):
     return _channel_dict(channel, db)
 
 
-@router.put("/channels/{channel_id}")
+@router.put("/channels/{channel_id}", dependencies=_ADMIN)
 async def update_channel(channel_id: int, req: ChannelUpdate, db: Session = Depends(get_db)):
     """Update channel name, active state, or check interval."""
     channel = db.query(YoutubeChannel).filter(YoutubeChannel.id == channel_id).first()
@@ -92,7 +94,7 @@ async def update_channel(channel_id: int, req: ChannelUpdate, db: Session = Depe
     return _channel_dict(channel, db)
 
 
-@router.delete("/channels/{channel_id}")
+@router.delete("/channels/{channel_id}", dependencies=_ADMIN)
 async def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     """Delete a channel and all its videos."""
     channel = db.query(YoutubeChannel).filter(YoutubeChannel.id == channel_id).first()

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import RawArticle, get_db
 from backend.routers.news_db import _normalize_query_text, _split_query_terms
 
@@ -158,7 +159,7 @@ async def list_sources(db: Session = Depends(get_db)):
     return [{"name": n, "count": c} for n, c in rows]
 
 
-@router.delete("/articles/{article_id}")
+@router.delete("/articles/{article_id}", dependencies=[Depends(require_admin)])
 async def delete_raw_article(article_id: int, db: Session = Depends(get_db)):
     """刪除單一筆 raw_article（手動清理用）。"""
     row = db.query(RawArticle).filter(RawArticle.id == article_id).first()
@@ -169,7 +170,7 @@ async def delete_raw_article(article_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.post("/cleanup")
+@router.post("/cleanup", dependencies=[Depends(require_admin)])
 async def manual_cleanup(
     days: int = Query(7, ge=1, le=365),
     db: Session = Depends(get_db),

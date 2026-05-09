@@ -1,5 +1,9 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
+import { getCurrentUser, clearAuth } from '../../services/api'
+
+const ROLE_ORDER = { guest: 0, regular: 1, admin: 2, owner: 3 }
+const hasRole = (current, min) => (ROLE_ORDER[current] ?? 0) >= (ROLE_ORDER[min] ?? 0)
 
 const navItems = [
   {
@@ -104,6 +108,7 @@ const navItems = [
     path: '/settings',
     label: '系統設定',
     shortLabel: '設定',
+    requiresRole: 'admin',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -112,20 +117,59 @@ const navItems = [
       </svg>
     ),
   },
+  {
+    path: '/users',
+    label: '使用者管理',
+    shortLabel: '使用者',
+    requiresRole: 'owner',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+      </svg>
+    ),
+  },
+  {
+    path: '/service-keys',
+    label: 'Service Keys',
+    shortLabel: 'Keys',
+    requiresRole: 'owner',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+          d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+      </svg>
+    ),
+  },
 ]
 
 // Bottom tab bar: indices into navItems
 const primaryTabIndices = [0, 2, 6, 5] // 雷達, 新聞, 分析, YT
-const secondaryIndices = [1, 3, 4, 7, 8, 9] // 追蹤, 報告, 儀表, 回饋, 篩選前資料, 設定
+const secondaryIndices = [1, 3, 4, 7, 8, 9, 10, 11] // 追蹤, 報告, 儀表, 回饋, 篩選前資料, 設定, 使用者, Keys
 
 export default function Sidebar() {
   const [moreOpen, setMoreOpen] = useState(false)
   const location = useLocation()
+  const user = getCurrentUser()
+  const role = user?.role || 'guest'
+
+  const visible = (item) => !item.requiresRole || hasRole(role, item.requiresRole)
 
   const isSecondaryActive = secondaryIndices.some(i => {
-    const p = navItems[i].path
+    const item = navItems[i]
+    if (!visible(item)) return false
+    const p = item.path
     return p === '/' ? location.pathname === '/' : location.pathname.startsWith(p)
   })
+
+  const handleLogout = () => {
+    if (!confirm('確定登出？')) return
+    clearAuth()
+    window.location.reload()
+  }
+  const handleLogin = () => {
+    window.dispatchEvent(new CustomEvent('show-login'))
+  }
 
   return (
     <>
@@ -148,8 +192,8 @@ export default function Sidebar() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 p-3 space-y-1">
-          {navItems.map((item) => (
+        <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+          {navItems.filter(visible).map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
@@ -169,7 +213,27 @@ export default function Sidebar() {
         </nav>
 
         {/* Footer */}
-        <div className="p-4 border-t border-dark-700">
+        <div className="p-4 border-t border-dark-700 space-y-2">
+          {user ? (
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <div className="min-w-0">
+                <div className="text-slate-200 truncate">{user.username}</div>
+                <div className="text-slate-500">
+                  {role === 'owner' ? '擁有者' : role === 'admin' ? '管理者' : '一般'}
+                </div>
+              </div>
+              <button onClick={handleLogout} className="text-red-400 hover:text-red-300 px-2 py-1 rounded">
+                登出
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleLogin}
+              className="w-full text-sm bg-indigo-600 hover:bg-indigo-500 text-white py-2 rounded"
+            >
+              登入
+            </button>
+          )}
           <div className="flex items-center gap-2 text-xs text-dark-500">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
             <span>System Active</span>
@@ -229,8 +293,10 @@ export default function Sidebar() {
               <div className="w-10 h-1 bg-dark-600 rounded-full" />
             </div>
             <nav className="px-4 pb-6 space-y-1">
-              {secondaryIndices.map(idx => {
-                const item = navItems[idx]
+              {secondaryIndices
+                .map(idx => navItems[idx])
+                .filter(visible)
+                .map(item => {
                 const isActive = item.path === '/'
                   ? location.pathname === '/'
                   : location.pathname.startsWith(item.path)

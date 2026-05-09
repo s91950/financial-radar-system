@@ -1,31 +1,215 @@
-"""API Token 驗證（opt-in 設計）。
+"""三模式認證 + 角色權限 dependency。
 
-設計目標：在不破壞任何現行行為的前提下加上可選的 API token 保護。
-- 若 VM .env 沒設定 `API_TOKEN`：依賴函式直接放行，等同沒有驗證
-- 若有設定：所有套用此 dependency 的 router 都必須帶 `X-API-Key` header
+支援的認證方式（依優先順序）：
+  1. Authorization: Bearer <jwt>         — 瀏覽器使用者登入後帶上
+  2. X-API-Key: sk_xxx                    — Service API Key（Extension / scripts）
+  3. X-API-Key: <legacy API_TOKEN>        — 過渡向後相容（角色視為 admin）
+  4. 都沒帶                                 — 視為 "guest"
 
-啟用方式：
-  1. 在 VM `.env` 加入 `API_TOKEN=<隨機長字串>`
-     可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"` 產生
-  2. 各端 client（前端 / Extension / scripts）都更新後再 restart 服務生效
-  3. LINE webhook 路徑用自己的 HMAC 簽章驗證，不掛此 dependency
+角色階層（數字越大權限越高）：
+    guest(0) < regular(1) < admin(2) < owner(3)
+
+使用方式：
+    @router.get("/path", dependencies=[Depends(require_role("regular"))])
+    def endpoint(): ...
+
+    # 取得目前 user：
+    @router.get("/me")
+    def me(user: AuthContext = Depends(get_current_auth)):
+        ...
+
+向後相容：若 .env 設了舊 API_TOKEN 而沒設 JWT_SECRET，則 X-API-Key
+帶這把舊 token 也會通過（角色自動視為 admin）。等所有 client 都換用
+service key 後，可從 .env 移除 API_TOKEN。
 """
-import hmac
+from __future__ import annotations
+
+import logging
 import os
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
-from fastapi import Header, HTTPException, status
+import jwt
+from fastapi import Depends, Header, HTTPException, Request, status
+from sqlalchemy.orm import Session
+
+from backend.database import ServiceApiKey, User, get_db
+from backend.security import (
+    decode_access_token,
+    looks_like_service_key,
+    verify_service_key,
+)
+
+logger = logging.getLogger(__name__)
+
+ROLE_ORDER = {"guest": 0, "regular": 1, "admin": 2, "owner": 3}
 
 
-def require_api_token(x_api_key: str = Header(default="")) -> None:
-    """FastAPI Dependency：驗證 X-API-Key header。
+@dataclass
+class AuthContext:
+    """請求的認證上下文。"""
+    role: str                       # guest | regular | admin | owner
+    user_id: Optional[int] = None   # 登入使用者 / None=guest 或 service key
+    username: Optional[str] = None
+    auth_kind: str = "guest"        # guest | jwt | service_key | legacy_token
+    service_key_id: Optional[int] = None
 
-    - `API_TOKEN` env 未設定 → 不驗（向後相容）
-    - 已設定但 header 不符 → 401
+    @property
+    def is_authenticated(self) -> bool:
+        return self.role != "guest"
+
+    def has_role(self, min_role: str) -> bool:
+        return ROLE_ORDER.get(self.role, 0) >= ROLE_ORDER.get(min_role, 0)
+
+
+def _try_jwt(authorization: Optional[str]) -> Optional[AuthContext]:
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    token = parts[1].strip()
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    role = payload.get("role", "regular")
+    if role not in ROLE_ORDER:
+        raise HTTPException(status_code=401, detail="Invalid token role")
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid token subject")
+    return AuthContext(
+        role=role,
+        user_id=user_id,
+        username=payload.get("username"),
+        auth_kind="jwt",
+    )
+
+
+def _try_service_key(presented: Optional[str], db: Session) -> Optional[AuthContext]:
+    if not presented or not looks_like_service_key(presented):
+        return None
+    # 只比對未撤銷且 prefix 相符的 keys（避免 N 次 bcrypt verify 在大表上慢）
+    prefix = presented[:9]  # sk_xxxxxx
+    candidates = db.query(ServiceApiKey).filter(
+        ServiceApiKey.is_revoked == False,
+        ServiceApiKey.key_prefix == prefix,
+    ).all()
+    for sk in candidates:
+        if verify_service_key(presented, sk.key_hash):
+            # 更新 last_used_at（best-effort，不阻塞）
+            try:
+                sk.last_used_at = datetime.utcnow()
+                db.commit()
+            except Exception:
+                db.rollback()
+            return AuthContext(
+                role=sk.role if sk.role in ROLE_ORDER else "regular",
+                username=f"service:{sk.name}",
+                auth_kind="service_key",
+                service_key_id=sk.id,
+            )
+    return None
+
+
+def _try_legacy_token(presented: Optional[str]) -> Optional[AuthContext]:
+    """向後相容：舊的 API_TOKEN 直接視為 admin（過渡期用）。"""
+    if not presented or looks_like_service_key(presented):
+        return None
+    expected = os.getenv("API_TOKEN", "").strip()
+    if not expected:
+        return None
+    import hmac
+    if hmac.compare_digest(presented, expected):
+        return AuthContext(
+            role="admin",
+            username="legacy_token",
+            auth_kind="legacy_token",
+        )
+    return None
+
+
+def get_current_auth(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> AuthContext:
+    """解析請求，回傳 AuthContext（永不丟 401，guest 也是合法狀態）。
+
+    - Bearer JWT 解失敗 / 過期 → 401（避免 guest 偷塞壞 token）
+    - 其他都沒帶 → guest
     """
-    expected = os.getenv("API_TOKEN", "")
+    # 1. JWT
+    ctx = _try_jwt(authorization)
+    if ctx:
+        request.state.auth = ctx
+        return ctx
+
+    # 2. Service key
+    ctx = _try_service_key(x_api_key, db)
+    if ctx:
+        request.state.auth = ctx
+        return ctx
+
+    # 3. Legacy API_TOKEN（過渡期）
+    ctx = _try_legacy_token(x_api_key)
+    if ctx:
+        request.state.auth = ctx
+        return ctx
+
+    # 4. Guest
+    ctx = AuthContext(role="guest")
+    request.state.auth = ctx
+    return ctx
+
+
+def require_role(min_role: str):
+    """Dependency factory。若 auth context 角色 < min_role 則 401/403。"""
+    if min_role not in ROLE_ORDER:
+        raise ValueError(f"unknown role: {min_role}")
+
+    def _dep(ctx: AuthContext = Depends(get_current_auth)) -> AuthContext:
+        if ctx.has_role(min_role):
+            return ctx
+        # 未登入 → 401（提示要登入），已登入但角色不足 → 403
+        if ctx.role == "guest":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: requires role >= {min_role}",
+        )
+
+    return _dep
+
+
+# 預先建好常用的 dependency 實例（FastAPI 會 cache 同一個 callable）
+require_regular = require_role("regular")
+require_admin = require_role("admin")
+require_owner = require_role("owner")
+
+
+# ── 向後相容：保留舊 require_api_token 名稱，但改成可被新角色 dep 取代 ──
+def require_api_token(x_api_key: str = Header(default="")) -> None:
+    """[Deprecated] 舊版單一 token 驗證，保留是為了不破壞還沒換掉的 endpoint。
+
+    新程式碼請改用 require_role("...")。
+    """
+    expected = os.getenv("API_TOKEN", "").strip()
     if not expected:
         return
-    # hmac.compare_digest 防 timing attack
+    import hmac
     if not x_api_key or not hmac.compare_digest(x_api_key, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from backend.auth import require_admin
 from backend.database import Feedback, get_db
 
 router = APIRouter()
@@ -39,7 +40,7 @@ async def list_feedback(db: Session = Depends(get_db)):
     ]
 
 
-@router.delete("/{feedback_id}")
+@router.delete("/{feedback_id}", dependencies=[Depends(require_admin)])
 async def delete_feedback(feedback_id: int, db: Session = Depends(get_db)):
     """Delete a feedback entry."""
     fb = db.query(Feedback).filter(Feedback.id == feedback_id).first()

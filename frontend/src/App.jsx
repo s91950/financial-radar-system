@@ -4,7 +4,7 @@ import { Toaster, toast } from 'react-hot-toast'
 import Sidebar from './components/Layout/Sidebar'
 import Header from './components/Layout/Header'
 import NotificationCenter from './components/Layout/NotificationCenter'
-import TokenGate from './components/Layout/TokenGate'
+import AuthGate from './components/Layout/AuthGate'
 import RadarPage from './pages/RadarPage'
 import SearchPage from './pages/SearchPage'
 import NewsDBPage from './pages/NewsDBPage'
@@ -15,6 +15,8 @@ import YouTubePage from './pages/YouTubePage'
 import AnalysisPage from './pages/AnalysisPage'
 import FeedbackPage from './pages/FeedbackPage'
 import RawArticlesPage from './pages/RawArticlesPage'
+import UsersPage from './pages/UsersPage'
+import ServiceKeysPage from './pages/ServiceKeysPage'
 import useWebSocket from './hooks/useWebSocket'
 import { radarAPI } from './services/api'
 
@@ -29,6 +31,8 @@ const pageConfig = {
   '/feedback': { title: '意見回饋', subtitle: '提交改善建議與問題回報' },
   '/raw-articles': { title: '篩選前資料', subtitle: '雷達抓回的原始資料（滾動 7 天）' },
   '/settings': { title: '系統設定', subtitle: '管理資料來源、通知與偏好設定' },
+  '/users': { title: '使用者管理', subtitle: '建立帳號、變更角色、重設密碼' },
+  '/service-keys': { title: 'Service API Keys', subtitle: 'Extension / scripts 等非瀏覽器 client 的長效 key' },
 }
 
 export default function App() {
@@ -91,7 +95,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <TokenGate>
+      <AuthGate>
       <div className="min-h-screen overflow-x-hidden">
         <Sidebar />
         <main className="ml-0 md:ml-64 pb-16 md:pb-0">
@@ -156,6 +160,18 @@ export default function App() {
                 <SettingsPage />
               </PageWrapper>
             } />
+            <Route path="/users" element={
+              <PageWrapper path="/users" wsConnected={isConnected} alertStats={alertStats}
+                onToggleNotifications={() => setNotificationsOpen(true)}>
+                <UsersPage />
+              </PageWrapper>
+            } />
+            <Route path="/service-keys" element={
+              <PageWrapper path="/service-keys" wsConnected={isConnected} alertStats={alertStats}
+                onToggleNotifications={() => setNotificationsOpen(true)}>
+                <ServiceKeysPage />
+              </PageWrapper>
+            } />
           </Routes>
         </main>
 
@@ -166,7 +182,7 @@ export default function App() {
 
         <Toaster position="top-right" />
       </div>
-      </TokenGate>
+      </AuthGate>
     </BrowserRouter>
   )
 }

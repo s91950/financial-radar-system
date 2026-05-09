@@ -243,6 +243,49 @@ class Feedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class User(Base):
+    """使用者帳號。
+
+    role 採 4 級字串：
+      - "guest"   未登入訪客（不會寫入此表，只有 dependency 內部用）
+      - "regular" 一般使用者（讀全部 + 觸發自己的 AI 分析 + 寫 feedback）
+      - "admin"   管理者（+ 改 sources / topics / 雷達設定 / 刪文章）
+      - "owner"   擁有者（+ 使用者管理 / Service Keys / 改他人角色）
+
+    must_change_password=True 表示下次登入要強制改密碼（管理員 reset 後）。
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(64), unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    role = Column(String(16), nullable=False, default="regular")
+    is_active = Column(Boolean, default=True, nullable=False)
+    must_change_password = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime, nullable=True)
+
+
+class ServiceApiKey(Base):
+    """Service API Keys：給 Extension / hourly script 等非瀏覽器 client 用的長效 key。
+
+    - key 本體只 hash 後存，無法逆向（外洩只能知 hash 不知原 key）
+    - 可獨立撤銷（is_revoked=True）
+    - 角色固定為 admin（夠用於寫報告 / 讀文章）；若需更高權限請走帳號登入
+    """
+    __tablename__ = "service_api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)               # 顯示用標籤，例如 "Chrome Extension"
+    key_prefix = Column(String(12), nullable=False, index=True)  # key 前 8 字元，方便辨識（不機密）
+    key_hash = Column(String, nullable=False, unique=True)   # bcrypt 過的完整 key
+    role = Column(String(16), nullable=False, default="admin")
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    is_revoked = Column(Boolean, default=False, nullable=False)
+
+
 class RawArticle(Base):
     """雷達掃描每次 fetch 到的原始文章（任何過濾前），滾動保留 7 天。
 
@@ -1379,6 +1422,29 @@ def _seed_defaults():
     """Seed default market watchlist and monitor sources."""
     db = SessionLocal()
     try:
+        # Seed owner account from env (only when User table is empty)
+        # OWNER_USERNAME / OWNER_PASSWORD 從 VM .env 讀；首次啟動建立 owner 帳號
+        if db.query(User).count() == 0:
+            import logging
+            owner_username = os.getenv("OWNER_USERNAME", "").strip()
+            owner_password = os.getenv("OWNER_PASSWORD", "").strip()
+            if owner_username and owner_password:
+                from backend.security import hash_password
+                db.add(User(
+                    username=owner_username,
+                    password_hash=hash_password(owner_password),
+                    role="owner",
+                    is_active=True,
+                    must_change_password=False,
+                ))
+                db.commit()
+                logging.getLogger(__name__).info(f"Seeded owner account: {owner_username}")
+            else:
+                logging.getLogger(__name__).warning(
+                    "User table empty but OWNER_USERNAME / OWNER_PASSWORD not set in env — "
+                    "no owner account created. Set them in .env then restart to bootstrap."
+                )
+
         # Seed market watchlist if empty
         if db.query(MarketWatchItem).count() == 0:
             defaults = [
