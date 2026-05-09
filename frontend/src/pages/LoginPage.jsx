@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { authAPI, setJwt, setCurrentUser } from '../services/api'
 
-export default function LoginPage({ onLoggedIn }) {
+export default function LoginPage({ onLoggedIn, onContinueAsGuest }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -67,8 +67,18 @@ export default function LoginPage({ onLoggedIn }) {
           {loading ? '登入中…' : '登入'}
         </button>
 
-        <p className="mt-4 text-xs text-slate-500 text-center">
-          訪客可直接關閉此頁瀏覽雷達警報（唯讀）
+        {onContinueAsGuest && (
+          <button
+            type="button"
+            onClick={onContinueAsGuest}
+            className="mt-3 w-full rounded border border-slate-700 bg-slate-800 py-2 text-sm font-medium text-slate-200 hover:bg-slate-700"
+          >
+            以訪客進入（唯讀）
+          </button>
+        )}
+
+        <p className="mt-3 text-xs text-slate-500 text-center">
+          訪客可瀏覽雷達警報、市場儀表板、分析結果（唯讀）
         </p>
       </form>
     </div>

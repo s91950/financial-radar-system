@@ -74,8 +74,14 @@ export default function AuthGate({ children }) {
         onLoggedIn={(u) => {
           setUser(u)
           setShowLogin(false)
-          // reload 以重發那些被 401 擋住的 API call
           window.location.reload()
+        }}
+        onContinueAsGuest={() => {
+          setShowLogin(false)
+          // 導回首頁（雷達訪客可看），避免使用者卡在「點到 /settings 又跳登入」迴圈
+          if (window.location.pathname !== '/') {
+            window.location.assign('/')
+          }
         }}
       />
     )

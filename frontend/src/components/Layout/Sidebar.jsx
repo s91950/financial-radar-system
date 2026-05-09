@@ -21,6 +21,7 @@ const navItems = [
     path: '/search',
     label: '主題追蹤',
     shortLabel: '追蹤',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -32,6 +33,7 @@ const navItems = [
     path: '/news',
     label: '新聞資料庫',
     shortLabel: '新聞',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -43,6 +45,7 @@ const navItems = [
     path: '/reports',
     label: '研究報告',
     shortLabel: '報告',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -65,6 +68,7 @@ const navItems = [
     path: '/youtube',
     label: 'YouTube 監控',
     shortLabel: 'YT',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
         <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
@@ -86,6 +90,7 @@ const navItems = [
     path: '/feedback',
     label: '意見回饋',
     shortLabel: '回饋',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -97,6 +102,7 @@ const navItems = [
     path: '/raw-articles',
     label: '篩選前資料',
     shortLabel: '原始',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -244,8 +250,10 @@ export default function Sidebar() {
       {/* Mobile bottom tab bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-dark-900 border-t border-dark-700">
         <div className="flex justify-around items-center">
-          {primaryTabIndices.map(idx => {
-            const item = navItems[idx]
+          {primaryTabIndices
+            .map(idx => navItems[idx])
+            .filter(visible)
+            .map(item => {
             return (
               <NavLink
                 key={item.path}
