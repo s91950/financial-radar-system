@@ -7,7 +7,9 @@
   4. 都沒帶                                 — 視為 "guest"
 
 角色階層（數字越大權限越高）：
-    guest(0) < regular(1) < admin(2) < owner(3)
+    guest(1) = regular(1) < admin(2) < owner(3)
+    ※ 2026-05-09：guest 暫時放寬到與 regular 同級（看 ROLE_ORDER）。
+       要回復原本 guest=0（看不到新聞 / 研究 / YT 等）把下面那行改回 0 即可。
 
 使用方式：
     @router.get("/path", dependencies=[Depends(require_role("regular"))])
@@ -43,7 +45,7 @@ from backend.security import (
 
 logger = logging.getLogger(__name__)
 
-ROLE_ORDER = {"guest": 0, "regular": 1, "admin": 2, "owner": 3}
+ROLE_ORDER = {"guest": 1, "regular": 1, "admin": 2, "owner": 3}  # guest 暫時=regular
 
 
 @dataclass

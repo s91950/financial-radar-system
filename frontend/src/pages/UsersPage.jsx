@@ -13,6 +13,31 @@ const ROLE_COLOR = {
   regular: 'bg-sky-900/40 text-sky-200 border-sky-700',
 }
 
+// 角色權限對照表（與 backend 路由的 require_regular / require_admin / require_owner 一致）
+// 2026-05-09 起 guest 暫時放寬為與 regular 相同
+const PERMISSION_MATRIX = [
+  { label: '看雷達警報、市場、儀表板', roles: ['guest', 'regular', 'admin', 'owner'] },
+  { label: '看分析報告（NLM / Gemini / Extension）', roles: ['guest', 'regular', 'admin', 'owner'] },
+  { label: '看新聞 / 研究 / YouTube / 篩選前資料', roles: ['guest', 'regular', 'admin', 'owner'] },
+  { label: '看主題追蹤、留意見回饋', roles: ['guest', 'regular', 'admin', 'owner'] },
+  { label: '修改自己的密碼', roles: ['regular', 'admin', 'owner'] },
+  { label: '標記警報已讀 / 儲存 / 刪除', roles: ['admin', 'owner'] },
+  { label: '觸發 AI 分析 / 雷達掃描', roles: ['admin', 'owner'] },
+  { label: '市場條件 / 觀察清單 CRUD', roles: ['admin', 'owner'] },
+  { label: '刪除新聞 / 研究 / 回饋 / YT 頻道', roles: ['admin', 'owner'] },
+  { label: '系統設定（來源 / 通知 / AI / 篩選）', roles: ['admin', 'owner'] },
+  { label: '主題追蹤 CRUD', roles: ['admin', 'owner'] },
+  { label: '使用者管理', roles: ['owner'] },
+  { label: 'Service Keys 管理', roles: ['owner'] },
+]
+
+const ROLE_COLUMNS = [
+  { key: 'guest', label: '訪客', headerClass: 'text-slate-400' },
+  { key: 'regular', label: '一般', headerClass: 'text-sky-300' },
+  { key: 'admin', label: '管理者', headerClass: 'text-amber-300' },
+  { key: 'owner', label: '擁有者', headerClass: 'text-rose-300' },
+]
+
 export default function UsersPage() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -94,6 +119,50 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
+      <div className="card">
+        <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+          <h2 className="text-lg font-semibold text-slate-100">角色權限對照表</h2>
+          <span className="text-xs text-amber-300 bg-amber-900/30 border border-amber-700/50 rounded px-2 py-1">
+            目前「訪客」暫時放寬為與「一般」相同權限
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-separate border-spacing-0">
+            <thead>
+              <tr className="text-slate-400 text-left">
+                <th className="py-2 pr-3 font-medium border-b border-slate-700">功能</th>
+                {ROLE_COLUMNS.map(col => (
+                  <th key={col.key} className={`py-2 px-3 text-center font-medium border-b border-slate-700 ${col.headerClass}`}>
+                    {col.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {PERMISSION_MATRIX.map((row, i) => (
+                <tr key={i} className="hover:bg-slate-800/40">
+                  <td className="py-2 pr-3 text-slate-200 border-b border-slate-800">{row.label}</td>
+                  {ROLE_COLUMNS.map(col => {
+                    const allowed = row.roles.includes(col.key)
+                    return (
+                      <td key={col.key} className="py-2 px-3 text-center border-b border-slate-800">
+                        {allowed
+                          ? <span className="text-emerald-400 font-bold">✓</span>
+                          : <span className="text-slate-600">–</span>
+                        }
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-slate-500 mt-3">
+          僅供檢視。要修改權限分配需動 backend 路由的 <code className="text-slate-300">require_regular</code> / <code className="text-slate-300">require_admin</code> / <code className="text-slate-300">require_owner</code> 設定。
+        </p>
+      </div>
+
       <div className="card">
         <h2 className="text-lg font-semibold text-slate-100 mb-3">建立新使用者</h2>
         <form onSubmit={create} className="grid grid-cols-1 md:grid-cols-4 gap-3">

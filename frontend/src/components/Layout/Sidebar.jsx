@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { getCurrentUser, clearAuth } from '../../services/api'
 
-const ROLE_ORDER = { guest: 0, regular: 1, admin: 2, owner: 3 }
+// 2026-05-09：guest 暫時=regular（與 backend/auth.py ROLE_ORDER 保持一致）
+const ROLE_ORDER = { guest: 1, regular: 1, admin: 2, owner: 3 }
 const hasRole = (current, min) => (ROLE_ORDER[current] ?? 0) >= (ROLE_ORDER[min] ?? 0)
 
 const navItems = [
