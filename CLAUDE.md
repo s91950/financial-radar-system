@@ -2,6 +2,42 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 最近重大進度（給新對話的快速摘要）
+
+**2026-05-08 ~ 05-09 兩天大幅資安加固，完成全棧帳號系統 + RBAC**：
+
+1. **第一波（2026-05-08）— 後端硬化**
+   - 新增 [backend/services/url_safety.py](backend/services/url_safety.py)：SSRF 防禦，DNS 解析後阻擋 RFC1918 / 169.254 / loopback
+   - LINE webhook fail-closed（缺 secret 直接拒絕，不再 fail-open）
+   - `/api/utils/resolve-stored-urls` 加 60 秒重入鎖（SystemConfig `resolve_stored_urls_lock`）
+   - NLM/Extension report POST 加 Pydantic `_ReportPayload`：content ≤ 5 MB、`extra="ignore"` 保留 hourly script 向後相容
+   - CORS 僅在 `ENVIRONMENT != production` 啟用（VM 同源不需要）
+   - 過渡期：opt-in `API_TOKEN` env（這層之後被 RBAC 取代）
+
+2. **第二波（2026-05-09）— 完整帳號系統 + RBAC + Service Keys**
+   - 新增 [backend/security.py](backend/security.py)（bcrypt + JWT helpers）、[backend/auth.py](backend/auth.py) 三模式認證 dependency（JWT / Service Key / Legacy）
+   - 新增 `User` + `ServiceApiKey` models、`/api/auth`、`/api/users`、`/api/service-keys` 三個 router
+   - Owner bootstrap：`OWNER_USERNAME`/`OWNER_PASSWORD` env 在 users 表為空時自動建 owner
+   - 前端：`LoginPage`、`AuthGate`（取代原 TokenGate）、`UsersPage`、`ServiceKeysPage`；axios 改帶 `Authorization: Bearer <jwt>`
+   - Sidebar 角色感知：`requiresRole` 過濾，guest 只看到雷達/儀表板/分析
+   - **過期 JWT 視同 guest**（`_try_jwt` 不 raise 401），讓訪客體驗不被 token 失效打斷
+   - **訪客背景 fetch 防呆**：guest-accessible 頁面（`RadarPage`、`DashboardPage`）的 useEffect 在開頭 `if (!getCurrentUser()) return`，否則訪客一進首頁就會被 admin endpoint 401 推進登入彈窗
+   - axios interceptor 改聰明：只在「**帶了 Bearer 卻 401**」（token 失效）才彈登入；沒帶 Bearer 的 401（訪客撞 admin endpoint）+ 所有 403（角色不夠）都靜默不擾
+
+**目前 VM 狀態**（2026-05-09 晚）：
+- Owner 帳號已建並由使用者改密碼；user 表有 owner / Ding(owner) / 78588(admin) 等
+- Service Keys 表有 2 把 admin role 的 key：`hourly_script` 給本機 NLM 排程、`Chrome Extension` 給瀏覽器 extension
+- VM `.env`：`API_TOKEN` 已清空（legacy fallback 程式碼仍保留，方便未來緊急停用 RBAC 時回退）
+- 本機 `scripts/.env.local` 的 `API_TOKEN=` 已替換成 `sk_mX-jyo...`（hourly_script service key）
+- 前端 bundle hash 截至完成：`index-D5MXgOYI.js`
+
+**已知設計取捨 / 仍未做**：
+- 仍用 `verify=False` for httpx scrapers（19 處）— 移除需逐一測試各來源 SSL，跳過
+- Extension manifest VM URL 仍是 HTTP `34.23.154.194`（要改 HTTPS 需建 Cloudflare named tunnel）
+- WebSocket `/ws` 沒做認證 — 它只廣播警報通知，敏感性低
+
+**部署備忘**：改 backend → VM `git pull` + `sudo systemctl restart financial-radar`；改 frontend → 加 `cd frontend && npm run build`。VM 用 `s9195000409898` 帳號，SSH key `C:\Users\User\.ssh\google_compute_engine`。
+
 ## 修改後 VM 同步提示規則
 
 每次完成程式碼修改後，必須執行以下其中一項：
@@ -16,23 +52,91 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 需要更新 VM：`backend/`、`frontend/`、`deploy/` 下的任何檔案修改
 - 不需要更新 VM：`scripts/` 下的本地腳本、`CLAUDE.md`、`README.md`、純本地設定檔
 
-## API Token 驗證（opt-in）
+## 認證 / RBAC（帳號密碼登入 + 4 級權限）
 
-後端 [backend/auth.py](backend/auth.py) 提供 opt-in 的 `X-API-Key` header 驗證，套用在 [backend/main.py](backend/main.py) 所有 router 上（**LINE webhook 除外**，它有自己的 HMAC 簽章）。
+採用 **JWT + bcrypt** 帳號系統，**Service API Keys** 給非瀏覽器 client（Extension / scripts）。核心檔案：[backend/auth.py](backend/auth.py)、[backend/security.py](backend/security.py)、[backend/database.py](backend/database.py) 的 `User` / `ServiceApiKey` models。
 
-**啟用流程**：
-1. 各端 client 先升級到帶 token 的版本（已改完，預設沒設 token 時行為等同舊版）
-2. 在 VM `.env` 加入：`API_TOKEN=<隨機長字串>`（產生：`python -c "import secrets; print(secrets.token_urlsafe(32))"`）
-3. 同一把 token 設到：
-   - 前端：第一次開頁時 axios 收到 401 → TokenGate 跳出輸入框，貼入後存 localStorage
-   - Chrome Extension：options 頁的 `VM API Token` 欄位
-   - `scripts/.env.local`（給 `notebooklm_hourly.py`）：`API_TOKEN=...`
-   - 跑 `sync_vm_settings.py` 時 export `API_TOKEN=...` 環境變數
-4. `sudo systemctl restart financial-radar` 生效
+### 角色階層
+```
+guest(0) < regular(1) < admin(2) < owner(3)
+```
 
-**未啟用時**：所有 client 都送空 header / 不送 header；後端 dependency 看到 `os.getenv("API_TOKEN")` 為空就直接放行。可零中斷漸進啟用。
+### 完整權限對照表
+| 動作 / 端點 | guest | regular | admin | owner |
+|---|:-:|:-:|:-:|:-:|
+| `GET /api/health` | ✅ | ✅ | ✅ | ✅ |
+| `POST /api/auth/login`、`GET /api/auth/me` | ✅ | ✅ | ✅ | ✅ |
+| `POST /api/line/webhook`（HMAC 自驗）、`/ws` | ✅ | ✅ | ✅ | ✅ |
+| `GET /api/radar/alerts`、`/alerts/stats`、`/market` | ✅ | ✅ | ✅ | ✅ |
+| `GET /api/radar/notebooklm/gemini/extension-report*`（所有分析報告唯讀） | ✅ | ✅ | ✅ | ✅ |
+| `POST /api/auth/change-password` | ❌ | ✅ | ✅ | ✅ |
+| `GET /api/news/*`、`/research/*`、`/youtube/*`、`/raw-articles/*`、`/search/*`、`/topics/*` | ❌ | ✅ | ✅ | ✅ |
+| `POST /api/feedback`（自己留言） | ❌ | ✅ | ✅ | ✅ |
+| `PUT/POST/DELETE /api/radar/alerts/*`（mark read / save / delete / 觸發分析） | ❌ | ❌ | ✅ | ✅ |
+| `POST/PUT/DELETE /api/radar/market/watchlist`、`/conditions`（市場關注 CRUD） | ❌ | ❌ | ✅ | ✅ |
+| `POST /api/radar/notebooklm-report`、`-yt-report`、`extension-report`、`gemini-analyze`、`scan` | ❌ | ❌ | ✅ | ✅ |
+| `DELETE /api/radar/reports/{id}`（NLM/Gemini/Extension 通用刪報告） | ❌ | ❌ | ✅ | ✅ |
+| `DELETE /api/news/articles`、`/raw-articles`、`/research`、`/feedback`、`/youtube/channels` | ❌ | ❌ | ✅ | ✅ |
+| `POST /api/raw-articles/cleanup` | ❌ | ❌ | ✅ | ✅ |
+| `POST/PUT/DELETE /api/youtube/channels`（頻道 CRUD） | ❌ | ❌ | ✅ | ✅ |
+| `POST/PUT/DELETE /api/settings/*`、`/topics/*`（整個 router 都 admin+） | ❌ | ❌ | ✅ | ✅ |
+| `POST /api/utils/resolve-stored-urls`、`GET /api/utils/resolve-url` | ❌ | ✅ | ✅ | ✅ |
+| `GET/POST/PUT/DELETE /api/users/*`（使用者管理）+ reset-password | ❌ | ❌ | ❌ | ✅ |
+| `GET/POST/DELETE /api/service-keys/*`（Service Keys 管理） | ❌ | ❌ | ❌ | ✅ |
 
-**永遠不擋的端點**（即使啟用）：`GET /api/health`、`POST /api/line/webhook`、`/ws` WebSocket。
+**Service API Key 角色**：建立時 owner 指定 `admin` 或 `regular`（不能是 owner）。Extension / hourly script / sync_vm_settings 通常用 admin role 的 service key。
+
+**側欄可見頁面**：
+- guest：`/`（雷達）、`/dashboard`（儀表板）、`/analysis`（分析報告）
+- regular：上述 + `/search`、`/news`、`/reports`、`/youtube`、`/feedback`、`/raw-articles`
+- admin：上述 + `/settings`
+- owner：上述 + `/users`、`/service-keys`
+
+### 三模式認證 dependency（[backend/auth.py:get_current_auth](backend/auth.py)）
+請求依序嘗試：
+1. `Authorization: Bearer <jwt>` — 瀏覽器登入後
+2. `X-API-Key: sk_xxx` — Service API Key（non-browser）
+3. `X-API-Key: <legacy>` — 舊單一 API_TOKEN（過渡向後相容，視為 admin）
+4. 都沒帶 → guest
+
+`require_role("admin")` / `require_regular` / `require_owner` 為 dependency factory，套在 router 或單一 endpoint 上。**過期/無效 JWT 視同 guest**（不 raise 401）— 讓訪客體驗不被「token 失效」打斷，只在點到需登入功能才提示。
+
+### Owner bootstrap
+首次啟動 `users` 表為空時，從 env `OWNER_USERNAME` + `OWNER_PASSWORD` 自動建 owner 帳號（`_seed_defaults` 執行）。第一次登入後請改密碼，之後 env 留空也不影響（bootstrap 邏輯只在表空才跑）。
+
+### Service API Keys（[backend/routers/service_keys.py](backend/routers/service_keys.py)）
+- Owner 在前端 `/service-keys` 頁建立 / 撤銷
+- Key 格式 `sk_<URL-safe 32>`；DB 只存 bcrypt hash + 前 8 字元 prefix
+- **完整 key 只在建立當下回傳一次**，遺失只能撤銷重發
+- 角色限定 `admin` 或 `regular`（不能是 owner）
+- 撤銷 = `is_revoked=True`，下一個請求即 401
+
+### 前端 AuthGate 流程（[frontend/src/components/Layout/AuthGate.jsx](frontend/src/components/Layout/AuthGate.jsx)）
+1. 開頁 → 讀 localStorage `jwt` → 呼 `/api/auth/me` 確認還活著
+2. 過期 → 後端回 200 guest → AuthGate `clearAuth()` + 渲染 children（訪客模式）
+3. 點到 admin endpoint 收到 401 + 帶了 Bearer → axios interceptor 廣播 `auth-required` → AuthGate 跳登入彈窗
+4. **沒帶 Bearer 的 401**（訪客背景 fetch 撞 admin endpoint）→ 靜默不擾，不彈登入
+5. 403（已登入但角色不夠）→ 也不彈登入（這是權限不足，不是認證失效）
+
+### 訪客背景 fetch 防呆
+某些 guest-accessible 頁面（`RadarPage`、`DashboardPage`）有 useEffect 呼叫 admin 端點抓 metadata（如 `settingsAPI.getAIModel()` 顯示 AI 徽章）。**使用者體驗鐵則**：在這些頁面的 useEffect 開頭一定要 `if (!getCurrentUser()) return` 跳過，否則訪客一進首頁就被 401 推進登入彈窗。
+
+### Sidebar 角色感知
+`navItems` 每個 entry 可選 `requiresRole` 欄位，[Sidebar.jsx](frontend/src/components/Layout/Sidebar.jsx) 用 `hasRole(role, item.requiresRole)` 過濾顯示。目前設定：
+- 無 requiresRole（訪客可看）：`/`、`/dashboard`、`/analysis`
+- `regular`：`/search`、`/news`、`/reports`、`/youtube`、`/feedback`、`/raw-articles`
+- `admin`：`/settings`
+- `owner`：`/users`、`/service-keys`
+
+### 永遠不擋的端點
+- `GET /api/health`
+- `POST /api/auth/login`、`GET /api/auth/me`（永遠回 200，guest 為合法狀態）
+- `POST /api/line/webhook`（自有 HMAC 簽章）
+- `/ws` WebSocket
+
+### 啟用 / 撤銷整套帳號系統
+**啟用**：VM `.env` 設 `JWT_SECRET=<token_urlsafe(64)>` + `OWNER_USERNAME=` + `OWNER_PASSWORD=` → restart → `users` 表自動建 owner。
+**整套停用**：清空 `JWT_SECRET` 會讓 login 端點報錯。較合理的「降低控管」是只設 `API_TOKEN=<legacy>`、不設 JWT — 所有 client 都用 X-API-Key 走 legacy 路徑（admin 角色），但失去多帳號分權。
 
 ## 設定資料以 VM 為主
 
@@ -176,7 +280,8 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `nownews_scraper.py` — NOWnews 今日新聞 Google News Sitemap scraper. Fetches `nownews.com/newsSitemap-daily.xml` — the sitemap embeds `<news:title>` and `<news:publication_date>` per `<url>` so no per-article fetch is needed. Returns ~50-60 articles within 2h on a busy day, freshness within 5-15 minutes. Replaces GN `site:nownews.com` proxy. `is_nownews_url()` matches `nownews.com` + `sitemap` substring. NowNews has no public RSS; the sitemap path is listed in `robots.txt`.
   - `treasury_scraper.py` — US Treasury 美國財政部新聞稿爬蟲. `home.treasury.gov/rss.xml` 內容主要是 admin/reference 頁面更新（Tribal/Capital Program summaries、FAQ），不是實際的新聞稿。改抓 `home.treasury.gov/news/press-releases` 的 server-side rendered HTML，每篇包在 `<div class="mm-news-row">` 內，含 `<time datetime="...">` 與 `<a href="/news/press-releases/sbXXXX">`。每頁約 16 篇新聞稿，涵蓋約 1-2 週。`is_treasury_url()` matches `home.treasury.gov` + (`press-releases` | `rss`).
   - `businessweekly_scraper.py` — 商業周刊「今日最新」HTML 爬蟲。商周提供的 cmsapi RSS（`cmsapi.businessweekly.com.tw/?CategoryId=...`）內容偏向 `/focus/`、`/style/` 子站，會跳過 `/business/` 與雜誌主刊。改抓 `https://www.businessweekly.com.tw/latest` 頁面，該頁面由 jQuery 動態載入，後端透過 `POST https://www.businessweekly.com.tw/latest/SearchList` (`{CurPage: 0|20|40}`) 取得 HTML 片段（每頁 20 篇 figure.Article-figure 區塊），解析標題、URL、`Article-date`（YYYY.MM.DD，無時間，當地 00:00 → UTC）與 `Article-author`。`_MAX_PAGES=3`，最多抓 60 篇；遇到 `IsLast=Y` 或文章日期早於 cutoff 即停止。`is_businessweekly_url()` matches `businessweekly.com.tw/latest`.
-  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `fed_scraper` | `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | `storm_scraper` | `taisounds_scraper` | `linetoday_scraper` | `udn_scraper` | `ctee_scraper` | `nownews_scraper` | `treasury_scraper` | `businessweekly_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
+  - `yahoo_scraper.py` — Yahoo Finance ticker headline feed 多 ticker 並發抓取器。`finance.yahoo.com` 直接 RSS（`/rss/topstories`、`/news/rssindex`）在 2026-05 觀察到 pubDate 卡在 2-3 天前不更新，但 ticker-symbol headline feed `feeds.finance.yahoo.com/rss/2.0/headline?s=<ticker>&region=US&lang=en-US` 仍是分鐘級新鮮度（單 feed 20 篇，內容是 Reuters/Motley Fool/Bloomberg/Barron's 等聚合）。預設 ticker 涵蓋三大指數 + 兩支 ETF + 幾支權值股（`^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA`），並發抓取後按 `(source_url, title)` 去重，單次得到 ~90-130 unique 篇。DB 端 `MonitorSource.url` 帶完整 `s=<ticker,...>` query string，scraper 從 query 解析 ticker 列表（無 query 時 fallback 預設）。`is_yahoo_url()` matches `feeds.finance.yahoo.com` 或 `finance.yahoo.com/topic/latest-news`（後者讓使用者填列表頁 URL 也能自動轉到 feeds API）。**Yahoo News 走純 RSS** 不用此 scraper：`news.yahoo.com/rss/topstories` 50 entries 分鐘級新鮮度，雷達 `fetch_multiple_feeds` 直接處理。
+  - **Website scraper dispatch** (`_fetch_website_source()` in `jobs.py`): URL-based routing via `is_*_url()` predicates → `fed_scraper` | `cnyes_scraper` | `worldbank_scraper` | `fsc_scraper` | `caixin_scraper` | `storm_scraper` | `taisounds_scraper` | `linetoday_scraper` | `udn_scraper` | `ctee_scraper` | `nownews_scraper` | `treasury_scraper` | `businessweekly_scraper` | `yahoo_scraper` | generic `web_scraper`. To add a new scraper: create `is_xxx_url()` + `fetch_xxx()`, add routing in `_fetch_website_source()`, and add test support in `settings.py` `test_rss_source()`.
   - `research_feed.py` — dual-mode RSS/HTML scraper for research institutions
   - `article_fetcher.py` — **full-body enrichment** for radar candidates. After dedup, runs `enrich_articles_with_full_body(articles, concurrency=5, timeout=5.0)` on the 5-30 surviving articles: parallel HTTP GET each `source_url`, extract `<article>`/`<main>` text and overwrite `article['content']`; also salvages `published_at` from JSON-LD `"datePublished"` / `<meta property="article:published_time">` / `<meta itemprop="datePublished">` / `<time datetime>` (in that order) when RSS didn't supply one (e.g. Nikkei Asia RSS 1.0 has no pubDate). Skips when content ≥ 500 chars AND `published_at` already set, or when URL is still `news.google.com` (unresolved). Failure is silent — falls back to RSS summary. **This is what makes exclusion-keyword filtering and severity assessment see real article body**, since RSS `summary` is usually only the title + first one or two sentences.
   - `source_health.py` — `mark_attempt(url, success, error=None)` writes `MonitorSource.last_attempt_at` / `last_success_at` / `last_error`. Called by every scraper's HTTP try/except branch (success → update both timestamps + clear error; failure → update attempt + set error, keep last_success_at). Best-effort: own session, swallows DB errors so health-tracking failures never break a scan. Used by `GET /api/settings/source-health` and the LINE 「來源」 command to surface silently-dead sources.
@@ -356,7 +461,11 @@ Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = n
 
 ### Database (SQLite)
 
-Fourteen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `ResearchReport`, `SystemConfig`, `YoutubeChannel`, `YoutubeVideo`, `Feedback`, `NlmReport`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
+Seventeen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `ResearchReport`, `SystemConfig`, `YoutubeChannel`, `YoutubeVideo`, `Feedback`, `NlmReport`, `RawArticle`, `User`, `ServiceApiKey`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
+
+**`User`**: `username` (unique)、`password_hash` (bcrypt 12-round)、`role` (`regular` / `admin` / `owner`)、`is_active`、`must_change_password`、`last_login_at`。
+
+**`ServiceApiKey`**: `name`（顯示用）、`key_prefix`（前 8 字元 `sk_xxxxxx`，方便辨識，**不機密**）、`key_hash`（bcrypt over full key）、`role`、`created_by_user_id`、`last_used_at`、`is_revoked`。**完整 key 不存 DB**，建立時只回傳一次給 owner。
 
 `YoutubeVideo.is_new` — `True` until user marks as seen. Used by LINE webhook for unread YT queries.
 
@@ -406,6 +515,11 @@ Copy `.env.example` to `.env`. Key variables:
 - `GOOGLE_APPS_SCRIPT_URL` — Preferred method for Google Sheets write (GAS Web App)
 - `GOOGLE_SHEETS_CREDENTIALS_FILE` + `GOOGLE_SHEETS_SPREADSHEET_ID` — Legacy method (Service Account JSON)
 - `RADAR_INTERVAL_MINUTES`, `MARKET_CHECK_INTERVAL_MINUTES` — Scheduler timing (fixed-interval, not post-completion)
+- `JWT_SECRET` — JWT 簽章密鑰（必填，啟動 owner 帳號功能必備）。產生：`python -c "import secrets; print(secrets.token_urlsafe(64))"`
+- `JWT_EXPIRE_HOURS` — JWT 有效期（預設 24）
+- `OWNER_USERNAME` / `OWNER_PASSWORD` — 首次啟動 bootstrap owner 帳號用；建好後可清空
+- `API_TOKEN` — Legacy 過渡期單一 token（向後相容，視為 admin），建議遷移到 Service Keys 後移除
+- `ENVIRONMENT` — `production` 時不掛 CORS middleware（dev 自動掛 `localhost:5173/3000`）
 
 ## API Route Prefixes
 
@@ -421,8 +535,11 @@ Copy `.env.example` to `.env`. Key variables:
 | `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order`, `last_success_at`/`last_attempt_at`/`last_error` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle, radar exclusion keywords. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to fed/cnyes/worldbank/fsc/caixin/storm/taisounds/linetoday/udn/ctee/nownews/treasury scrapers via same `is_*_url()` routing), and `rss`/`social`. The stale-warning logic uses the **latest** entry across `entries[:20]` (not `entries[:3]` as before — that bug caused false alarms on daily-newsletter feeds like Politico Morning Money). `GET /radar-topics` response includes `exclusion_keywords` field; `PUT /radar-topics` accepts it. **Source health**: `GET /source-health` returns `{threshold_hours, healthy_count, stale_count, unknown_count, stale[]}`; `GET/PUT /source-health-threshold` for the threshold (1-720 hours). |
 | `/api/feedback` | `routers/feedback.py` | User feedback CRUD (GET list, POST create, DELETE by id) |
 | `/api/raw-articles` | `routers/raw_articles.py` | 篩選前資料：`GET /articles`（list/search/filter，沿用 news_db 的 normalize+n-gram 容錯）、`GET /stats`（總筆數 / passed / not_passed / by_source_type / by_source）、`GET /sources`、`DELETE /articles/{id}`、`POST /cleanup?days=N`（手動清理 N 天前資料）。 |
-| `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL (used by copy buttons) |
-| `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB |
+| `/api/auth` | `routers/auth_router.py` | `POST /login`、`GET /me`（永遠 200，guest 為合法狀態）、`POST /change-password` |
+| `/api/users` | `routers/users.py` | **owner only**。GET 列表 / POST 建 / PUT 改 role+is_active / POST `{id}/reset-password`（產一組臨時密碼回傳一次）/ DELETE。防呆：不能刪自己、不能刪/降權最後一個 owner |
+| `/api/service-keys` | `routers/service_keys.py` | **owner only**。建立 service key 時 `full_key` 只回傳一次（DB 只存 bcrypt hash）。撤銷 = `is_revoked=True`，下個請求即 401 |
+| `/api/utils/resolve-url` | `main.py` | Follow redirects, return final article URL. SSRF 防禦：`is_safe_public_url()` 阻擋 RFC1918 / loopback / link-local（含 GCP metadata 169.254.169.254）|
+| `/api/utils/resolve-stored-urls` | `main.py` | One-time background job: resolve all Google News redirect URLs in DB. SystemConfig `resolve_stored_urls_lock` 60 秒重入鎖 |
 | `/ws` | `main.py` | WebSocket for real-time broadcasts |
 
 ## NotebookLM Local Automation (`scripts/notebooklm_hourly.py`)
