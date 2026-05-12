@@ -19,6 +19,7 @@ DB 內 MonitorSource.url 預期格式：
 從 query 解析 ticker / category 列表；無 query 時 fallback 預設。
 """
 import asyncio
+import calendar
 import logging
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -69,17 +70,39 @@ def _parse_list_query(url: str, key: str) -> list[str]:
 
 
 def _parse_pubdate(s: str) -> datetime | None:
+    """支援 RFC 822（Yahoo Finance ticker feeds）與 ISO 8601（Yahoo News category feeds）。"""
     if not s:
         return None
+    s = s.strip()
+    # RFC 822: "Tue, 12 May 2026 08:12:00 +0000"
     try:
-        dt = parsedate_to_datetime(s.strip())
-        if dt is None:
-            return None
+        dt = parsedate_to_datetime(s)
+        if dt is not None:
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+    except (TypeError, ValueError, IndexError):
+        pass
+    # ISO 8601: "2026-05-12T08:23:31Z" / "2026-05-12T08:23:31+00:00"
+    try:
+        iso = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(iso)
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt
-    except (TypeError, ValueError, IndexError):
+    except ValueError:
         return None
+
+
+def _entry_pubdate(entry) -> datetime | None:
+    """從 feedparser entry 取出 UTC naive datetime。優先 published_parsed（已解析 struct_time）。"""
+    pp = entry.get("published_parsed") or entry.get("updated_parsed")
+    if pp:
+        try:
+            return datetime.utcfromtimestamp(calendar.timegm(pp))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return _parse_pubdate(entry.get("published") or entry.get("updated") or "")
 
 
 async def _fetch_feed(client: httpx.AsyncClient, feed_url: str, source_name: str, category: str) -> list[dict]:
@@ -98,7 +121,7 @@ async def _fetch_feed(client: httpx.AsyncClient, feed_url: str, source_name: str
         link = (entry.get("link") or "").strip()
         if not title or not link:
             continue
-        pub_dt = _parse_pubdate(entry.get("published") or entry.get("updated") or "")
+        pub_dt = _entry_pubdate(entry)
         out.append({
             "title": title,
             "content": (entry.get("summary") or entry.get("description") or "").strip(),
