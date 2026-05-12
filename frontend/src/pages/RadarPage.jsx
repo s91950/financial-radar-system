@@ -66,10 +66,15 @@ export default function RadarPage({ wsSubscribe }) {
 
   const extractMatchedKw = (kw) => {
     if (!kw) return null
-    // 新格式（後端已萃取）：不含布林語法，直接顯示
+    // 新格式（後端已萃取）：不含布林語法，按分隔符切分取前 4 個 term
     const isRawTopic = kw.includes(' OR ') || kw.startsWith('(') || kw.includes('"')
-    if (!isRawTopic) return kw.length <= 40 ? kw : kw.slice(0, 38) + '…'
-    // 舊格式（原始 topic 字串）：萃取前 3 個詞顯示
+    if (!isRawTopic) {
+      const parts = kw.split(/\s*[\/、,，;；]\s*/).map(s => s.trim()).filter(Boolean)
+      const picked = [...new Set(parts)].slice(0, 4)
+      const joined = picked.join(' / ')
+      return joined.length <= 40 ? joined : joined.slice(0, 38) + '…'
+    }
+    // 舊格式（原始 topic 字串）：萃取前 4 個詞顯示
     const quoted = [...kw.matchAll(/"([^"]+)"/g)].map(m => m[1])
     const bare = kw.replace(/"[^"]*"/g, '').split(/[\s()]+/)
       .filter(t => t && !['OR', 'AND', 'NOT'].includes(t) && t.length > 1)

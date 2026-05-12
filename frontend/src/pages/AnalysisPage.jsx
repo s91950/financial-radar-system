@@ -61,28 +61,28 @@ function renderReport(content) {
   })
 }
 
-// Tab 定義：分為兩組（NLM 和 Gemini），每組有新聞和 YT
+// Tab 定義：Extension（手動）放最前並預設，NLM 移到最後
 const TAB_CONFIG = {
-  // NLM tabs
-  nlm_news: {
-    label: '📰 NLM 新聞',
-    emptyMsg: '尚無 NLM 新聞分析報告',
-    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
-    reportType: 'news',
-    getLatest: () => radarAPI.getNlmReport(),
-    listHistory: () => radarAPI.listNlmReports('news'),
-    getById: (id) => radarAPI.getNlmReportById(id),
-    group: 'nlm',
+  // Extension 手動分析（Chrome Extension）— 預設 tab
+  extension_news: {
+    label: '🧩 Extension 新聞',
+    emptyMsg: '尚無 Extension 新聞分析報告',
+    emptyHint: 'Chrome Extension 選擇「新聞 notebook」後產生的報告會出現在這裡',
+    reportType: 'extension_manual',
+    getLatest: () => radarAPI.getExtensionReport('news'),
+    listHistory: () => radarAPI.listExtensionReports('news'),
+    getById: (id) => radarAPI.getExtensionReportById(id),
+    group: 'extension',
   },
-  nlm_yt: {
-    label: '📺 NLM YouTube',
-    emptyMsg: '尚無 NLM YouTube 分析報告',
-    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
-    reportType: 'yt',
-    getLatest: () => radarAPI.getNlmYtReport(),
-    listHistory: () => radarAPI.listNlmReports('yt'),
-    getById: (id) => radarAPI.getNlmReportById(id),
-    group: 'nlm',
+  extension_yt: {
+    label: '🧩 Extension YT',
+    emptyMsg: '尚無 Extension YouTube 分析報告',
+    emptyHint: 'Chrome Extension 選擇「YouTube notebook」後產生的報告會出現在這裡',
+    reportType: 'extension_manual',
+    getLatest: () => radarAPI.getExtensionReport('yt'),
+    listHistory: () => radarAPI.listExtensionReports('yt'),
+    getById: (id) => radarAPI.getExtensionReportById(id),
+    group: 'extension',
   },
   // Gemini tabs
   gemini_news: {
@@ -105,31 +105,31 @@ const TAB_CONFIG = {
     getById: (id) => radarAPI.getGeminiReportById(id),
     group: 'gemini',
   },
-  // Extension 手動分析（Chrome Extension）
-  extension_news: {
-    label: '🧩 Extension 新聞',
-    emptyMsg: '尚無 Extension 新聞分析報告',
-    emptyHint: 'Chrome Extension 選擇「新聞 notebook」後產生的報告會出現在這裡',
-    reportType: 'extension_manual',
-    getLatest: () => radarAPI.getExtensionReport('news'),
-    listHistory: () => radarAPI.listExtensionReports('news'),
-    getById: (id) => radarAPI.getExtensionReportById(id),
-    group: 'extension',
+  // NLM tabs
+  nlm_news: {
+    label: '📰 NLM 新聞',
+    emptyMsg: '尚無 NLM 新聞分析報告',
+    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
+    reportType: 'news',
+    getLatest: () => radarAPI.getNlmReport(),
+    listHistory: () => radarAPI.listNlmReports('news'),
+    getById: (id) => radarAPI.getNlmReportById(id),
+    group: 'nlm',
   },
-  extension_yt: {
-    label: '🧩 Extension YT',
-    emptyMsg: '尚無 Extension YouTube 分析報告',
-    emptyHint: 'Chrome Extension 選擇「YouTube notebook」後產生的報告會出現在這裡',
-    reportType: 'extension_manual',
-    getLatest: () => radarAPI.getExtensionReport('yt'),
-    listHistory: () => radarAPI.listExtensionReports('yt'),
-    getById: (id) => radarAPI.getExtensionReportById(id),
-    group: 'extension',
+  nlm_yt: {
+    label: '📺 NLM YouTube',
+    emptyMsg: '尚無 NLM YouTube 分析報告',
+    emptyHint: 'NotebookLM 腳本執行後報告將自動同步至此',
+    reportType: 'yt',
+    getLatest: () => radarAPI.getNlmYtReport(),
+    listHistory: () => radarAPI.listNlmReports('yt'),
+    getById: (id) => radarAPI.getNlmReportById(id),
+    group: 'nlm',
   },
 }
 
 export default function AnalysisPage() {
-  const [tab, setTab] = useState('gemini_news')
+  const [tab, setTab] = useState('extension_news')
   const [histories, setHistories] = useState({})
   const [selectedIds, setSelectedIds] = useState({})
   const [report, setReport] = useState(null)
