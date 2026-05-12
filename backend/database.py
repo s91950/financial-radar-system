@@ -1117,21 +1117,31 @@ def _migrate_db():
         conn.commit()
 
         # ── Yahoo 來源升級 (2026-05) ──
-        # finance.yahoo.com 直接 RSS（/rss/topstories、/news/rssindex）2026-05 觀察到
-        # pubDate 卡在 2-3 天前不更新。改用：
-        #   原 /news/rssindex (id 11 等)       → Yahoo News (news.yahoo.com/rss/topstories, 純 RSS)
-        #   原 /rss/topstories (id 97 等)      → Yahoo Finance ticker feeds API + website type
+        # Yahoo 總覽級 RSS 落後實際時間 12 小時到 3 天：
+        #   finance.yahoo.com/{rss/topstories, news/rssindex}：pubDate 卡 2-3 天
+        #   news.yahoo.com/rss/topstories：50 篇但最新仍是 ~12 小時前
+        # 改走子分類路徑（分鐘級新鮮度），由 yahoo_scraper.py 並發抓取後去重合併：
+        #   Yahoo Finance → feeds.finance.yahoo.com/rss/2.0/headline?s=<ticker,...>
+        #   Yahoo News    → news.yahoo.com/rss/<category>（用約定 URL `news.yahoo.com/rss/multi?c=...`
+        #                   識別這是多 category 模式）
         # 必須在 _replacement_sources_v3 之前執行，否則新 URL 不存在會被重新 INSERT
-        _yahoo_news_rss = "https://news.yahoo.com/rss/topstories"
+        _yahoo_news_multi = (
+            "https://news.yahoo.com/rss/multi?c=world,us,business,tech"
+        )
         _yahoo_finance_feeds = (
             "https://feeds.finance.yahoo.com/rss/2.0/headline"
             "?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US"
         )
+        # 一次性處理「原 finance.yahoo.com/news/rssindex」與「中間態 news.yahoo.com/rss/topstories」
+        # 任一狀態都對齊到最終 multi-category website 型
         conn.execute(text(
             "UPDATE monitor_sources "
-            "SET name='Yahoo News', url=:u, type='rss', is_active=1 "
-            "WHERE url='https://finance.yahoo.com/news/rssindex'"
-        ), {"u": _yahoo_news_rss})
+            "SET name='Yahoo News', url=:u, type='website', is_active=1 "
+            "WHERE url IN ("
+            "  'https://finance.yahoo.com/news/rssindex',"
+            "  'https://news.yahoo.com/rss/topstories'"
+            ")"
+        ), {"u": _yahoo_news_multi})
         conn.execute(text(
             "UPDATE monitor_sources "
             "SET name='Yahoo Finance', url=:u, type='website', is_active=1 "
@@ -1815,6 +1825,12 @@ def _seed_defaults():
                     type="website",
                     url="https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US",
                     keywords='["market","Fed","inflation","stocks","economy","rate","earnings","recession","tariff","trade"]',
+                ),
+                MonitorSource(
+                    name="Yahoo News",
+                    type="website",
+                    url="https://news.yahoo.com/rss/multi?c=world,us,business,tech",
+                    keywords='["economy","market","Fed","inflation","tariff","trade","sanction","central bank","regulation","earnings"]',
                 ),
             ]
             db.add_all(sources)

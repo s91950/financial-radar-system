@@ -1,16 +1,22 @@
-"""Yahoo Finance RSS 抓取器（多 ticker 並發合併版）。
+"""Yahoo Finance / Yahoo News 多端點並發抓取器。
 
-Yahoo Finance 的 sitewide RSS（`finance.yahoo.com/rss/topstories`、`/news/rssindex`）
-在 2026-05 觀察到最新 pubDate 卡在 2-3 天前不更新，但 ticker-symbol headline feed
-`feeds.finance.yahoo.com/rss/2.0/headline?s=<ticker>` 仍是分鐘級新鮮度。
+Yahoo 的「總覽級」RSS（`finance.yahoo.com/rss/topstories`、`news.yahoo.com/rss/topstories`、
+`finance.yahoo.com/news/rssindex`）在 2026-05 觀察到 pubDate 落後實際時間 12 小時到 3 天。
+但「子分類級」feeds 仍是分鐘級新鮮度：
 
-策略：對一組代表大盤的 ticker 並發抓取，每個 feed 最多 20 篇，按 URL+title 去重後合併。
-預設 ticker 涵蓋三大指數 + 兩支大型 ETF + 幾支權值股，總 unique 約 100-130 篇。
+- Yahoo Finance：`feeds.finance.yahoo.com/rss/2.0/headline?s=<ticker>&region=US&lang=en-US`
+  每個 ticker 20 篇，涵蓋 Reuters / Motley Fool / Bloomberg / Barron's 等聚合。
+- Yahoo News：`news.yahoo.com/rss/<category>`（world / us / business / tech 等）
+  每個 category 5 篇但都在 30 分鐘內。
+
+策略：對一組代表大盤的 ticker / 一組關鍵 category 並發抓取，按 (URL, title) 去重後合併。
 
 DB 內 MonitorSource.url 預期格式：
-  https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA
+  Finance: https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US
+  News:    https://news.yahoo.com/rss/multi?c=world,us,business,tech
 
-scraper 從 query string `s=` 解析 ticker 列表；若 URL 不含 query 則 fallback 預設值。
+`multi` 是約定識別字（非真實 endpoint），實際 HTTP 打的是各 category 個別 URL。
+從 query 解析 ticker / category 列表；無 query 時 fallback 預設。
 """
 import asyncio
 import logging
@@ -31,26 +37,35 @@ _HEADERS = {
 }
 
 _DEFAULT_TICKERS = ["^GSPC", "^DJI", "^IXIC", "SPY", "QQQ", "AAPL", "TSLA", "NVDA"]
+_DEFAULT_NEWS_CATEGORIES = ["world", "us", "business", "tech"]
 _CONCURRENCY = 4
-_PER_TICKER_TIMEOUT = 12.0
+_PER_FEED_TIMEOUT = 12.0
 
 
 def is_yahoo_url(url: str) -> bool:
-    """匹配 Yahoo Finance feeds API 或 Yahoo Finance 列表頁 URL（後者會解析 ticker 後改打 feeds API）。"""
+    """匹配本 scraper 處理的 Yahoo URL（Finance ticker feeds / News category feeds / 列表頁約定別名）。"""
     if not url:
         return False
-    return "feeds.finance.yahoo.com" in url or "finance.yahoo.com/topic/latest-news" in url
+    return (
+        "feeds.finance.yahoo.com" in url
+        or "finance.yahoo.com/topic/latest-news" in url
+        or "news.yahoo.com/rss" in url
+    )
 
 
-def _parse_tickers(url: str) -> list[str]:
+def _is_news_mode(url: str) -> bool:
+    return "news.yahoo.com" in url
+
+
+def _parse_list_query(url: str, key: str) -> list[str]:
     try:
         qs = parse_qs(urlparse(url).query)
-        s = qs.get("s", [""])[0]
-        if s:
-            return [t.strip() for t in s.split(",") if t.strip()]
+        v = qs.get(key, [""])[0]
+        if v:
+            return [t.strip() for t in v.split(",") if t.strip()]
     except Exception:
         pass
-    return list(_DEFAULT_TICKERS)
+    return []
 
 
 def _parse_pubdate(s: str) -> datetime | None:
@@ -67,14 +82,13 @@ def _parse_pubdate(s: str) -> datetime | None:
         return None
 
 
-async def _fetch_one(client: httpx.AsyncClient, ticker: str) -> list[dict]:
-    url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+async def _fetch_feed(client: httpx.AsyncClient, feed_url: str, source_name: str, category: str) -> list[dict]:
     try:
-        resp = await client.get(url, headers=_HEADERS, timeout=_PER_TICKER_TIMEOUT)
+        resp = await client.get(feed_url, headers=_HEADERS, timeout=_PER_FEED_TIMEOUT)
         resp.raise_for_status()
         xml_text = resp.text
     except Exception as e:
-        logger.warning(f"yahoo feed fetch error (s={ticker}): {e}")
+        logger.warning(f"yahoo feed fetch error ({feed_url}): {e}")
         return []
 
     feed = feedparser.parse(xml_text)
@@ -88,29 +102,48 @@ async def _fetch_one(client: httpx.AsyncClient, ticker: str) -> list[dict]:
         out.append({
             "title": title,
             "content": (entry.get("summary") or entry.get("description") or "").strip(),
-            "source": "Yahoo Finance",
+            "source": source_name,
             "source_url": link,
             "published_at": pub_dt.isoformat() if pub_dt else None,
-            "category": "financial",
+            "category": category,
         })
     return out
 
 
 async def fetch_yahoo_news(url: str, hours_back: int = 24) -> list[dict]:
-    """並發抓多個 ticker headline feed，按 URL+title 去重後回傳指定時間內的文章。"""
+    """並發抓多端點，按 URL+title 去重後回傳指定時間內的文章。
+
+    URL 含 news.yahoo.com → Yahoo News 多 category 模式；否則走 Yahoo Finance 多 ticker 模式。
+    """
     from backend.services.source_health import mark_attempt
 
-    tickers = _parse_tickers(url)
-    cutoff = datetime.utcnow() - timedelta(hours=hours_back)
+    is_news = _is_news_mode(url)
+    if is_news:
+        items = _parse_list_query(url, "c") or list(_DEFAULT_NEWS_CATEGORIES)
+        feed_urls = [(f"https://news.yahoo.com/rss/{c}", c) for c in items]
+        source_name = "Yahoo News"
+        article_category = "news"
+    else:
+        items = _parse_list_query(url, "s") or list(_DEFAULT_TICKERS)
+        feed_urls = [
+            (f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={t}&region=US&lang=en-US", t)
+            for t in items
+        ]
+        source_name = "Yahoo Finance"
+        article_category = "financial"
 
+    cutoff = datetime.utcnow() - timedelta(hours=hours_back)
     sem = asyncio.Semaphore(_CONCURRENCY)
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        async def _wrapped(t: str) -> list[dict]:
+        async def _wrapped(feed_url: str, tag: str) -> list[dict]:
             async with sem:
-                return await _fetch_one(client, t)
+                return await _fetch_feed(client, feed_url, source_name, article_category)
 
-        results = await asyncio.gather(*[_wrapped(t) for t in tickers], return_exceptions=True)
+        results = await asyncio.gather(
+            *[_wrapped(fu, tag) for fu, tag in feed_urls],
+            return_exceptions=True,
+        )
 
     any_ok = False
     last_err = None
@@ -139,8 +172,11 @@ async def fetch_yahoo_news(url: str, hours_back: int = 24) -> list[dict]:
     if any_ok:
         mark_attempt(url, success=True)
     else:
-        mark_attempt(url, success=False, error=last_err or "all ticker feeds failed")
+        mark_attempt(url, success=False, error=last_err or "all sub-feeds failed")
 
     articles.sort(key=lambda a: a.get("published_at") or "", reverse=True)
-    logger.info(f"yahoo: {len(articles)} unique articles within {hours_back}h from {len(tickers)} tickers")
+    logger.info(
+        f"yahoo[{'news' if is_news else 'finance'}]: {len(articles)} unique articles "
+        f"within {hours_back}h from {len(feed_urls)} sub-feeds"
+    )
     return articles
