@@ -1116,15 +1116,41 @@ def _migrate_db():
                 ), {"n": _n, "u": _u, "k": _k})
         conn.commit()
 
+        # ── Yahoo 來源升級 (2026-05) ──
+        # finance.yahoo.com 直接 RSS（/rss/topstories、/news/rssindex）2026-05 觀察到
+        # pubDate 卡在 2-3 天前不更新。改用：
+        #   原 /news/rssindex (id 11 等)       → Yahoo News (news.yahoo.com/rss/topstories, 純 RSS)
+        #   原 /rss/topstories (id 97 等)      → Yahoo Finance ticker feeds API + website type
+        # 必須在 _replacement_sources_v3 之前執行，否則新 URL 不存在會被重新 INSERT
+        _yahoo_news_rss = "https://news.yahoo.com/rss/topstories"
+        _yahoo_finance_feeds = (
+            "https://feeds.finance.yahoo.com/rss/2.0/headline"
+            "?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US"
+        )
+        conn.execute(text(
+            "UPDATE monitor_sources "
+            "SET name='Yahoo News', url=:u, type='rss', is_active=1 "
+            "WHERE url='https://finance.yahoo.com/news/rssindex'"
+        ), {"u": _yahoo_news_rss})
+        conn.execute(text(
+            "UPDATE monitor_sources "
+            "SET name='Yahoo Finance', url=:u, type='website', is_active=1 "
+            "WHERE url='https://finance.yahoo.com/rss/topstories'"
+        ), {"u": _yahoo_finance_feeds})
+        conn.commit()
+
         # ── 新增替代來源 v3（補充停用來源的覆蓋面）──
         _replacement_sources_v3 = [
             # Channel News Asia: 亞太區英文財經/政治新聞，覆蓋台灣、中國、東南亞
             ("Channel News Asia", "rss",
              "https://www.channelnewsasia.com/rssfeeds/8395744",
              '["Asia","economy","trade","Taiwan","China","US","market","central bank","Singapore","tariff"]', 1),
-            # Yahoo Finance: 美國市場新聞，聚合 Reuters/AP/Bloomberg 內容
-            ("Yahoo Finance", "rss",
-             "https://finance.yahoo.com/rss/topstories",
+            # Yahoo Finance: 美國市場新聞。
+            # 直接 RSS（finance.yahoo.com/rss/topstories、/news/rssindex）2026-05 觀察到
+            # pubDate 卡在 2-3 天前不更新，改走 feeds.finance.yahoo.com ticker headline API
+            # （yahoo_scraper.py 並發抓多 ticker 合併去重，分鐘級新鮮度）
+            ("Yahoo Finance", "website",
+             "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US",
              '["market","Fed","inflation","stocks","economy","rate","earnings","recession","tariff","trade"]', 1),
         ]
         for _n, _t, _u, _k, _a in _replacement_sources_v3:
@@ -1786,8 +1812,8 @@ def _seed_defaults():
                 ),
                 MonitorSource(
                     name="Yahoo Finance",
-                    type="rss",
-                    url="https://finance.yahoo.com/rss/topstories",
+                    type="website",
+                    url="https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC,^DJI,^IXIC,SPY,QQQ,AAPL,TSLA,NVDA&region=US&lang=en-US",
                     keywords='["market","Fed","inflation","stocks","economy","rate","earnings","recession","tariff","trade"]',
                 ),
             ]
