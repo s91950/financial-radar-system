@@ -172,6 +172,18 @@ def start_scheduler(ws_manager):
         coalesce=True,
     )
 
+    # LINE 彙整通知：台北時間 07:00 / 12:00 / 17:00 = UTC 23:00 / 04:00 / 09:00
+    scheduler.add_job(
+        line_critical_digest,
+        "cron",
+        hour="23,4,9",
+        minute=0,
+        id="line_critical_digest",
+        name="LINE 緊急新聞彙整推送",
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
     scheduler.start()
     logger.info("Scheduler started with radar and daily news jobs")
 
@@ -251,6 +263,61 @@ def _mark_raw_articles_passed(db, urls: list[str]) -> None:
         db.commit()
     except Exception:
         db.rollback()
+
+
+async def line_critical_digest():
+    """每天 07:00 / 12:00 / 17:00 Asia/Taipei 發送一次 critical 警報彙整。
+
+    讀取自上次推送（SystemConfig.line_last_digest_at）以來的所有 critical Alert，
+    用 _build_news_reply 格式化後透過 send_line_broadcast 推送。
+    LINE_TARGET_ID 若設為群組 ID，send_line_broadcast 會優先用 pushMessage 只送該群組。
+    """
+    from backend.routers.line_webhook import _build_news_reply
+    from backend.services.notification import send_line_broadcast
+
+    db = SessionLocal()
+    try:
+        row = db.query(SystemConfig).filter(SystemConfig.key == "line_last_digest_at").first()
+        since = None
+        if row and row.value:
+            try:
+                since = datetime.fromisoformat(row.value)
+            except ValueError:
+                since = None
+
+        query = db.query(Alert).filter(Alert.severity == "critical")
+        if since:
+            query = query.filter(Alert.created_at > since)
+        alerts = query.order_by(Alert.created_at.asc()).all()
+
+        if not alerts:
+            _flog("[LINE_DIGEST] 無未推送 critical 警報，跳過")
+            logger.info("LINE digest: no new critical alerts to push")
+        else:
+            messages = _build_news_reply(alerts, since)
+            sent = 0
+            for msg in messages:
+                ok = await send_line_broadcast(msg)
+                if ok:
+                    sent += 1
+                else:
+                    break  # 失敗或限額就停止後續訊息
+            _flog(f"[LINE_DIGEST] 已推送 {sent}/{len(messages)} 則訊息，涵蓋 {len(alerts)} 個警報")
+            logger.info(f"LINE digest pushed: {sent}/{len(messages)} messages, {len(alerts)} alerts")
+
+        # 不論有無警報都更新時間戳，避免下輪重複推送舊資料
+        now = datetime.utcnow()
+        if row:
+            row.value = now.isoformat()
+        else:
+            db.add(SystemConfig(key="line_last_digest_at", value=now.isoformat()))
+        db.commit()
+    except Exception as e:
+        logger.error(f"LINE digest error: {e}")
+        _flog(f"[LINE_DIGEST] ERROR: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 async def cleanup_raw_articles():

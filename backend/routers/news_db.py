@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -119,7 +119,13 @@ async def get_articles(
             pass
     if fetched_after:
         try:
-            query = query.filter(Article.fetched_at >= datetime.fromisoformat(fetched_after.replace("Z", "+00:00")))
+            dt = datetime.fromisoformat(fetched_after.replace("Z", "+00:00"))
+            # Article.fetched_at 是 naive UTC（datetime.utcnow），cutoff 帶 tz 時
+            # SQLite 會做字串比較、日期前綴對不上會誤排除（例如 TW 00:00-08:00
+            # 抓的文章 UTC 是「昨日」，跟帶 +08:00 的 cutoff 字串比就會掉一截）。
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            query = query.filter(Article.fetched_at >= dt)
         except ValueError:
             pass
 

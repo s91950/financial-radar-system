@@ -360,13 +360,33 @@ async def line_webhook(request: Request):
         if not user_text:
             continue
 
-        # 判斷模式：yt 開頭 / 分析 / 通知 / 來源（健康狀態）
-        is_yt = user_text[:2].lower() == "yt"
-        is_analysis = not is_yt and "分析" in user_text
-        is_health = not is_yt and not is_analysis and "來源" in user_text
-        is_news = not is_yt and not is_analysis and not is_health and "通知" in user_text
+        # 判斷模式：ID（取得當前 source ID）/ yt 開頭 / 分析 / 通知 / 來源（健康狀態）
+        is_id = user_text.strip().upper() == "ID"
+        is_yt = not is_id and user_text[:2].lower() == "yt"
+        is_analysis = not is_id and not is_yt and "分析" in user_text
+        is_health = not is_id and not is_yt and not is_analysis and "來源" in user_text
+        is_news = not is_id and not is_yt and not is_analysis and not is_health and "通知" in user_text
 
-        if not is_yt and not is_analysis and not is_news and not is_health:
+        if not is_id and not is_yt and not is_analysis and not is_news and not is_health:
+            continue
+
+        # ── ID 指令（不需查 DB）──
+        if is_id:
+            source = event.get("source", {}) or {}
+            src_type = source.get("type", "?")
+            sid = (
+                source.get("groupId")
+                or source.get("roomId")
+                or source.get("userId")
+                or "?"
+            )
+            type_label = {"group": "群組", "room": "聊天室", "user": "個人"}.get(src_type, src_type)
+            reply_text = [
+                f"類型：{type_label}\nID：{sid}\n\n"
+                f"把此 ID 貼到 VM .env 的 LINE_TARGET_ID 後重啟 financial-radar，"
+                f"主動推送就只會送到此{type_label}。"
+            ]
+            await send_line_reply_multi(reply_token, reply_text)
             continue
 
         db = SessionLocal()

@@ -385,6 +385,14 @@ export default function SearchPage() {
 
   useEffect(() => { loadTopics() }, [loadTopics])
 
+  // 首次載入主題列表後，自動展開第一個主題（若使用者尚未選擇任何主題）
+  useEffect(() => {
+    if (!loadingTopics && topics.length > 0 && selectedId === null) {
+      handleSelectTopic(topics[0].id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingTopics, topics])
+
   useEffect(() => {
     settingsAPI.getSeverityKeywords().then(({ data }) => {
       setSeverityKws({ critical: data.critical || [], high: data.high || [] })
