@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.auth import require_admin, require_regular
+from backend.auth import AuthContext, get_current_auth, require_admin, require_regular
 from backend.database import Article, get_db
 
 router = APIRouter()
@@ -293,12 +293,31 @@ def _tag_matched_keywords(articles: list[dict], topics: list[str], query: str | 
                 break
 
 
-@router.post("/fetch", dependencies=[Depends(require_admin)])
-async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
+@router.post("/fetch")
+async def manual_fetch(
+    req: ManualFetchRequest,
+    db: Session = Depends(get_db),
+    ctx: AuthContext = Depends(get_current_auth),
+):
     """Fetch news and return preview (does NOT auto-save).
+
+    認證：gn_only 模式訪客可用（只打 Google News RSS）；
+    sources_only 模式會觸發 RSS / 網頁 / MOPS 大量爬蟲，限 admin。
 
     無自訂關鍵字時，使用與即時雷達相同的 radar_topics + 主題追蹤關鍵字。
     """
+    if req.source_type != "gn_only" and not ctx.has_role("admin"):
+        from fastapi import HTTPException, status
+        if ctx.role == "guest":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: sources_only fetch requires admin role",
+        )
     from backend.database import MonitorSource
     from backend.services import rss_feed
     from backend.services.google_news import search_google_news

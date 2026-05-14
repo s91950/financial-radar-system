@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-export default function useWebSocket(url = 'ws://localhost:8000/ws') {
+// 動態組 WebSocket URL：協定跟著當前頁面（https → wss、http → ws），
+// host 也用瀏覽器當前 host，避免寫死 localhost 讓部署到 VM 的使用者
+// 一律連到自己的 127.0.0.1 而顯示「離線中」。
+// 生產：nginx /ws → 127.0.0.1:8000；dev：vite.config 也有 /ws proxy。
+function _defaultWsUrl() {
+  if (typeof window === 'undefined') return 'ws://localhost:8000/ws'
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}/ws`
+}
+
+export default function useWebSocket(url = _defaultWsUrl()) {
   const [lastMessage, setLastMessage] = useState(null)
   const [isConnected, setIsConnected] = useState(false)
   const wsRef = useRef(null)

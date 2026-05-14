@@ -254,11 +254,6 @@ export default function NewsDBPage() {
     setPage(0)
   }
 
-  const handleExport = () => {
-    const params = new URLSearchParams({ format: 'csv', saved_only: String(filters.saved_only) })
-    window.open(`/api/news/export?${params.toString()}`, '_blank')
-  }
-
   const handleCopyUrl = async (url) => {
     const finalUrl = await resolveUrl(url)
     copyToClipboard(finalUrl)
@@ -422,82 +417,88 @@ export default function NewsDBPage() {
           </div>
           <div className="flex items-center justify-end gap-3 mt-4 pt-4 border-t border-dark-700">
             <button onClick={() => { setPreview(null); setSelectedIds(new Set()); setPreviewSeverityFilter('all') }}
-              className="btn-secondary text-sm">取消</button>
-            <button
-              onClick={handleSaveSelected}
-              disabled={saving || newCount === 0}
-              className="btn-primary text-sm flex items-center gap-2"
-            >
-              {saving && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />}
-              儲存選取 ({newCount})
-            </button>
+              className="btn-secondary text-sm">關閉</button>
+            {isAdmin && (
+              <button
+                onClick={handleSaveSelected}
+                disabled={saving || newCount === 0}
+                className="btn-primary text-sm flex items-center gap-2"
+              >
+                {saving && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />}
+                儲存選取 ({newCount})
+              </button>
+            )}
           </div>
         </div>
       )}
 
       {/* Action Bar */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* 抓取／搜尋（POST /fetch admin-only）—— 訪客 / regular 不顯示 */}
+        {/* 時間範圍 — admin 用於兩種模式、訪客用於 GN 模式 */}
+        <select
+          value={fetchHoursBack}
+          onChange={(e) => setFetchHoursBack(Number(e.target.value))}
+          className="input w-28 text-sm"
+          disabled={fetchLoading}
+        >
+          <option value={6}>6 小時</option>
+          <option value={12}>12 小時</option>
+          <option value={24}>24 小時</option>
+          <option value={48}>48 小時</option>
+          <option value={72}>72 小時</option>
+          <option value={168}>7 天</option>
+          <option value={336}>14 天</option>
+          <option value={720}>30 天</option>
+        </select>
+
+        {/* 搜尋輸入 — Enter 鍵預設觸發訪客也可用的 GN 搜尋 */}
+        <input
+          type="text"
+          value={customQuery}
+          onChange={(e) => setCustomQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return
+            if (isAdmin) handleSourceSearch(e); else handleGnSearch(e)
+          }}
+          placeholder="關鍵字（空白=雷達主題）"
+          className="input w-48"
+        />
+
+        {/* 抓取來源新聞 — 觸發大量爬蟲，admin only */}
         {isAdmin && (
-          <>
-            {/* 時間範圍 */}
-            <select
-              value={fetchHoursBack}
-              onChange={(e) => setFetchHoursBack(Number(e.target.value))}
-              className="input w-28 text-sm"
-              disabled={fetchLoading}
-            >
-              <option value={6}>6 小時</option>
-              <option value={12}>12 小時</option>
-              <option value={24}>24 小時</option>
-              <option value={48}>48 小時</option>
-              <option value={72}>72 小時</option>
-              <option value={168}>7 天</option>
-              <option value={336}>14 天</option>
-              <option value={720}>30 天</option>
-            </select>
-
-            {/* 搜尋輸入 */}
-            <input
-              type="text"
-              value={customQuery}
-              onChange={(e) => setCustomQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSourceSearch(e) }}
-              placeholder="關鍵字（空白=雷達主題）"
-              className="input w-48"
-            />
-
-            {/* 抓取來源新聞（預設）*/}
-            <button
-              onClick={(e) => handleSourceSearch(e)}
-              disabled={fetchLoading}
-              className="btn-primary flex items-center gap-2"
-            >
-              {fetchLoading ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-              ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                </svg>
-              )}
-              抓取來源新聞
-            </button>
-
-            {/* Google News 搜尋 */}
-            <button
-              onClick={(e) => handleGnSearch(e)}
-              disabled={fetchLoading}
-              className="btn-secondary flex items-center gap-2"
-            >
+          <button
+            onClick={(e) => handleSourceSearch(e)}
+            disabled={fetchLoading}
+            className="btn-primary flex items-center gap-2"
+          >
+            {fetchLoading ? (
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+            ) : (
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                  d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
               </svg>
-              Google News
-            </button>
-          </>
+            )}
+            抓取來源新聞
+          </button>
         )}
+
+        {/* Google News 搜尋 — 訪客也可用 */}
+        <button
+          onClick={(e) => handleGnSearch(e)}
+          disabled={fetchLoading}
+          className={`${isAdmin ? 'btn-secondary' : 'btn-primary'} flex items-center gap-2`}
+        >
+          {fetchLoading && !isAdmin ? (
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+          ) : (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+          )}
+          Google News
+        </button>
 
         <div className="flex-1" />
 
@@ -515,15 +516,6 @@ export default function NewsDBPage() {
             已收藏
           </button>
         )}
-
-        {/* Export CSV */}
-        <button onClick={handleExport} className="btn-secondary flex items-center gap-1.5">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-          </svg>
-          匯出 CSV
-        </button>
 
         <span className="text-sm text-dark-400">{total} 篇文章</span>
       </div>
