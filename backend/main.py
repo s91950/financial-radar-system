@@ -86,9 +86,11 @@ app.include_router(radar.router, prefix="/api/radar", tags=["雷達"])
 
 # 一般使用者讀寫：登入後（regular+）即可
 app.include_router(search.router, prefix="/api/search", tags=["搜尋"], dependencies=[Depends(require_regular)])
-app.include_router(news_db.router, prefix="/api/news", tags=["新聞資料庫"], dependencies=[Depends(require_regular)])
 app.include_router(research.router, prefix="/api/research", tags=["研究報告"], dependencies=[Depends(require_regular)])
-app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube 頻道"], dependencies=[Depends(require_regular)])
+
+# 新聞 / YouTube：guest 可讀（GET 端點不上鎖），各 write endpoint 自帶 require_regular/admin
+app.include_router(news_db.router, prefix="/api/news", tags=["新聞資料庫"])
+app.include_router(youtube.router, prefix="/api/youtube", tags=["YouTube 頻道"])
 
 # 管理者 only：設定、主題管理（會改雷達掃描行為）
 app.include_router(settings.router, prefix="/api/settings", tags=["設定"], dependencies=[Depends(require_admin)])

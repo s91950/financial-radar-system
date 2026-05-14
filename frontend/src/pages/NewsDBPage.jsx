@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { newsAPI, settingsAPI, resolveUrl, copyToClipboard } from '../services/api'
+import { newsAPI, settingsAPI, resolveUrl, copyToClipboard, hasRole } from '../services/api'
 
 // Severity assessment — mirrors backend _assess_severity_single logic
 const CRITICAL_KWS = ['崩盤', '暴跌', '危機', 'crash', 'crisis', 'emergency',
@@ -34,6 +34,7 @@ function SeverityBadge({ severity }) {
 }
 
 export default function NewsDBPage() {
+  const isAdmin = hasRole('admin')
   const [articles, setArticles] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -436,77 +437,84 @@ export default function NewsDBPage() {
 
       {/* Action Bar */}
       <div className="flex flex-wrap items-center gap-3">
-        {/* 時間範圍 */}
-        <select
-          value={fetchHoursBack}
-          onChange={(e) => setFetchHoursBack(Number(e.target.value))}
-          className="input w-28 text-sm"
-          disabled={fetchLoading}
-        >
-          <option value={6}>6 小時</option>
-          <option value={12}>12 小時</option>
-          <option value={24}>24 小時</option>
-          <option value={48}>48 小時</option>
-          <option value={72}>72 小時</option>
-          <option value={168}>7 天</option>
-          <option value={336}>14 天</option>
-          <option value={720}>30 天</option>
-        </select>
+        {/* 抓取／搜尋（POST /fetch admin-only）—— 訪客 / regular 不顯示 */}
+        {isAdmin && (
+          <>
+            {/* 時間範圍 */}
+            <select
+              value={fetchHoursBack}
+              onChange={(e) => setFetchHoursBack(Number(e.target.value))}
+              className="input w-28 text-sm"
+              disabled={fetchLoading}
+            >
+              <option value={6}>6 小時</option>
+              <option value={12}>12 小時</option>
+              <option value={24}>24 小時</option>
+              <option value={48}>48 小時</option>
+              <option value={72}>72 小時</option>
+              <option value={168}>7 天</option>
+              <option value={336}>14 天</option>
+              <option value={720}>30 天</option>
+            </select>
 
-        {/* 搜尋輸入 */}
-        <input
-          type="text"
-          value={customQuery}
-          onChange={(e) => setCustomQuery(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleSourceSearch(e) }}
-          placeholder="關鍵字（空白=雷達主題）"
-          className="input w-48"
-        />
+            {/* 搜尋輸入 */}
+            <input
+              type="text"
+              value={customQuery}
+              onChange={(e) => setCustomQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSourceSearch(e) }}
+              placeholder="關鍵字（空白=雷達主題）"
+              className="input w-48"
+            />
 
-        {/* 抓取來源新聞（預設）*/}
-        <button
-          onClick={(e) => handleSourceSearch(e)}
-          disabled={fetchLoading}
-          className="btn-primary flex items-center gap-2"
-        >
-          {fetchLoading ? (
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-          ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-            </svg>
-          )}
-          抓取來源新聞
-        </button>
+            {/* 抓取來源新聞（預設）*/}
+            <button
+              onClick={(e) => handleSourceSearch(e)}
+              disabled={fetchLoading}
+              className="btn-primary flex items-center gap-2"
+            >
+              {fetchLoading ? (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+              )}
+              抓取來源新聞
+            </button>
 
-        {/* Google News 搜尋 */}
-        <button
-          onClick={(e) => handleGnSearch(e)}
-          disabled={fetchLoading}
-          className="btn-secondary flex items-center gap-2"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-          </svg>
-          Google News
-        </button>
+            {/* Google News 搜尋 */}
+            <button
+              onClick={(e) => handleGnSearch(e)}
+              disabled={fetchLoading}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+              Google News
+            </button>
+          </>
+        )}
 
         <div className="flex-1" />
 
-        <button
-          onClick={() => setFilters(prev => ({ ...prev, saved_only: !prev.saved_only }))}
-          className={`btn-secondary flex items-center gap-1.5 ${
-            filters.saved_only ? 'bg-primary-600/20 text-primary-400 border-primary-500/30' : ''
-          }`}
-        >
-          <svg className="w-4 h-4" fill={filters.saved_only ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-          </svg>
-          已收藏
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => setFilters(prev => ({ ...prev, saved_only: !prev.saved_only }))}
+            className={`btn-secondary flex items-center gap-1.5 ${
+              filters.saved_only ? 'bg-primary-600/20 text-primary-400 border-primary-500/30' : ''
+            }`}
+          >
+            <svg className="w-4 h-4" fill={filters.saved_only ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+            </svg>
+            已收藏
+          </button>
+        )}
 
         {/* Export CSV */}
         <button onClick={handleExport} className="btn-secondary flex items-center gap-1.5">
@@ -825,17 +833,19 @@ export default function NewsDBPage() {
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2">
-                <button onClick={() => handleToggleSave(selectedArticle)}
-                  className={`btn-secondary text-sm flex items-center gap-1.5 ${
-                    selectedArticle.is_saved ? 'text-yellow-500' : ''
-                  }`}>
-                  <svg className="w-4 h-4" fill={selectedArticle.is_saved ? 'currentColor' : 'none'}
-                    viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
-                  </svg>
-                  {selectedArticle.is_saved ? '已收藏' : '收藏'}
-                </button>
+                {isAdmin && (
+                  <button onClick={() => handleToggleSave(selectedArticle)}
+                    className={`btn-secondary text-sm flex items-center gap-1.5 ${
+                      selectedArticle.is_saved ? 'text-yellow-500' : ''
+                    }`}>
+                    <svg className="w-4 h-4" fill={selectedArticle.is_saved ? 'currentColor' : 'none'}
+                      viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0111.186 0z" />
+                    </svg>
+                    {selectedArticle.is_saved ? '已收藏' : '收藏'}
+                  </button>
+                )}
 
                 {selectedArticle.source_url && (
                   <div className="flex items-center gap-1">
@@ -860,10 +870,12 @@ export default function NewsDBPage() {
                   </div>
                 )}
 
-                <button onClick={() => handleDelete(selectedArticle.id)}
-                  className="btn-danger text-sm ml-auto">
-                  刪除
-                </button>
+                {isAdmin && (
+                  <button onClick={() => handleDelete(selectedArticle.id)}
+                    className="btn-danger text-sm ml-auto">
+                    刪除
+                  </button>
+                )}
               </div>
             </div>
 

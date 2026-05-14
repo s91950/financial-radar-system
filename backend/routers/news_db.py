@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.auth import require_admin
+from backend.auth import require_admin, require_regular
 from backend.database import Article, get_db
 
 router = APIRouter()
@@ -147,7 +147,7 @@ async def get_article(article_id: int, db: Session = Depends(get_db)):
     return _article_to_dict(article)
 
 
-@router.put("/articles/{article_id}")
+@router.put("/articles/{article_id}", dependencies=[Depends(require_admin)])
 async def update_article(
     article_id: int,
     update: ArticleUpdate,
@@ -293,7 +293,7 @@ def _tag_matched_keywords(articles: list[dict], topics: list[str], query: str | 
                 break
 
 
-@router.post("/fetch")
+@router.post("/fetch", dependencies=[Depends(require_admin)])
 async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
     """Fetch news and return preview (does NOT auto-save).
 
@@ -450,7 +450,7 @@ async def manual_fetch(req: ManualFetchRequest, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/save-selected")
+@router.post("/save-selected", dependencies=[Depends(require_admin)])
 async def save_selected(req: SaveSelectedRequest, db: Session = Depends(get_db)):
     """Save user-selected articles to SQLite + Google Sheets."""
     saved_count = 0

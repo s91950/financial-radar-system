@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { getCurrentUser, clearAuth } from '../../services/api'
 
-// 2026-05-09：guest 暫時=regular（與 backend/auth.py ROLE_ORDER 保持一致）
-const ROLE_ORDER = { guest: 1, regular: 1, admin: 2, owner: 3 }
+// 與 backend/auth.py ROLE_ORDER 同步：guest=0（只能存取雷達/新聞/分析/YT 唯讀）
+const ROLE_ORDER = { guest: 0, regular: 1, admin: 2, owner: 3 }
 const hasRole = (current, min) => (ROLE_ORDER[current] ?? 0) >= (ROLE_ORDER[min] ?? 0)
 
 const navItems = [
@@ -34,7 +34,6 @@ const navItems = [
     path: '/news',
     label: '新聞資料庫',
     shortLabel: '新聞',
-    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -46,7 +45,6 @@ const navItems = [
     path: '/youtube',
     label: 'YouTube 監控',
     shortLabel: 'YT',
-    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
         <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
@@ -80,6 +78,7 @@ const navItems = [
     path: '/dashboard',
     label: '市場儀表板',
     shortLabel: '儀表',
+    requiresRole: 'regular',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}

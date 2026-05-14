@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.auth import require_admin
+from backend.auth import require_admin, require_regular
 from backend.database import YoutubeChannel, YoutubeVideo, get_db
 
 router = APIRouter()
 _ADMIN = [Depends(require_admin)]
+_REGULAR = [Depends(require_regular)]
 
 
 class ChannelCreate(BaseModel):
@@ -133,7 +134,7 @@ async def get_new_count(db: Session = Depends(get_db)):
     return {"count": count}
 
 
-@router.put("/videos/{video_id}/seen")
+@router.put("/videos/{video_id}/seen", dependencies=_REGULAR)
 async def mark_seen(video_id: int, db: Session = Depends(get_db)):
     """Mark a single video as seen."""
     video = db.query(YoutubeVideo).filter(YoutubeVideo.id == video_id).first()
@@ -144,7 +145,7 @@ async def mark_seen(video_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
-@router.put("/videos/mark-all-seen")
+@router.put("/videos/mark-all-seen", dependencies=_REGULAR)
 async def mark_all_seen(channel_id: int | None = None, db: Session = Depends(get_db)):
     """Mark all (or all in a channel) videos as seen."""
     q = db.query(YoutubeVideo).filter(YoutubeVideo.is_new == True)
@@ -159,7 +160,7 @@ async def mark_all_seen(channel_id: int | None = None, db: Session = Depends(get
 # Manual check
 # ---------------------------------------------------------------------------
 
-@router.post("/channels/{channel_id}/check")
+@router.post("/channels/{channel_id}/check", dependencies=_ADMIN)
 async def check_channel(channel_id: int, db: Session = Depends(get_db)):
     """Manually check a single channel for new videos."""
     channel = db.query(YoutubeChannel).filter(YoutubeChannel.id == channel_id).first()
@@ -169,7 +170,7 @@ async def check_channel(channel_id: int, db: Session = Depends(get_db)):
     return {"new_videos": new_count, "channel": channel.name}
 
 
-@router.post("/check-all")
+@router.post("/check-all", dependencies=_ADMIN)
 async def check_all(db: Session = Depends(get_db)):
     """Check all active channels for new videos."""
     channels = db.query(YoutubeChannel).filter(YoutubeChannel.is_active == True).all()

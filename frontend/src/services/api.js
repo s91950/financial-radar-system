@@ -45,6 +45,18 @@ export function clearAuth() {
   setCurrentUser(null)
 }
 
+// 與 backend/auth.py 的 ROLE_ORDER 同步：guest 為未登入，僅能讀少數開放 endpoint
+export const ROLE_ORDER = { guest: 0, regular: 1, admin: 2, owner: 3 }
+
+export function currentRole() {
+  return getCurrentUser()?.role || 'guest'
+}
+
+export function hasRole(minRole) {
+  const cur = currentRole()
+  return (ROLE_ORDER[cur] ?? 0) >= (ROLE_ORDER[minRole] ?? 0)
+}
+
 api.interceptors.request.use((config) => {
   const token = getJwt()
   if (token) {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { radarAPI } from '../services/api'
+import { radarAPI, hasRole } from '../services/api'
 
 // 將文字片段中的 URL 轉成可點擊的 <a> 連結
 function linkify(text, keyPrefix) {
@@ -129,6 +129,7 @@ const TAB_CONFIG = {
 }
 
 export default function AnalysisPage() {
+  const isAdmin = hasRole('admin')
   const [tab, setTab] = useState('extension_news')
   const [histories, setHistories] = useState({})
   const [selectedIds, setSelectedIds] = useState({})
@@ -243,8 +244,8 @@ export default function AnalysisPage() {
           ))}
         </div>
 
-        {/* Gemini 手動觸發按鈕 */}
-        {cfg.group === 'gemini' && (
+        {/* Gemini 手動觸發按鈕（admin only）*/}
+        {isAdmin && cfg.group === 'gemini' && (
           <button
             onClick={handleTriggerGemini}
             disabled={analyzing}
@@ -276,13 +277,15 @@ export default function AnalysisPage() {
                 >
                   {fmtDate(h.generated_at)}
                 </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleDeleteReport(h.id, fmtDate(h.generated_at)) }}
-                  className="pl-1 pr-2 py-1.5 text-xs opacity-0 group-hover/item:opacity-100 hover:text-red-400 transition-opacity"
-                  title="刪除這份報告"
-                >
-                  ×
-                </button>
+                {isAdmin && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDeleteReport(h.id, fmtDate(h.generated_at)) }}
+                    className="pl-1 pr-2 py-1.5 text-xs opacity-0 group-hover/item:opacity-100 hover:text-red-400 transition-opacity"
+                    title="刪除這份報告"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             )
           })}
@@ -328,7 +331,7 @@ export default function AnalysisPage() {
                   {history.length > 0 && (
                     <div className="text-xs text-dark-600">共 {history.length} 份歷史報告</div>
                   )}
-                  {report?.id && (
+                  {isAdmin && report?.id && (
                     <button
                       onClick={() => handleDeleteReport(report.id, fmtDate(report.generated_at))}
                       className="text-xs text-dark-500 hover:text-red-400 transition-colors px-2 py-1 rounded border border-dark-700 hover:border-red-500/40"

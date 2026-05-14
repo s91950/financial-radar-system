@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { radarAPI, resolveUrl, settingsAPI, copyToClipboard, getCurrentUser } from '../services/api'
+import { radarAPI, resolveUrl, settingsAPI, copyToClipboard, getCurrentUser, hasRole } from '../services/api'
 
 export default function RadarPage({ wsSubscribe }) {
   const [alerts, setAlerts] = useState([])
@@ -10,6 +10,7 @@ export default function RadarPage({ wsSubscribe }) {
   const [scanning, setScanning] = useState(false)
   const [scanResult, setScanResult] = useState(null)
   const [aiLabel, setAiLabel] = useState('Gemini')
+  const isAdmin = hasRole('admin')
 
   // Filter & sort state
   const [filterSeverity, setFilterSeverity] = useState('all')
@@ -162,6 +163,7 @@ export default function RadarPage({ wsSubscribe }) {
   }
 
   const handleMarkRead = async (alert) => {
+    if (!isAdmin) return  // 訪客/regular 不能改已讀狀態，靜默跳過避免 401
     try {
       await radarAPI.markRead(alert.id)
       setAlerts(prev => prev.map(a => a.id === alert.id ? { ...a, is_read: true } : a))
@@ -376,29 +378,31 @@ export default function RadarPage({ wsSubscribe }) {
                 'bg-dark-700 text-dark-400'
               }`}>{scanResult}</span>
             )}
-            <button
-              onClick={handleManualScan}
-              disabled={scanning}
-              className="btn-primary text-sm flex items-center gap-1.5"
-            >
-              {scanning ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  掃描中...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M9.348 14.651a3.75 3.75 0 010-5.303m5.304 0a3.75 3.75 0 010 5.303m-7.425 2.122a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546" />
-                  </svg>
-                  立即掃描
-                </>
-              )}
-            </button>
+            {isAdmin && (
+              <button
+                onClick={handleManualScan}
+                disabled={scanning}
+                className="btn-primary text-sm flex items-center gap-1.5"
+              >
+                {scanning ? (
+                  <>
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    掃描中...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M9.348 14.651a3.75 3.75 0 010-5.303m5.304 0a3.75 3.75 0 010 5.303m-7.425 2.122a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546" />
+                    </svg>
+                    立即掃描
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
 
@@ -425,18 +429,20 @@ export default function RadarPage({ wsSubscribe }) {
                 : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
             }`}>僅未讀</button>
 
-          {/* 僅收藏 */}
-          <button onClick={() => setFilterSaved(v => !v)}
-            className={`text-xs px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1 ${
-              filterSaved
-                ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
-                : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
-            }`}>
-            <svg className="w-3 h-3" fill={filterSaved ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
-            收藏
-          </button>
+          {/* 僅收藏（只有 admin 能切換收藏狀態，所以訪客也沒必要看這個篩選） */}
+          {isAdmin && (
+            <button onClick={() => setFilterSaved(v => !v)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors flex items-center gap-1 ${
+                filterSaved
+                  ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40'
+                  : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+              }`}>
+              <svg className="w-3 h-3" fill={filterSaved ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+              </svg>
+              收藏
+            </button>
+          )}
 
           {/* Sort */}
           <button onClick={() => setSortOrder(v => v === 'desc' ? 'asc' : 'desc')}
@@ -470,25 +476,27 @@ export default function RadarPage({ wsSubscribe }) {
                 </svg>
                 複製 {selectedSourceUrls.size} 個連結
               </button>
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation()
-                  // Bookmark all alerts that have at least one selected URL
-                  const toSave = alerts.filter(a =>
-                    (a.source_urls || []).some(u => selectedSourceUrls.has(u)) && !a.is_saved
-                  )
-                  await Promise.all(toSave.map(a => handleToggleSave(e, a.id)))
-                  if (toSave.length) toast.success(`已收藏 ${toSave.length} 則新聞`)
-                  else toast('已全部收藏過了')
-                }}
-                className="text-xs px-2.5 py-1 rounded-full border bg-yellow-500/10 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/20 transition-colors flex items-center gap-1"
-                title="收藏含選取連結的新聞"
-              >
-                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-                </svg>
-                收藏
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation()
+                    // Bookmark all alerts that have at least one selected URL
+                    const toSave = alerts.filter(a =>
+                      (a.source_urls || []).some(u => selectedSourceUrls.has(u)) && !a.is_saved
+                    )
+                    await Promise.all(toSave.map(a => handleToggleSave(e, a.id)))
+                    if (toSave.length) toast.success(`已收藏 ${toSave.length} 則新聞`)
+                    else toast('已全部收藏過了')
+                  }}
+                  className="text-xs px-2.5 py-1 rounded-full border bg-yellow-500/10 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/20 transition-colors flex items-center gap-1"
+                  title="收藏含選取連結的新聞"
+                >
+                  <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                  </svg>
+                  收藏
+                </button>
+              )}
               <button
                 onClick={() => setSelectedSourceUrls(new Set())}
                 className="text-xs px-2 py-1 rounded-full border bg-dark-800 text-dark-500 border-dark-600 hover:text-red-400 transition-colors"
@@ -496,19 +504,23 @@ export default function RadarPage({ wsSubscribe }) {
             </>
           )}
 
-          <div className="w-px h-4 bg-dark-700 mx-1" />
+          {isAdmin && (
+            <>
+              <div className="w-px h-4 bg-dark-700 mx-1" />
 
-          {/* 全部已讀 */}
-          <button onClick={handleMarkAllRead}
-            className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:text-primary-400 hover:border-primary-500/40 transition-colors">
-            全部已讀
-          </button>
+              {/* 全部已讀 */}
+              <button onClick={handleMarkAllRead}
+                className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:text-primary-400 hover:border-primary-500/40 transition-colors">
+                全部已讀
+              </button>
 
-          {/* 刪除已讀 */}
-          <button onClick={handleDeleteRead}
-            className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:text-red-400 hover:border-red-500/40 transition-colors">
-            刪除已讀
-          </button>
+              {/* 刪除已讀 */}
+              <button onClick={handleDeleteRead}
+                className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:text-red-400 hover:border-red-500/40 transition-colors">
+                刪除已讀
+              </button>
+            </>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -561,16 +573,18 @@ export default function RadarPage({ wsSubscribe }) {
                           hour: '2-digit', minute: '2-digit'
                         })}
                       </span>
-                      <button
-                        onClick={(e) => handleDeleteAlert(e, alert.id)}
-                        className="text-dark-500 hover:text-red-400 transition-colors p-1"
-                        title="刪除"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                        </svg>
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={(e) => handleDeleteAlert(e, alert.id)}
+                          className="text-dark-500 hover:text-red-400 transition-colors p-1"
+                          title="刪除"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -626,16 +640,18 @@ export default function RadarPage({ wsSubscribe }) {
                           hour: '2-digit', minute: '2-digit'
                         })}
                       </span>
-                      <button
-                        onClick={(e) => handleDeleteAlert(e, alert.id)}
-                        className="text-dark-500 hover:text-red-400 transition-colors p-1"
-                        title="刪除"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                        </svg>
-                      </button>
+                      {isAdmin && (
+                        <button
+                          onClick={(e) => handleDeleteAlert(e, alert.id)}
+                          className="text-dark-500 hover:text-red-400 transition-colors p-1"
+                          title="刪除"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -786,7 +802,7 @@ export default function RadarPage({ wsSubscribe }) {
                             return <p className="text-sm text-gray-300 whitespace-pre-wrap">{alert.analysis}</p>
                           })()}
                         </div>
-                      ) : (
+                      ) : isAdmin ? (
                         <button
                           onClick={(e) => handleAnalyze(e, alert)}
                           disabled={analyzingId === alert.id}
@@ -811,6 +827,8 @@ export default function RadarPage({ wsSubscribe }) {
                             </>
                           )}
                         </button>
+                      ) : (
+                        <p className="text-xs text-dark-500 italic">尚無 AI 分析</p>
                       )}
 
                       {/* Legacy source_url fallback */}

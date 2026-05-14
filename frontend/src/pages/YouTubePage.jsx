@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { youtubeAPI, copyToClipboard } from '../services/api'
+import { youtubeAPI, copyToClipboard, hasRole } from '../services/api'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ function AddChannelModal({ onClose, onAdded }) {
 
 // ─── Channel Card ────────────────────────────────────────────────────────────
 
-function ChannelCard({ channel, isSelected, onClick, onDelete, onToggle }) {
+function ChannelCard({ channel, isSelected, onClick, onDelete, onToggle, canAdmin }) {
   return (
     <div
       className={`card cursor-pointer transition-all ${isSelected ? 'border-primary-500/60 bg-primary-600/10' : 'card-hover'}`}
@@ -124,20 +124,22 @@ function ChannelCard({ channel, isSelected, onClick, onDelete, onToggle }) {
         <span className={`text-xs px-2 py-0.5 rounded-full ${channel.is_active ? 'bg-green-500/15 text-green-400' : 'bg-dark-700 text-dark-400'}`}>
           {channel.is_active ? `每 ${channel.check_interval_minutes} 分鐘` : '已暫停'}
         </span>
-        <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
-          <button
-            className="text-xs text-dark-400 hover:text-white px-2 py-0.5 rounded hover:bg-dark-700"
-            onClick={() => onToggle(channel)}
-          >
-            {channel.is_active ? '暫停' : '啟用'}
-          </button>
-          <button
-            className="text-xs text-dark-400 hover:text-red-400 px-2 py-0.5 rounded hover:bg-dark-700"
-            onClick={() => onDelete(channel)}
-          >
-            刪除
-          </button>
-        </div>
+        {canAdmin && (
+          <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+            <button
+              className="text-xs text-dark-400 hover:text-white px-2 py-0.5 rounded hover:bg-dark-700"
+              onClick={() => onToggle(channel)}
+            >
+              {channel.is_active ? '暫停' : '啟用'}
+            </button>
+            <button
+              className="text-xs text-dark-400 hover:text-red-400 px-2 py-0.5 rounded hover:bg-dark-700"
+              onClick={() => onDelete(channel)}
+            >
+              刪除
+            </button>
+          </div>
+        )}
       </div>
       {channel.last_checked_at && (
         <p className="mt-1 text-xs text-dark-500">上次檢查：{timeAgo(channel.last_checked_at)}</p>
@@ -148,7 +150,7 @@ function ChannelCard({ channel, isSelected, onClick, onDelete, onToggle }) {
 
 // ─── Video Card ──────────────────────────────────────────────────────────────
 
-function VideoCard({ video, onMarkSeen, isSelected, onToggleSelect }) {
+function VideoCard({ video, onMarkSeen, isSelected, onToggleSelect, canMarkSeen }) {
   return (
     <div className={`card relative group ${video.is_new ? 'border-red-500/40' : ''} ${isSelected ? 'ring-2 ring-primary-500/60' : ''}`}>
       {/* Selection checkbox */}
@@ -191,7 +193,7 @@ function VideoCard({ video, onMarkSeen, isSelected, onToggleSelect }) {
           )}
           <p className="text-xs text-dark-500">{timeAgo(video.published_at)} · {formatDate(video.published_at)}</p>
         </div>
-        {video.is_new && (
+        {video.is_new && canMarkSeen && (
           <button
             className="text-xs text-dark-400 hover:text-white px-2 py-1 rounded hover:bg-dark-700 flex-shrink-0"
             onClick={() => onMarkSeen(video)}
@@ -207,6 +209,8 @@ function VideoCard({ video, onMarkSeen, isSelected, onToggleSelect }) {
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function YouTubePage({ wsSubscribe }) {
+  const canAdmin = hasRole('admin')
+  const canRegular = hasRole('regular')
   const [channels, setChannels] = useState([])
   const [videos, setVideos] = useState([])
   const [selectedChannel, setSelectedChannel] = useState(null) // null = all
@@ -363,12 +367,14 @@ export default function YouTubePage({ wsSubscribe }) {
       <div className="w-full md:w-64 flex-shrink-0 flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-dark-300 uppercase tracking-wide">監控頻道</h2>
-          <button
-            className="btn-primary text-xs px-3 py-1.5"
-            onClick={() => setShowAddModal(true)}
-          >
-            + 新增
-          </button>
+          {canAdmin && (
+            <button
+              className="btn-primary text-xs px-3 py-1.5"
+              onClick={() => setShowAddModal(true)}
+            >
+              + 新增
+            </button>
+          )}
         </div>
 
         {/* All channels option */}
@@ -405,30 +411,33 @@ export default function YouTubePage({ wsSubscribe }) {
                 onClick={() => setSelectedChannel(c.id)}
                 onDelete={handleDelete}
                 onToggle={handleToggle}
+                canAdmin={canAdmin}
               />
             ))
           )}
         </div>
 
-        {/* Check all button */}
-        <button
-          className="btn-secondary w-full flex items-center justify-center gap-2 text-sm"
-          onClick={handleCheckAll}
-          disabled={loadingCheck || channels.length === 0}
-        >
-          {loadingCheck ? (
-            <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-          ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          )}
-          立即偵測全部
-        </button>
+        {/* Check all button（admin only）*/}
+        {canAdmin && (
+          <button
+            className="btn-secondary w-full flex items-center justify-center gap-2 text-sm"
+            onClick={handleCheckAll}
+            disabled={loadingCheck || channels.length === 0}
+          >
+            {loadingCheck ? (
+              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            )}
+            立即偵測全部
+          </button>
+        )}
       </div>
 
       {/* ── Right: video feed ── */}
@@ -477,12 +486,12 @@ export default function YouTubePage({ wsSubscribe }) {
                 複製連結（{selectedVideos.size}）
               </button>
             )}
-            {displayedNew > 0 && (
+            {canRegular && displayedNew > 0 && (
               <button className="btn-secondary text-xs px-3 py-1.5" onClick={handleMarkAllSeen}>
                 全部標記已看
               </button>
             )}
-            {selectedChannel && (
+            {canAdmin && selectedChannel && (
               <button
                 className="btn-secondary text-xs px-3 py-1.5 flex items-center gap-1"
                 onClick={() => handleCheckOne(channels.find(c => c.id === selectedChannel))}
@@ -526,6 +535,7 @@ export default function YouTubePage({ wsSubscribe }) {
                   onMarkSeen={handleMarkSeen}
                   isSelected={selectedVideos.has(v.id)}
                   onToggleSelect={handleToggleSelect}
+                  canMarkSeen={canRegular}
                 />
               ))}
             </div>
