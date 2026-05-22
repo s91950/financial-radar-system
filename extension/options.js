@@ -1,4 +1,4 @@
-const TEXT_FIELDS = ['notebookIdNews', 'notebookIdYt', 'vmBaseUrl', 'apiToken', 'newsPrompt', 'ytPrompt'];
+const TEXT_FIELDS = ['vmBaseUrl', 'apiToken', 'newsPrompt', 'ytPrompt', 'nonePrompt'];
 const BOOL_FIELDS = ['skipVmPush'];
 
 async function load() {
@@ -32,10 +32,11 @@ async function save() {
 }
 
 async function resetPrompts() {
-  await chrome.storage.local.remove(['newsPrompt', 'ytPrompt']);
+  await chrome.storage.local.remove(['newsPrompt', 'ytPrompt', 'nonePrompt']);
   document.getElementById('newsPrompt').value = '';
   document.getElementById('ytPrompt').value = '';
-  showStatus('提示詞已重設為預設', 'ok');
+  document.getElementById('nonePrompt').value = '';
+  showStatus('提示詞已重設為預設（新聞 / YT 走內建模板；不推送恢復空白）', 'ok');
 }
 
 function showStatus(msg, kind) {

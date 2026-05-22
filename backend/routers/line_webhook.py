@@ -6,10 +6,10 @@ Reply API 完全免費，不計入每月 200 則 Messaging API 配額。
 支援指令：
   通知          → 未讀緊急新聞警報（自上次查詢後）
   通知 + 時間   → 指定時間範圍的緊急新聞（如：通知1天、通知今日、通知3小時）
-  分析          → 最新 NotebookLM 新聞分析報告
+  分析          → 最新 Extension 手動新聞分析報告
   yt / YT       → 未讀 YouTube 影片
   yt + 時間     → 指定時間範圍的 YouTube 影片（如：yt1天、yt今日、yt通知）
-  yt分析        → 最新 NotebookLM YouTube 頻道分析報告
+  yt分析        → 最新 Extension 手動 YouTube 頻道分析報告
   其他訊息       → 不回應
 
 設定步驟：
@@ -30,7 +30,9 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Request
 
 from backend.config import settings
-from backend.database import Alert, MonitorSource, SessionLocal, SystemConfig, YoutubeVideo
+from sqlalchemy import or_
+
+from backend.database import Alert, MonitorSource, NlmReport, SessionLocal, SystemConfig, YoutubeVideo
 from backend.services.notification import send_line_reply_multi
 
 _TZ_HOURS = 8
@@ -209,14 +211,40 @@ def _build_health_reply(db) -> list[str]:
     return messages or [text]
 
 
+def _get_latest_extension_report(db, kind: str) -> tuple[str | None, str | None]:
+    """取得最新 Extension 手動分析報告（news 或 yt），回傳 (content, generated_at_str)。
+
+    以 source_title 前綴 [yt] / [news] 區分；舊資料無前綴歸 news（向後相容）。
+    """
+    q = db.query(NlmReport).filter(NlmReport.report_type == "extension_manual")
+    if kind == "yt":
+        q = q.filter(NlmReport.source_title.like("[yt]%"))
+    else:
+        q = q.filter(
+            or_(
+                NlmReport.source_title.like("[news]%"),
+                ~NlmReport.source_title.like("[yt]%"),
+            )
+        )
+    row = q.order_by(NlmReport.id.desc()).first()
+    if not row:
+        return None, None
+    gen_str = None
+    if row.generated_at:
+        s = row.generated_at.isoformat()
+        gen_str = s if s.endswith("Z") else s + "Z"
+    return row.content, gen_str
+
+
 def _build_analysis_reply(
     content: str | None,
     generated_at: str | None,
     title: str = "📊 金融風險分析報告",
+    empty_msg: str = "目前尚無分析報告，請先用 Extension 手動產生一份。",
 ) -> list[str]:
-    """格式化 NLM 分析報告為 LINE 訊息（最多 5 則）。"""
+    """格式化分析報告為 LINE 訊息（最多 5 則）。"""
     if not content:
-        return ["目前尚無分析報告，請稍後再試或先執行 notebooklm_hourly.py。"]
+        return [empty_msg]
 
     time_str = ""
     if generated_at:
@@ -326,12 +354,12 @@ async def line_webhook(request: Request):
     """接收 LINE Webhook 事件並用 Reply API 回覆（免費無月額限制）。
 
     指令：
-      分析        → 最新 NotebookLM 新聞分析報告
+      分析        → 最新 Extension 手動新聞分析報告
       通知        → 未讀緊急新聞
       通知 + 時間  → 指定時間範圍新聞
       yt/YT       → 未讀 YouTube 影片
       yt + 時間   → 指定時間範圍 YouTube 影片
-      yt分析      → 最新 NotebookLM YouTube 頻道分析報告
+      yt分析      → 最新 Extension 手動 YouTube 頻道分析報告
       其他        → 不回應
     """
     body = await request.body()
@@ -396,30 +424,22 @@ async def line_webhook(request: Request):
                 reply_text = _build_health_reply(db)
 
             elif is_analysis:
-                # ── 新聞分析報告模式 ──
-                def _cfg(key):
-                    row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-                    return row.value if row else None
-
-                reply_text = _build_analysis_reply(
-                    _cfg("nlm_latest_report"),
-                    _cfg("nlm_report_generated_at"),
-                )
+                # ── Extension 新聞分析報告模式 ──
+                content, gen_at = _get_latest_extension_report(db, "news")
+                reply_text = _build_analysis_reply(content, gen_at)
 
             elif is_yt:
                 # ── YouTube 模式 ──
                 remainder = user_text[2:].strip()  # 去掉 "yt" 前綴
 
                 if "分析" in remainder:
-                    # yt分析 → YT 頻道分析報告
-                    def _cfg_yt(key):
-                        row = db.query(SystemConfig).filter(SystemConfig.key == key).first()
-                        return row.value if row else None
-
+                    # yt分析 → Extension YT 頻道分析報告
+                    content, gen_at = _get_latest_extension_report(db, "yt")
                     reply_text = _build_analysis_reply(
-                        _cfg_yt("nlm_yt_latest_report"),
-                        _cfg_yt("nlm_yt_report_generated_at"),
+                        content,
+                        gen_at,
                         title="📺 YouTube 頻道分析報告",
+                        empty_msg="目前尚無 YT 分析報告，請先用 Extension 手動產生一份。",
                     )
                 else:
                     # yt 影片清單（yt / yt通知 / yt1天 等）

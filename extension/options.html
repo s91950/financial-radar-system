@@ -47,19 +47,7 @@
 </head>
 <body>
   <h1>金融雷達 NLM 助手 — 設定</h1>
-  <p class="sub">填入 NotebookLM notebook ID 與 VM API URL。本擴充功能與系統 hourly 自動排程獨立，不會影響 LINE「分析」指令。</p>
-
-  <div class="field">
-    <label for="notebookIdNews">新聞 notebook ID</label>
-    <div class="hint">從 NotebookLM 網址 <code>notebooklm.google.com/notebook/<b>{ID}</b></code> 抓出來</div>
-    <input id="notebookIdNews" type="text" placeholder="例如 a1b2c3d4-..." />
-  </div>
-
-  <div class="field">
-    <label for="notebookIdYt">YouTube notebook ID</label>
-    <div class="hint">建議用獨立的 notebook 給 YT 影片分析</div>
-    <input id="notebookIdYt" type="text" placeholder="例如 e5f6g7h8-..." />
-  </div>
+  <p class="sub">v0.5+ 已改為從 popup 內動態下拉選擇 notebook，本頁只設 VM API 與分析提示詞。本擴充功能與系統 hourly 自動排程獨立，不會影響 LINE「分析」指令。</p>
 
   <div class="field">
     <label for="vmBaseUrl">VM API Base URL</label>
@@ -91,6 +79,12 @@
     <label for="ytPrompt">YouTube 分析提示詞</label>
     <div class="hint">留空使用內建預設</div>
     <textarea id="ytPrompt" placeholder="留空使用預設"></textarea>
+  </div>
+
+  <div class="field">
+    <label for="nonePrompt">「🚫 不推送」自訂提示詞</label>
+    <div class="hint">popup 選「🚫 不推送」chip 時用這個提示詞做分析（純本機看、不推 VM）。<b>預設留空</b>，留空時 NotebookLM 會用其內建預設 prompt（`Create a report based on the provided sources.`）。建議用來實驗你自己的 prompt 模板。</div>
+    <textarea id="nonePrompt" placeholder="留空 = NLM 內建預設"></textarea>
   </div>
 
   <button id="save">儲存設定</button>

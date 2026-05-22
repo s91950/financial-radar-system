@@ -4,39 +4,51 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 最近重大進度（給新對話的快速摘要）
 
-**2026-05-08 ~ 05-09 兩天大幅資安加固，完成全棧帳號系統 + RBAC**：
+完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
-1. **第一波（2026-05-08）— 後端硬化**
-   - 新增 [backend/services/url_safety.py](backend/services/url_safety.py)：SSRF 防禦，DNS 解析後阻擋 RFC1918 / 169.254 / loopback
-   - LINE webhook fail-closed（缺 secret 直接拒絕，不再 fail-open）
-   - `/api/utils/resolve-stored-urls` 加 60 秒重入鎖（SystemConfig `resolve_stored_urls_lock`）
-   - NLM/Extension report POST 加 Pydantic `_ReportPayload`：content ≤ 5 MB、`extra="ignore"` 保留 hourly script 向後相容
-   - CORS 僅在 `ENVIRONMENT != production` 啟用（VM 同源不需要）
-   - 過渡期：opt-in `API_TOKEN` env（這層之後被 RBAC 取代）
+**2026-05-19 — Extension v0.6.3：UI 全面改版 + PDF 超時修正 + 寬鬆匯入判定**：
+- **SVG 圖示系統**：popup.html 頂部加入 `<svg display:none>` 集中定義 13 個 symbol（`ic-settings` / `ic-external-link` / `ic-refresh` / `ic-ban` / `ic-news` / `ic-play` / `ic-edit` / `ic-pin` / `ic-file-plus` / `ic-download` / `ic-trash` / `ic-analyze` / `ic-zap`），所有按鈕從 emoji 改成 `<svg class="icon"><use href="#ic-xxx"/></svg>`（black/white stroke currentColor，深/淺色背景均適用）
+- **提示詞收藏側邊面板**（`#pp-panel`）：點 ✏️（`#btn-prompt-settings`）滑出 `position: fixed; right: 0` 的書籤式抽屜，可新增 / 刪除 / 展開預覽 / 複製到剪貼簿；選取後 popup 上的 ✏️ 按鈕右上角顯示紫點 `.has-selection::after` indicator。選取的提示詞 ID 存 `chrome.storage.local.selectedPromptId`；內容陣列存 `chrome.storage.local.savedPrompts: [{id, name, content}]`
+- **Kind chip 預設「不推送」**：chip 順序改為「🚫 不推送（預設）→ 📰 新聞 → 📺 YT」；`restoreKind()` 讀不到舊偏好時 default `'none'`
+- **批次操作三合一列**：匯入 / 清空 / 分析三顆按鈕合成一列 `actions-row3`（icon 上、文字下的 column flex）；一鍵按鈕獨立佔下一行
+- **寬鬆匯入判定**：`import_urls` task 成功標準從 `data.failed === 0` 改為 `data.succeeded > 0`（任一 URL 成功即算 ✅ + 加「含警告」）— 與一鍵流程一致；避免 80/81 成功卻顯示 ❌ 的誤報
+- **PDF 超時修正**：`isPdfUrl(url)` 偵測 `.pdf` 結尾 URL；PDF 用 `PDF_TIMEOUT_MS = 90_000`，一般網頁維持 30s；progress message 遇 PDF 顯示 `📄 PDF` 標記
 
-2. **第二波（2026-05-09）— 完整帳號系統 + RBAC + Service Keys**
-   - 新增 [backend/security.py](backend/security.py)（bcrypt + JWT helpers）、[backend/auth.py](backend/auth.py) 三模式認證 dependency（JWT / Service Key / Legacy）
-   - 新增 `User` + `ServiceApiKey` models、`/api/auth`、`/api/users`、`/api/service-keys` 三個 router
-   - Owner bootstrap：`OWNER_USERNAME`/`OWNER_PASSWORD` env 在 users 表為空時自動建 owner
-   - 前端：`LoginPage`、`AuthGate`（取代原 TokenGate）、`UsersPage`、`ServiceKeysPage`；axios 改帶 `Authorization: Bearer <jwt>`
-   - Sidebar 角色感知：`requiresRole` 過濾，guest 只看到雷達/儀表板/分析
-   - **過期 JWT 視同 guest**（`_try_jwt` 不 raise 401），讓訪客體驗不被 token 失效打斷
-   - **訪客背景 fetch 防呆**：guest-accessible 頁面（`RadarPage`、`DashboardPage`）的 useEffect 在開頭 `if (!getCurrentUser()) return`，否則訪客一進首頁就會被 admin endpoint 401 推進登入彈窗
-   - axios interceptor 改聰明：只在「**帶了 Bearer 卻 401**」（token 失效）才彈登入；沒帶 Bearer 的 401（訪客撞 admin endpoint）+ 所有 403（角色不夠）都靜默不擾
+**2026-05-14 — RBAC 收緊 + LINE 群組彙整推送 + 多處 bug 修正**：
+- `ROLE_ORDER` guest 從 1（=regular）收回 0；guest 只能存取「未上鎖 endpoint」（雷達讀取、分析、新聞 GET、YouTube GET、`/api/news/fetch` 的 `gn_only` 模式）
+- [backend/main.py](backend/main.py) `news_db` / `youtube` 拿掉 router-level `require_regular`，改成個別 endpoint 自帶 `require_admin` / `require_regular`，讓 guest 能 GET
+- [news_db.py POST /fetch](backend/routers/news_db.py) 拆細認證：`gn_only` 訪客可用（只打 GN RSS）、`sources_only` 仍需 admin（會觸發大量 RSS / 網頁 / MOPS 爬蟲）
+- 前端 [services/api.js](frontend/src/services/api.js) 新增 `hasRole(minRole)` helper；RadarPage / NewsDBPage / AnalysisPage / YouTubePage 用 `isAdmin = hasRole('admin')` 包住所有 admin-only 按鈕（掃描 / 刪除 / 主動分析 / 抓取 / 儲存等），訪客直接看不到、不會撞 401
+- Sidebar：訪客側欄只剩 `/` `/news` `/analysis` `/youtube`；`/dashboard` 從訪客可見改為 requiresRole=regular
+- [hooks/useWebSocket.js](frontend/src/hooks/useWebSocket.js) 預設 URL 從寫死 `ws://localhost:8000/ws` 改成 `ws://${window.location.host}/ws`（生產 nginx 已有 `/ws` proxy）— 修正部署到 VM IP 時全員顯示「離線中」的問題
+- LINE webhook 加「ID」指令：回覆當前 source 的 group/room/user ID，方便取得群組 ID 設定 `LINE_TARGET_ID`
+- 新增 `line_critical_digest` 排程作業，cron `hour="23,4,9", minute=0` UTC（= 台北 07:00 / 12:00 / 17:00），推送上次推送以來的 critical 警報；SystemConfig `line_last_digest_at` 記錄基準時間。沿用 `send_line_broadcast`，`LINE_TARGET_ID` 設為群組 ID 時只推該群組
+- [news_db.py:120-127](backend/routers/news_db.py#L120-L127) `fetched_after` tz bug：cutoff 帶 tz 時先轉成 naive UTC 再比，否則 SQLite 字串比較會把「TW 00:00-08:00 抓的、UTC 是昨日的文章」整批排除（這就是 Google Sheets `pullFromVM` 早上 08:00 前看不到當日資料的根因）
+- Sidebar 排序：`/reports` `/dashboard` 移到 `/analysis` 之後、`/feedback` 之前
+- SearchPage 首次載入後自動展開第一個主題
 
-**目前 VM 狀態**（2026-05-09 晚）：
-- Owner 帳號已建並由使用者改密碼；user 表有 owner / Ding(owner) / 78588(admin) 等
-- Service Keys 表有 2 把 admin role 的 key：`hourly_script` 給本機 NLM 排程、`Chrome Extension` 給瀏覽器 extension
-- VM `.env`：`API_TOKEN` 已清空（legacy fallback 程式碼仍保留，方便未來緊急停用 RBAC 時回退）
-- 本機 `scripts/.env.local` 的 `API_TOKEN=` 已替換成 `sk_mX-jyo...`（hourly_script service key）
-- 前端 bundle hash 截至完成：`index-D5MXgOYI.js`
+**2026-05-08 ~ 05-09 — 全棧帳號系統 + RBAC 一波到位**（細節保留供未來追溯）：
+- 引入 [backend/auth.py](backend/auth.py) 三模式（JWT / Service Key / Legacy API_TOKEN）；[backend/security.py](backend/security.py) bcrypt + JWT helpers
+- 新增 `User` + `ServiceApiKey` models、`/api/auth` `/api/users` `/api/service-keys` 三 router
+- Owner bootstrap：`OWNER_USERNAME` + `OWNER_PASSWORD` 在 users 表空時自動建
+- 前端：`LoginPage` / `AuthGate`（取代原 TokenGate）/ `UsersPage` / `ServiceKeysPage`
+- **過期 JWT 視同 guest**：`_try_jwt` 不 raise，讓訪客體驗不被 token 失效打斷
+- axios interceptor：只在「**帶了 Bearer 卻 401**」（token 失效）才廣播 `auth-required` 彈登入；沒帶 Bearer 的 401（訪客撞 admin endpoint）+ 所有 403（角色不夠）都靜默
+- 訪客背景 fetch 防呆：guest-accessible 頁面（RadarPage、DashboardPage）的 useEffect 開頭 `if (!getCurrentUser()) return`，避免訪客一進首頁就被 admin endpoint 401 推進登入彈窗
+- 同日資安：[backend/services/url_safety.py](backend/services/url_safety.py) SSRF 防禦、LINE webhook fail-closed、`/api/utils/resolve-stored-urls` 加 60 秒重入鎖、NLM/Extension report POST 加 Pydantic 5 MB 上限、CORS 僅在 `ENVIRONMENT != production` 啟用
+
+**目前 VM 狀態速覽**：
+- Owner / admin / regular 帳號已建；Service Keys：`hourly_script`（admin，給本機 NLM 排程）、`Chrome Extension`（admin，給瀏覽器 extension）
+- `LINE_TARGET_ID` 設為群組 ID（`Ca3a04162d6b77ae4bf91c96f942da655`）；`NotificationSetting.line=0`（即時推播停用），改靠 `line_critical_digest` 3 次/日彙整
+- VM `.env` 內 `API_TOKEN` 已清空（legacy fallback 程式碼仍保留以備緊急回退）；本機 `scripts/.env.local` 用 `sk_mX-jyo...` service key
 
 **已知設計取捨 / 仍未做**：
 - 仍用 `verify=False` for httpx scrapers（19 處）— 移除需逐一測試各來源 SSL，跳過
 - Extension manifest VM URL 仍是 HTTP `34.23.154.194`（要改 HTTPS 需建 Cloudflare named tunnel）
-- WebSocket `/ws` 沒做認證 — 它只廣播警報通知，敏感性低
+- WebSocket `/ws` 沒做認證 — 只廣播警報通知，敏感性低
+- `GET /api/news/export` endpoint 還在但前端按鈕已移除（產出亂碼、實用價值低）
 
-**部署備忘**：改 backend → VM `git pull` + `sudo systemctl restart financial-radar`；改 frontend → 加 `cd frontend && npm run build`。VM 用 `s9195000409898` 帳號，SSH key `C:\Users\User\.ssh\google_compute_engine`。
+**部署備忘**：改 `backend/` → VM `git pull` + `sudo systemctl restart financial-radar`；改 `frontend/` → 加 `cd frontend && npm run build`。VM 用 `s9195000409898` 帳號，SSH key `C:\Users\User\.ssh\google_compute_engine`。
 
 ## 修改後 VM 同步提示規則
 
@@ -67,28 +79,35 @@ guest(0) < regular(1) < admin(2) < owner(3)
 | `GET /api/health` | ✅ | ✅ | ✅ | ✅ |
 | `POST /api/auth/login`、`GET /api/auth/me` | ✅ | ✅ | ✅ | ✅ |
 | `POST /api/line/webhook`（HMAC 自驗）、`/ws` | ✅ | ✅ | ✅ | ✅ |
-| `GET /api/radar/alerts`、`/alerts/stats`、`/market` | ✅ | ✅ | ✅ | ✅ |
-| `GET /api/radar/notebooklm/gemini/extension-report*`（所有分析報告唯讀） | ✅ | ✅ | ✅ | ✅ |
+| `GET /api/radar/alerts`、`/alerts/stats`、`/market`、`/api/radar/notebooklm/gemini/extension-report*` | ✅ | ✅ | ✅ | ✅ |
+| `GET /api/news/*`（articles / sentiment / sources / keywords / categories / export） | ✅ | ✅ | ✅ | ✅ |
+| `GET /api/youtube/channels`、`/videos`、`/new-count` | ✅ | ✅ | ✅ | ✅ |
+| `POST /api/news/fetch`，**`source_type=gn_only`**（只打 Google News RSS） | ✅ | ✅ | ✅ | ✅ |
 | `POST /api/auth/change-password` | ❌ | ✅ | ✅ | ✅ |
-| `GET /api/news/*`、`/research/*`、`/youtube/*`、`/raw-articles/*`、`/search/*`、`/topics/*` | ❌ | ✅ | ✅ | ✅ |
+| `GET /api/research/*`、`/raw-articles/*`、`/search/*`、`/topics/*` | ❌ | ✅ | ✅ | ✅ |
 | `POST /api/feedback`（自己留言） | ❌ | ✅ | ✅ | ✅ |
+| `PUT /api/youtube/videos/{id}/seen`、`/videos/mark-all-seen` | ❌ | ✅ | ✅ | ✅ |
+| `GET /api/utils/resolve-url`、`POST /api/utils/resolve-stored-urls` | ❌ | ✅ | ✅ | ✅ |
+| `POST /api/news/fetch`，**`source_type=sources_only`**（觸發大量爬蟲） | ❌ | ❌ | ✅ | ✅ |
+| `POST /api/news/save-selected`、`PUT /api/news/articles/{id}` | ❌ | ❌ | ✅ | ✅ |
 | `PUT/POST/DELETE /api/radar/alerts/*`（mark read / save / delete / 觸發分析） | ❌ | ❌ | ✅ | ✅ |
 | `POST/PUT/DELETE /api/radar/market/watchlist`、`/conditions`（市場關注 CRUD） | ❌ | ❌ | ✅ | ✅ |
 | `POST /api/radar/notebooklm-report`、`-yt-report`、`extension-report`、`gemini-analyze`、`scan` | ❌ | ❌ | ✅ | ✅ |
 | `DELETE /api/radar/reports/{id}`（NLM/Gemini/Extension 通用刪報告） | ❌ | ❌ | ✅ | ✅ |
-| `DELETE /api/news/articles`、`/raw-articles`、`/research`、`/feedback`、`/youtube/channels` | ❌ | ❌ | ✅ | ✅ |
+| `DELETE /api/news/articles`、`/raw-articles`、`/research`、`/feedback` | ❌ | ❌ | ✅ | ✅ |
 | `POST /api/raw-articles/cleanup` | ❌ | ❌ | ✅ | ✅ |
-| `POST/PUT/DELETE /api/youtube/channels`（頻道 CRUD） | ❌ | ❌ | ✅ | ✅ |
+| `POST/PUT/DELETE /api/youtube/channels`、`POST /channels/{id}/check`、`/check-all` | ❌ | ❌ | ✅ | ✅ |
 | `POST/PUT/DELETE /api/settings/*`、`/topics/*`（整個 router 都 admin+） | ❌ | ❌ | ✅ | ✅ |
-| `POST /api/utils/resolve-stored-urls`、`GET /api/utils/resolve-url` | ❌ | ✅ | ✅ | ✅ |
 | `GET/POST/PUT/DELETE /api/users/*`（使用者管理）+ reset-password | ❌ | ❌ | ❌ | ✅ |
 | `GET/POST/DELETE /api/service-keys/*`（Service Keys 管理） | ❌ | ❌ | ❌ | ✅ |
+
+**`POST /api/news/fetch` 拆細認證**：因為訪客的「新聞資料庫」頁面要能用 Google News 搜尋，但又不能讓他們觸發大量 RSS / MOPS 爬蟲。endpoint 自己讀 `req.source_type`：`gn_only` 放行所有人、`sources_only` 用 `ctx.has_role("admin")` 擋。
 
 **Service API Key 角色**：建立時 owner 指定 `admin` 或 `regular`（不能是 owner）。Extension / hourly script / sync_vm_settings 通常用 admin role 的 service key。
 
 **側欄可見頁面**：
-- guest：`/`（雷達）、`/dashboard`（儀表板）、`/analysis`（分析報告）
-- regular：上述 + `/search`、`/news`、`/reports`、`/youtube`、`/feedback`、`/raw-articles`
+- guest：`/`（雷達）、`/news`（新聞 DB，可搜 GN）、`/analysis`（分析報告）、`/youtube`（YT 監控）
+- regular：上述 + `/dashboard`（儀表板）、`/search`（主題追蹤）、`/reports`（研究報告）、`/feedback`、`/raw-articles`
 - admin：上述 + `/settings`
 - owner：上述 + `/users`、`/service-keys`
 
@@ -123,10 +142,17 @@ guest(0) < regular(1) < admin(2) < owner(3)
 
 ### Sidebar 角色感知
 `navItems` 每個 entry 可選 `requiresRole` 欄位，[Sidebar.jsx](frontend/src/components/Layout/Sidebar.jsx) 用 `hasRole(role, item.requiresRole)` 過濾顯示。目前設定：
-- 無 requiresRole（訪客可看）：`/`、`/dashboard`、`/analysis`
-- `regular`：`/search`、`/news`、`/reports`、`/youtube`、`/feedback`、`/raw-articles`
+- 無 requiresRole（訪客可看）：`/`、`/news`、`/analysis`、`/youtube`
+- `regular`：`/search`、`/reports`、`/dashboard`、`/feedback`、`/raw-articles`
 - `admin`：`/settings`
 - `owner`：`/users`、`/service-keys`
+
+### 頁面內按鈕角色感知（`hasRole` helper）
+[services/api.js](frontend/src/services/api.js) 匯出 `hasRole(minRole)`，前端 ROLE_ORDER 與 backend `auth.py` 同步。**訪客 / regular 可瀏覽的頁面內，任何呼叫 admin endpoint 的按鈕都要包 `{isAdmin && ...}` 不顯示**，這樣訪客不會看到「點下去就 401 / 403」的死按鈕。已套用此模式的頁面：
+- `RadarPage`：立即掃描、AI 深度分析、刪除單則 / 已讀、全部已讀、刪除已讀、收藏；`handleMarkRead` 開頭 `if (!isAdmin) return` 避免點卡片靜默 401
+- `NewsDBPage`：抓取來源新聞（Google News 訪客可用、刻意不包）、儲存選取、收藏、刪除、「已收藏」篩選
+- `AnalysisPage`：手動觸發 Gemini、刪除單份報告
+- `YouTubePage`：+ 新增頻道、暫停/啟用/刪除頻道、立即偵測全部、偵測此頻道（給 `canAdmin`）；標記已看（給 `canRegular`）
 
 ### 永遠不擋的端點
 - `GET /api/health`
@@ -227,6 +253,10 @@ npm run dev      # Dev server on :5173, proxies /api and /ws to :8000
 npm run build    # Production build to dist/
 ```
 
+### Tests & Linting
+本專案目前**無**自動化測試（pytest / vitest）與 lint 設定（ruff / eslint）。
+驗證方式：直接啟動後端 `curl http://localhost:8000/api/health`，前端手動操作。
+
 ### Both (convenience scripts)
 ```bash
 ./start.sh       # Linux/Mac
@@ -290,7 +320,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
   - `source_health.py` — `mark_attempt(url, success, error=None)` writes `MonitorSource.last_attempt_at` / `last_success_at` / `last_error`. Called by every scraper's HTTP try/except branch (success → update both timestamps + clear error; failure → update attempt + set error, keep last_success_at). Best-effort: own session, swallows DB errors so health-tracking failures never break a scan. Used by `GET /api/settings/source-health` and the LINE 「來源」 command to surface silently-dead sources.
   - `google_news.py` — Google News RSS search + URL decode. Two-tier decode for GN article IDs: (1) base64 protobuf direct extraction for old format (no network), (2) **individual** `batchexecute` per article for new `AU_yq...` format — each article decoded independently to avoid batch response ordering issues that cause title/URL mismatch. `_DECODE_CONCURRENCY=5` limits parallel requests.
   - `rss_feed.py` — RSS parser + keyword filtering. `fetch_multiple_feeds(feeds, ...)` overrides each article's `source` field with `MonitorSource.name` as-is (no cleaning/stripping — user-defined names like "經濟日報 - 國際" are preserved verbatim). When `return_raw=True` returns `(filtered_articles, all_raw_articles)` tuple; raw pool used for topic cross-matching in Pass A2. Module-level `_parse_topic_groups(topic)` and `_extract_display_kw(topic, text_lower)` are imported by `jobs.py`. `_annotate_matched_terms(article, keywords)` — used in `fetch_all` mode: iterates ALL keywords, collects every term that appears (deduped), but only if the keyword's full boolean AND-condition is satisfied. `_resolve_gn_article_urls(articles)` — called after standard redirect resolution in `fetch_rss_feed()`; extracts article IDs from `news.google.com/rss/articles/CBMi...` URLs and decodes them via `google_news._resolve_google_news_urls()` (same two-tier decode). **Keyword matching helpers**: `_term_in_text(term, text_lower)` — uses word-boundary regex for pure-ASCII terms so "Coup" does not match "Couple"; CJK terms use substring match. `_strip_not_terms(topic)` — extracts `NOT term` / `NOT "multi word"` clauses from a keyword string before group parsing; returns `(cleaned_topic, [not_terms])`. Used by `_matches_topic()` (fail-fast if any NOT term appears in text), `_extract_display_kw()`, and `_annotate_matched_terms()`.
-- **`scheduler/jobs.py`** — Eight async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily, hour from `NEWS_SCHEDULE_HOUR` in server timezone — VM is UTC), `daily_research_fetch` (daily 10:00), `youtube_check` (30min, parallel asyncio.gather + Semaphore(5)), `mark_all_youtube_seen` (daily 23:00 UTC = 07:00 Taipei — bulk-clears `YoutubeVideo.is_new=False`), `gemini_analysis` (every 3h, first run 5min after startup), `cleanup_raw_articles` (daily 04:15 UTC).
+- **`scheduler/jobs.py`** — Nine async jobs: `radar_scan` (5min), `market_check` (60min), `daily_news_fetch` (daily, hour from `NEWS_SCHEDULE_HOUR` in server timezone — VM is UTC), `daily_research_fetch` (daily 10:00), `youtube_check` (30min, parallel asyncio.gather + Semaphore(5)), `mark_all_youtube_seen` (daily 23:00 UTC = 07:00 Taipei — bulk-clears `YoutubeVideo.is_new=False`), `gemini_analysis` (every 3h, first run 5min after startup), `cleanup_raw_articles` (daily 04:15 UTC), `line_critical_digest` (cron `hour=23,4,9` UTC = 台北 07:00 / 12:00 / 17:00 — 推送上次推送以來的 critical Alert 給 `LINE_TARGET_ID`，沿用 `send_line_broadcast`).
   - **`misfire_grace_time` is critical**: APScheduler defaults to 1 second, so when the asyncio event loop is busy with a long-running job (e.g. radar scan taking 5–30s), other jobs get silently skipped. **All jobs must set `misfire_grace_time=600` (interval) or `3600` (cron) + `coalesce=True`** so delayed triggers still execute and accumulated triggers collapse to one. Adding a new job without these = it WILL be silently skipped sometimes. Symptom: `journalctl` shows `Run time of job ... was missed by 0:00:03`, user reports "auto detection didn't run, manual trigger suddenly returns N items".
 - **`database.py`** — SQLAlchemy ORM models + `_migrate_db()` for idempotent schema migrations + `_seed_defaults()` for initial data. Seeds only run when tables are empty. 15 models total (added `RawArticle` for 篩選前資料).
 - **`scripts/`** — Auxiliary tools (none are part of the main app runtime):
@@ -427,6 +457,7 @@ Besides app settings in `.env`, many runtime preferences are stored in `SystemCo
 | `radar_scan_lock` | ISO timestamp — cross-process dedup guard |
 | `line_last_reply_at` | ISO timestamp — last time LINE news query was answered (unread baseline) |
 | `line_last_yt_reply_at` | ISO timestamp — last time LINE YouTube query was answered (unread baseline) |
+| `line_last_digest_at` | ISO timestamp — last time `line_critical_digest` 排程作業跑完（07/12/17 台北彙整推送），讀此值決定該推哪些新 critical Alert |
 | `radar_rss_min_articles` | If RSS collects ≥ N articles, skip Google News (default `"0"` = disabled) |
 | `finance_filter_enabled` | `"true"` to drop articles below relevance threshold (default `"false"`) |
 | `finance_relevance_threshold` | Min finance relevance score to keep article (default `"0.15"`) |
@@ -451,6 +482,7 @@ Bot only responds to specific commands — all other messages are silently ignor
 
 | Input pattern | Response |
 |---------------|----------|
+| `ID`（大小寫不拘）| 回覆當前 event source 的類型與 ID（`groupId` / `roomId` / `userId`），方便取得群組 ID 設定 `LINE_TARGET_ID` |
 | `分析` / any text containing `分析` | Latest NotebookLM **news** analysis report from `SystemConfig["nlm_latest_report"]` |
 | `通知` | Unread critical news alerts since last query (updates `line_last_reply_at`) |
 | `通知1天` / `通知今日` / `通知3小時` | Critical news from that time range |
@@ -460,7 +492,9 @@ Bot only responds to specific commands — all other messages are silently ignor
 | `來源` / `健檢` (text containing `來源`) | 來源健康狀態：超過閾值未成功的來源清單（`_build_health_reply`） |
 | anything else | no reply |
 
-Detection priority: `is_yt = user_text[:2].lower() == "yt"` → `is_analysis = not is_yt and "分析" in user_text` → `is_health = not is_yt and not is_analysis and "來源" in user_text` → `is_news = not is_yt and not is_analysis and not is_health and "通知" in user_text`. Inside the `is_yt` branch, `yt分析` (i.e. `"分析" in remainder`) takes priority over the video list. The `分析` command takes priority over `通知` so "分析通知" triggers news analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each. Article titles in news notifications are capped at 80 characters (truncated to 78 + `…`) in `_parse_articles()` — prevents social media posts (e.g. Trump tweets from Nitter) from flooding the notification with full post text.
+Detection priority: `is_id = user_text.strip().upper() == "ID"` → `is_yt = not is_id and user_text[:2].lower() == "yt"` → `is_analysis = not is_id and not is_yt and "分析" in user_text` → `is_health = not is_id and not is_yt and not is_analysis and "來源" in user_text` → `is_news = not is_id and not is_yt and not is_analysis and not is_health and "通知" in user_text`. Inside the `is_yt` branch, `yt分析` (i.e. `"分析" in remainder`) takes priority over the video list. The `分析` command takes priority over `通知` so "分析通知" triggers news analysis, not news. Markdown from the NLM report is stripped by `_md_to_plain()` before sending. Report is split into ≤5 LINE messages of ≤4800 chars each. Article titles in news notifications are capped at 80 characters (truncated to 78 + `…`) in `_parse_articles()` — prevents social media posts (e.g. Trump tweets from Nitter) from flooding the notification with full post text.
+
+**Scheduled active push** (`line_critical_digest` in `scheduler/jobs.py`)：每天 UTC 23:00 / 04:00 / 09:00（= 台北 07:00 / 12:00 / 17:00）執行一次，撈出 `SystemConfig.line_last_digest_at` 以來的所有 critical `Alert`，透過 `send_line_broadcast` 推送到 `LINE_TARGET_ID`（設為群組 ID 時走 pushMessage 只送該群組，不會 broadcast 全部好友）。即使無新警報也會更新 `line_last_digest_at` 時間戳，避免下輪重複推送舊資料。沿用 webhook 端的 `_build_news_reply` 格式（最多 5 則訊息，每則 30 則文章）。
 
 ### Database (SQLite)
 
@@ -497,7 +531,7 @@ Seventeen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`
 - **Pages:** `RadarPage`, `SearchPage`, `NewsDBPage`, `ReportsPage`, `DashboardPage`, `YouTubePage`, `AnalysisPage`, `FeedbackPage`, `SettingsPage`
 - **Responsive layout**: `RadarPage` has separate mobile (`sm:hidden`) and desktop (`hidden sm:flex`) card layouts. Mobile: date+delete on top row, title below full-width, keyword tags limited to 2. Desktop: original horizontal flex (title+article lines in `flex-1`, date+delete on right as `shrink-0`). Global layout: sidebar `hidden md:flex`, mobile bottom tab bar `md:hidden` with "更多" panel for secondary pages.
 - **API client:** `frontend/src/services/api.js` — Axios instance with 60s timeout, exports `radarAPI`, `searchAPI`, `newsAPI`, `settingsAPI`, `topicsAPI`, `reportsAPI`, `rawArticlesAPI`, `youtubeAPI`, plus `resolveUrl()` utility. `radarAPI` includes NLM (`getNlmReport / getNlmYtReport / listNlmReports / getNlmReportById`), Gemini (`getGeminiReport / getGeminiYtReport / listGeminiReports / getGeminiReportById / triggerGeminiAnalysis`), and **Extension** (`getExtensionReport / listExtensionReports / getExtensionReportById`) endpoints. **`resolveUrl()` 重要行為**：只在 URL 含 `news.google.com` 才打 backend `/api/utils/resolve-url`（HTTP redirect 解析），其他網域直接 pass-through 不出網路。理由：雷達掃描階段 `_resolve_gn_article_urls()` 已用 batchexecute 把 GN URL 解碼成最終網址再寫進 DB，DB 內 99% 都是原始連結；以前每個複製動作對 N 個 URL 都打 backend、每個最多 10s 等待，56 個並行就拖很久。`copyToClipboard(text)` utility: uses `navigator.clipboard.writeText()` in HTTPS/localhost, falls back to `document.execCommand('copy')` for HTTP (VM).
-- **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts.
+- **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts. Default URL is **dynamic** — `${ws|wss}://${window.location.host}/ws`，避免寫死 `ws://localhost:8000/ws` 害部署到 VM IP 的使用者瀏覽器去連自己的 127.0.0.1 而全員顯示「離線中」。生產 nginx 與 dev vite.config 都有 `/ws` proxy。
 - **Styling:** Tailwind CSS dark theme, custom classes `card`, `card-hover`, `btn-primary`, `btn-secondary`, `btn-danger`, `input` defined in `index.css`.
 - **Severity display** (`NewsDBPage`): `assessSeverity(title, content)` runs client-side with the same keyword lists as the backend. `SeverityBadge` renders text pills (緊急/高/低). Not a server field — computed on render.
 - **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle and a `fixed_severity` dropdown (動態評估 / 緊急 / 高風險 / 低風險). Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category. Source expanded view includes a type dropdown (RSS / 網頁爬蟲 / 社群) for non-mops/research sources.
@@ -530,10 +564,10 @@ Copy `.env.example` to `.env`. Key variables:
 |--------|--------|---------|
 | `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. NLM: `POST/GET /notebooklm-report`, `POST/GET /notebooklm-yt-report`. Gemini: `GET /gemini-report`, `GET /gemini-yt-report`, `GET /gemini-reports?report_type=`, `GET /gemini-reports/{id}`, `POST /gemini-analyze` (manual trigger). **Extension** (Chrome ext 手動推入): `POST/GET /extension-report?kind=news\|yt`, `GET /extension-reports?kind=news\|yt`, `GET /extension-reports/{id}` — `kind` 篩選依 `source_title` 前綴 `[news]` / `[yt]`（推送時 `notebook_kind` 帶入，舊資料無前綴歸 news）。Completely isolated from hourly: writes `NlmReport(report_type="extension_manual")` + `SystemConfig["extension_*"]` keys, never touches `nlm_latest_report` / `nlm_yt_latest_report`, so LINE「分析」指令一直拿到 hourly 的最新版. **`DELETE /reports/{id}`** — 通用刪除（NLM / Gemini / Extension 任一份 `NlmReport`），刪掉的若是該 type 目前最新的，會把對應的 `SystemConfig.*_latest_report` 系列重新指向同 type 下一筆最新；沒有下一筆就清空。All reports stored in `NlmReport` table + `SystemConfig`. |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
-| `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. `POST /fetch` supports `source_type`: `"sources_only"` (RSS + social + website + MOPS — 與雷達掃描範圍對齊) or `"gn_only"` (Google News). When no query, uses radar_topics + active Topic keywords. **Search 容錯邏輯**：`_normalize_query_text()` 對 query 與被比對文字做 NFKC（全形→半形）+ 移除空白 + lower，讓「美股收紅！」與「美股收紅!」視為相同；`_split_query_terms()` 切 ASCII↔CJK 邊界後對 ≥6 字 CJK 段補 4-gram、≥12 字補 6-gram，讓貼整段標題能由部分文字命中。OR 比對：任一 term 為 substring 即過。Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. `GET /sources` returns configured source names + `__other__` with counts; `GET /keywords` returns unique `matched_keyword` values with counts. `GET /articles` accepts `source` and `keyword` query params for filtering. |
+| `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. **Router 不掛 dep**，個別 endpoint 自帶 auth：GET 全開（guest 可讀）、`PUT /articles/{id}` / `POST /save-selected` / `DELETE` 為 admin。`POST /fetch` 支援 `source_type`: `"sources_only"`（RSS + social + website + MOPS — admin only，會觸發大量爬蟲）或 `"gn_only"`（Google News — guest 也可用，函式內依 `source_type` 動態判斷而非 router-level dep）。When no query, uses radar_topics + active Topic keywords. **Search 容錯邏輯**：`_normalize_query_text()` 對 query 與被比對文字做 NFKC（全形→半形）+ 移除空白 + lower，讓「美股收紅！」與「美股收紅!」視為相同；`_split_query_terms()` 切 ASCII↔CJK 邊界後對 ≥6 字 CJK 段補 4-gram、≥12 字補 6-gram，讓貼整段標題能由部分文字命中。OR 比對：任一 term 為 substring 即過。Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. `GET /sources` returns configured source names + `__other__` with counts; `GET /keywords` returns unique `matched_keyword` values with counts. `GET /articles` accepts `source` and `keyword` query params for filtering. `fetched_after` query param 帶 tz 時 endpoint 內會先轉成 naive UTC 再比對（否則 SQLite 字串比較會把跨日邊界的文章誤排除）。|
 | `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
-| `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen |
+| `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen. **Router 不掛 dep**：GET（channels / videos / new-count）全開、`PUT /videos/{id}/seen` 與 `/mark-all-seen` 為 regular（登入即可），`POST /channels` / `PUT/DELETE /channels/{id}` / `POST /channels/{id}/check` / `/check-all` 為 admin |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |
 | `/api/settings` | `routers/settings.py` | Monitor sources (including `fetch_all`, `sort_order`, `last_success_at`/`last_attempt_at`/`last_error` fields), notifications, Google Sheets, AI model config, finance filter toggle+threshold, RSS priority threshold, GN critical-only toggle, radar exclusion keywords. `PUT /sources/reorder` — bulk sort_order update (list of IDs, must be registered **before** `PUT /sources/{id}` to avoid FastAPI routing conflict). `POST /sources/{id}/test-rss` supports all types: `mops`, `website` (dispatches to fed/cnyes/worldbank/fsc/caixin/storm/taisounds/linetoday/udn/ctee/nownews/treasury scrapers via same `is_*_url()` routing), and `rss`/`social`. The stale-warning logic uses the **latest** entry across `entries[:20]` (not `entries[:3]` as before — that bug caused false alarms on daily-newsletter feeds like Politico Morning Money). `GET /radar-topics` response includes `exclusion_keywords` field; `PUT /radar-topics` accepts it. **Source health**: `GET /source-health` returns `{threshold_hours, healthy_count, stale_count, unknown_count, stale[]}`; `GET/PUT /source-health-threshold` for the threshold (1-720 hours). |
 | `/api/feedback` | `routers/feedback.py` | User feedback CRUD (GET list, POST create, DELETE by id) |
@@ -613,7 +647,28 @@ Runs on the **VM** via APScheduler (every 3 hours, first run 5 min after startup
 
 ## Chrome Extension (`extension/`) — 手動 NotebookLM 分析
 
-MV3 Chrome 擴充功能，給使用者**手動**對 NotebookLM 做四件事：(1) 匯入剪貼簿 URL、(2) 清空 sources（保留 `[SKILL] ` 前綴的框架檔）、(3) 產生分析報告 → 推送 VM、(4) 一鍵把 (1)(2)(3) 串起來。**與 hourly 自動排程完全獨立**：不寫入 `nlm_latest_report` / `nlm_yt_latest_report` / `gemini_*` 任何 SystemConfig，LINE「分析」指令永遠拿到 hourly 的最新版。
+MV3 Chrome 擴充功能，仿照「NotebookLM 網頁匯入器」UIUX（淺色介面、動態 notebook 下拉、黑白 SVG 圖示系統），給使用者**手動**對 NotebookLM 做七件事（v0.5.0+）：(1) **新增目前頁面至筆記本**（primary 黑底大鈕；`chrome.tabs.query` 抓 active tab URL → 走單 URL `import_urls`）、(2) 匯入剪貼簿 URL、(3) 清空 sources（保留 `[SKILL] ` 前綴的框架檔）、(4) 產生分析報告 → 推送 VM、(5) 一鍵把 (3)(2)(4) 串起來、(6) **開啟所選 notebook**（`chrome.tabs.create` 開 `https://notebooklm.google.com/notebook/<id>`）、(7) **+ 建立新筆記本**（v0.5 用真正的 NLM `CREATE_NOTEBOOK` RPC，建好自動 refresh 下拉並選中）。**與 hourly 自動排程完全獨立**：不寫入 `nlm_latest_report` / `nlm_yt_latest_report` / `gemini_*` 任何 SystemConfig，LINE「分析」指令永遠拿到 hourly 的最新版。
+
+**`chrome.storage.local` 使用的 key 清單**（popup/background 雙方約定，勿擅自改名）：
+- `lastNotebookId`：上次選的 notebook ID，popup 開啟自動選回
+- `cachedNotebooks_v2`：notebook 清單快取 `[{id, title}]`，渲染時先用快取、背景 refresh
+- `lastKind`：上次選的 kind (`news`/`yt`/`none`)
+- `savedPrompts`：使用者儲存的提示詞收藏 `[{id, name, content}]`
+- `selectedPromptId`：目前選用的提示詞 ID（`null` = 用 options 預設）
+- `vmBaseUrl`、`apiToken`、`newsPrompt`、`ytPrompt`、`nonePrompt`、`skipVmPush`：在 options.html 設定
+
+**v0.4 → v0.5 重大變更**：
+- **動態 notebook 下拉**取代固定「新聞 / YT radio」：popup 開啟時呼 `list_notebooks` 透過 NLM `LIST_NOTEBOOKS` RPC（`wXbhsf`）拉所有 notebooks，記憶 `lastNotebookId` 在 `chrome.storage.local`，下次開啟自動選回。先用 `cachedNotebooks` 渲染、背景 refresh 拉新清單，避免每次開 popup 空白等 1-2 秒
+- **建立新筆記本走真正 RPC**：`CREATE_NOTEBOOK` (`CCqFvf`) — params 結構 `[title, null, null, [2], [1]]`，回 `[id, [..., title at idx 4, ...]]`。建好回傳 `{id, title}` 進 popup 端 `chrome.storage.local.lastNotebookId` 然後 `loadNotebooks({forceRefresh:true})` 自動選中
+- **報告類型獨立**：notebook 跟 kind 解耦 — popup 上方下拉選 notebook（操作目標），下方一排小 chip 選 `📰 新聞 / 📺 YT / 🚫 不推送`（互斥）。推 VM 時帶 `notebook_kind`，影響 VM 端 `extension-report?kind=` 分流
+- **「🚫 不推送」用獨立提示詞**（v0.6.2）：以前選「🚫 不推送」會 fallback 用新聞 prompt（pickPrompt 寫成「kind==='yt' 用 yt prompt，其他用 news」是 bug）。修正：`pickPrompt` 加 `kind === 'none' → settings.nonePrompt` 分支；options 加「🚫 不推送 自訂提示詞」textarea，**預設空白**；空字串送進 `client.generateReport` 後 lib 內 `customPrompt || 'Create a report based on...'` fallback 到 NLM 內建預設報告 prompt
+- **提示詞收藏 + 黑白 SVG 圖示 + UI 整合**（v0.6.3）：所有 emoji 按鈕圖示改為 `<svg symbol>` 黑白 stroke 系統（13 個 symbols，popup.html 頂部定義）；kind chip 預設改為「不推送」，順序前移；匯入/清空/分析三顆批次按鈕整合成一列 `actions-row3`；新增 ✏️（`#btn-prompt-settings`）→ `position: fixed` 右側書籤式抽屜 `#pp-panel`，可新增/刪/選提示詞；選中的 content 在 `generateAndPushForTask` 優先用 `task.customPrompt`（override options 的預設 prompt）；`import_urls` 成功判定改為 `succeeded > 0`（寬鬆，任一 URL 成功即 ✅）
+- **CSS 全部換淺色**：白底 / 深灰文字 / 黑底主 CTA / 灰邊 outline 次按鈕 / divider 分批次操作區
+- **`options.html` 移除 `notebookIdNews` / `notebookIdYt`**：不再需要、新使用者一進 popup 就動態列出選
+
+**RPC 反向工程來源**：[notebooklm-py docs/rpc-reference.md](https://github.com/teng-lin/notebooklm-py/blob/main/docs/rpc-reference.md)。`lib/notebooklm.js` 加 `listNotebooks(signal)` + `createNotebook(title, signal)` 兩個方法，沿用既有 `_rpcCall` 走 batchexecute。listNotebooks 解析（從 `notebooklm-py types.py Notebook.from_api_response` 抄出）：`entry[0]` = title（string）、`entry[2]` = id（string）。**注意**：`rpc-reference.md` 文件寫的是 `entry[0]=id, entry[1][4]=title`，是錯的 — 實際 response 以 title 為 `entry[0]`，lib 裡有 `.replace(/^thought\n/, '').trim()` 去掉前置雜訊。
+
+`manifest.json::permissions` 加 `"tabs"` 是給「匯入目前頁面」用（`chrome.tabs.query({active:true,currentWindow:true})` 讀 URL）；要的不只是 `activeTab`，因為 activeTab 只在使用者點 extension icon 那一刻授權同分頁，跨 popup 互動不夠用。
 
 ### 認證模型 — 大幅簡化於 hourly 腳本
 
@@ -624,7 +679,7 @@ MV3 Chrome 擴充功能，給使用者**手動**對 NotebookLM 做四件事：(1
 | 檔案 | 角色 |
 |---|---|
 | `manifest.json` | MV3，permissions: `storage` / `clipboardRead` / `notifications` / `alarms`；host_permissions: `notebooklm.google.com` + VM URL |
-| `popup.html/js/css` | 工具列 popup UI：4 顆按鈕 + 新聞/YT segmented control + 常駐狀態框 + 設定齒輪 |
+| `popup.html/js/css` | 工具列 popup UI：notebook 下拉、kind chip（不推送預設）、✏️ 提示詞收藏、「新增目前頁面」+ 建立新筆記本、批次操作三合一列（匯入/清空/分析）+ 一鍵、task 清單、固定右側 `#pp-panel` 書籤抽屜。所有按鈕圖示用 SVG symbol（popup.html 頂部 `<svg display:none>` 定義 13 symbols）|
 | `options.html/js` | 設定頁：notebook ID（新聞 / YT）、VM URL、自訂提示詞、`skipVmPush` 勾選 |
 | `background.js` | Service worker — 統一處理 NotebookLM API + 推送 VM + 桌面通知；popup/options 都透過 `chrome.runtime.sendMessage` 委派 |
 | `lib/notebooklm.js` | `class NotebookLMClient` — 從 `notebooklm-py` 0.3.4 抄出的 batchexecute RPC 客戶端（`init` / `listSources` / `addUrlSource` / `addTextSource` / `deleteSource` / `generateReport` / `waitForCompletion` / `downloadReport`），含 chunked response 解碼（strip `)]}'\n` → 解析 byte-count + JSON 交替 → 抽 `wrb.fr` rpcId 對應結果） |
@@ -645,7 +700,52 @@ chrome.alarms.create('nlm-keepalive', { periodInMinutes: 0.4 })  // 每 24 秒�
 
 **配套保險**：
 - 每個 URL 包 `withTimeout(promise, 30_000)`，單個卡死的 URL 不會凍結整批
-- 連續呼叫之間 sleep 300ms，避免 NotebookLM 端 rate limiting
+- v0.5.2 之前：連續呼叫之間 sleep 300ms 避免 rate limiting；**v0.5.3 改 worker pool 並行**：`IMPORT_CONCURRENCY=3`、`CLEAR_CONCURRENCY=5`，N 個 worker 從共享 `nextIndex` 取下個 URL 處理，沒有 sleep（worker 之間自然錯開）。實測 116 URL 從 ~2 分鐘 → ~30 秒（~4x 加速）。Cancel 仍可隨時生效 — worker 開頭 `if (_cancelRequested) return`，外層 `Promise.all` 收完所有 worker 後 `checkCancel()` 統一拋 CancelError 走「已取消」路徑
+
+### 多任務並行（v0.6.0+）
+
+使用者一次看好幾篇研究報告，想分別匯入到不同 notebook 並各自分析。v0.5 之前 popup 是「單任務」設計（`lastRun` 單 slot、global `_cancelRequested`），第二個動作會卡住第一個。v0.6 改成 task-based：
+
+**核心抽象 `Task` class**（[extension/background.js](extension/background.js)）：每個動作（匯入剪貼簿、匯入目前頁、清空、分析、一鍵）都建一個 Task instance。Task 持有：
+- `id` (`task_<ts>_<rand>`)、`label`（「匯入頁面」/「清空 sources」/「產生分析報告」/「一鍵 清空→匯入→分析」）
+- `notebookId` + `notebookTitle`（從 `cachedNotebooks_v2` cache 查得）、`kind` (`news/yt/none/null`)
+- 進度欄位 `phase / current / total / message / startedAt / finishedAt / ok / cancelled / summary / error`
+- **自有的 `AbortController`** + `_cancelRequested` flag — 取消只影響這個 task，不會牽連其他並行 task
+- `task.setState(patch)` 修改欄位 + 持久化 + 廣播；`task.checkCancel()` / `task.signal` 由核心函式內呼叫
+
+`_tasks: Map<id, Task>` 是 module-level registry。`chrome.storage.local.tasks` 持久化 serialized 陣列；SW 重啟時自動把所有 in-flight task 標成 cancelled（重啟後 promise chain 必然斷掉，UI 不該顯示永遠卡住）。Done task 30 分鐘後自動從 `_tasks` 移除（避免無限長）。
+
+**訊息協定**：`task_update` / `task_remove`（broadcast）取代舊的 `progress`。`list_tasks` 給 popup 開啟時還原。`cancel_task {taskId}` / `cancel_all_tasks` / `dismiss_task {taskId}` 三個取消相關 action。
+
+**核心函式簽名**：`importUrlsToTask(task, urls)` / `clearSourcesForTask(task)` / `generateAndPushForTask(task)` / `runCombinedForTask(task, urls)` — 全部吃 task 物件。Worker pool 內 `if (task.isCancelled()) return` 取代以前的 `if (_cancelRequested)`。
+
+**Message handler 立即回 taskId**：`runTaskInBackground(task, coreFn, onSuccess, errorTitle)` 包裝 — 不 await 內部 async IIFE，所以 message handler 收到請求後 `sendResponse({ ok:true, taskId })` 立刻回，task 在背景跑。Popup 不會卡在 await bgSend，使用者可立刻開下一個 task。
+
+**Popup UI**（[extension/popup.html](extension/popup.html) + [extension/popup.js](extension/popup.js)）：原本的「單一狀態框」改成 task list — `<div class="task-row">` 每個 task 一 row，含 icon (`⏳/✅/⛔/❌`)、label、elapsed、`✋ 取消此任務` / `✕ 移除` 兩顆按鈕（active 顯前者、done 顯後者）。`<template id="task-row-template">` 用 `cloneNode` 產 row。Popup 維護 `taskRows: Map<taskId, {rowEl, task}>` 本地副本，每秒 tick 更新 active 的 elapsed。`✋ 全部取消`（紅色小 chip）只在 active task ≥ 2 時顯示。
+
+**動作按鈕都不再 disable**：使用者可以連續點「📌 匯入目前頁面」(N 次切不同分頁)，每次都開新 task；對同一個 notebook 同時跑多個動作也不擋（NLM 端有自己的內部 queue）。
+
+**Toast 取代舊的「請先選 notebook」status 提示**：popup 底部 `.toast` 浮動短訊 2.5s 自動消失。
+
+### 取消執行（v0.3.3+，仍適用 v0.6 並行架構）
+
+長操作（特別是匯入大批 URL 或等 NLM 跑 200+ sources 的 polling）使用者可能想中途中斷。早期版本沒這功能，只能去 `chrome://extensions/` 按 refresh 強殺 SW，但這會讓 NLM 端 sources 卡半路（已 add 的留著、迴圈中斷）、popup UI 也回不到乾淨狀態。
+
+**v0.3.2 → v0.3.3 演進**：v0.3.2 只有 flag-based cancel，使用者反映按了沒效 — 因為當下正卡在 `client.addUrlSource(...)` 等 NLM 回應的 fetch 內，flag 要等該 fetch 處理完才被下個迴圈迭代讀到，使用者觀感「按了沒反應」。v0.3.3 改成雙層機制：
+
+1. **`_cancelRequested` flag + `checkCancel()`**：迴圈下次迭代讀到即拋 `CancelError`。檢查點分布：
+   - `importClipboardUrls` / `clearSources` 每次迭代**開頭與結尾**（結尾的 check 處理「當前 URL 處理完正要 sleep」場景）
+   - `generateAndPushReport` 的 `waitForCompletion` `onTick` 內（每輪 polling，2-10s 間隔）— 需要 [lib/notebooklm.js](extension/lib/notebooklm.js) 把 `onTick` 改成 `await onTick(...)` 讓 onTick 內 throw 能冒出
+   - `runCombined` 三階段之間
+   - 所有 `sleep` 改用 `cancellableSleep(ms)`（內部每 100ms `checkCancel()`），讓使用者按取消後最多等 100ms
+2. **`_currentAbortController` + `signal` 傳遞**：`requestCancel()` 同時 `controller.abort()`，正在飛的 NLM RPC fetch 立即 reject 為 `AbortError`。`NotebookLMClient` 每個方法都加 `signal` 參數透傳給 `_rpcCall` → fetch options。`waitForCompletion` 也接 `opts.signal`、內部 sleep 拆 100ms 切片 + `signal.aborted` 檢查。VM push 的 fetch 也帶 signal。
+3. **`isCancelError(e)`** 同時辨識 `CancelError` 與 fetch `AbortError`，走灰色「已取消」路徑（不是紅色 err）。
+
+`startRun()` 開頭 `resetCancel()` 把 flag 歸零 + 建立**新** `AbortController`（前次 abort 過的 controller 不能重用 — signal 一旦 aborted 就永遠 aborted）。`cancel_run` message handler 只設旗標 + abort、立即回 `{ok:true}`，不在這邊呼 `finishRun`（讓正在跑的迴圈自己拋、由各 action 統一處理，避免 race）。
+
+**UI**：popup 取消按鈕 [popup.html](extension/popup.html) `#btn-cancel`，預設 `hidden`；`renderRunState()` 只在 phase 屬於 `ACTIVE_PHASES` 時 `showCancel(true)`，`done` 立即藏。按下去後文字改「⏳ 取消中…」+ disable，5 秒後文字復原（防止 SW 萬一卡住、按鈕還能再按）；實際狀態還原靠 background 廣播 `done(cancelled=true)` progress 訊息。
+
+**限制**：NLM artifact 一旦 generate 開始，伺服器端任務還是會跑完（extension 只是不再等它），UI 在分析取消時顯示「⛔ 分析已取消（NLM 端任務可能仍在背景跑）」。已 add 的 sources 也留在 notebook（取消是中止流程，不是 rollback）。
 
 ### 進度持久化 — popup 關閉重開能還原
 
@@ -658,6 +758,10 @@ chrome.alarms.create('nlm-keepalive', { periodInMinutes: 0.4 })  // 每 24 秒�
 ### `waitForCompletion` 超時 — 600s
 
 `generateAndPushReport()` 等待 NotebookLM 產生報告的超時是 600 秒（10 分鐘），不是 300 秒。200+ sources 時 NLM 經常超過 5 分鐘還在跑，300s 會把好好的執行誤判為超時。改參數時注意 popup 顯示也要對齊（`message` 寫的「上限 N s」）。
+
+### PDF 匯入 timeout — 90s
+
+`addUrlSource` RPC 是同步的：NLM 伺服器在回傳之前會先 HTTP 抓取並初始驗證該 URL 的內容。一般網頁只需讀 `<head>` 幾秒，但 PDF 要下載整個檔案再完成驗證，常超過 30 秒。`background.js` 新增 `isPdfUrl(url)`（偵測 `.pdf` 結尾）和 `PDF_TIMEOUT_MS = 90_000`；`importUrlsToTask` worker 自動依 URL 類型切換 timeout，不需呼叫方感知。若以後遇到其他慢 URL 類型（如大型 PPTX），套用相同模式新增類型判斷 + 對應常數。
 
 ### `skipVmPush` 設計（給沒有自架 VM 的使用者用）
 

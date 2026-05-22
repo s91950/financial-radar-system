@@ -1,21 +1,227 @@
-// popup.js — UI binding。實際執行委派給 background.js，狀態全部從 chrome.storage
-// + runtime.sendMessage 廣播取得，所以 popup 關了重開也能還原進度。
+// popup.js — 多任務 UI（v0.6+）
+// 動作按鈕都是「即發即返」：bgSend 收到 taskId 立即回；task 在 background 並行跑，
+// task_update / task_remove 廣播給 popup 同步 UI。所以使用者可以連續對不同 notebook
+// 開好幾個任務同時跑。
 
 const $ = (sel) => document.querySelector(sel);
-const statusBox = $('#status');
-const statusText = $('#status-text');
-const statusDetail = $('#status-detail');
+const selectEl = $('#notebook-select');
+const taskListEl = $('#task-list');
+const emptyStateEl = $('#empty-state');
+const cancelAllBtn = $('#btn-cancel-all');
 const configHint = $('#config-hint');
+const ppPanel = $('#pp-panel');
+const ppBackdrop = $('#pp-backdrop');
+const ppList = $('#pp-list');
 
-function setStatus(text, kind = 'run', detail = '') {
-  statusBox.classList.remove('ok', 'err', 'run');
-  if (kind) statusBox.classList.add(kind);
-  statusText.textContent = text;
-  statusDetail.textContent = detail || '';
+// 提示詞收藏資料（從 storage 載入）
+let _savedPrompts = [];   // [{ id, name, content }]
+let _selectedPromptId = null;  // null = 使用預設（依 kind）
+
+// taskId -> { rowEl, task }  — popup 本地副本，每秒 tick 更新 elapsed 用
+const taskRows = new Map();
+
+const ACTIVE_PHASES = new Set([
+  'starting', 'clear', 'import', 'generate', 'download', 'push',
+  'combined-start', 'between',
+]);
+
+function isActivePhase(phase) { return ACTIVE_PHASES.has(phase); }
+
+function fmtElapsed(start, end) {
+  if (!start) return '';
+  const sec = Math.round(((end || Date.now()) - start) / 1000);
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m${sec % 60}s`;
 }
 
 function getKind() {
   return document.querySelector('input[name="kind"]:checked')?.value || 'news';
+}
+
+function kindBadge(kind) {
+  if (kind === 'yt') return '📺 YT';
+  if (kind === 'none') return '🚫 不推送';
+  if (kind === 'news') return '📰 新聞';
+  return '';
+}
+
+// ── 提示詞收藏 ─────────────────────────────────────────────────────────
+
+function getSelectedPromptContent() {
+  if (!_selectedPromptId) return null;
+  return _savedPrompts.find((p) => p.id === _selectedPromptId)?.content ?? null;
+}
+
+async function loadSavedPrompts() {
+  const data = await chrome.storage.local.get(['savedPrompts', 'selectedPromptId']);
+  _savedPrompts = Array.isArray(data.savedPrompts) ? data.savedPrompts : [];
+  _selectedPromptId = data.selectedPromptId || null;
+  // 選取的 id 若已被刪除則清掉
+  if (_selectedPromptId && !_savedPrompts.find((p) => p.id === _selectedPromptId)) {
+    _selectedPromptId = null;
+  }
+}
+
+async function persistPrompts() {
+  await chrome.storage.local.set({ savedPrompts: _savedPrompts, selectedPromptId: _selectedPromptId });
+}
+
+function renderPromptList() {
+  ppList.innerHTML = '';
+
+  // 預設項
+  ppList.appendChild(makePromptItem(null, '預設（依分析類型）', false));
+
+  if (_savedPrompts.length === 0) {
+    const el = document.createElement('div');
+    el.className = 'pp-empty';
+    el.textContent = '尚無收藏，在下方新增';
+    ppList.appendChild(el);
+  } else {
+    for (const p of _savedPrompts) {
+      ppList.appendChild(makePromptItem(p.id, p.name, true));
+    }
+  }
+
+  $('#btn-prompt-settings').classList.toggle('has-selection', _selectedPromptId !== null);
+}
+
+function makePromptItem(id, name, deletable) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'pp-item-wrapper';
+
+  // ── 主列 ──
+  const row = document.createElement('div');
+  row.className = `pp-item${_selectedPromptId === id ? ' selected' : ''}`;
+
+  const dot = document.createElement('span');
+  dot.className = 'pp-dot';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'pp-item-name';
+  nameEl.textContent = name;
+  nameEl.title = name;
+
+  row.append(dot, nameEl);
+
+  if (deletable) {
+    const prompt = _savedPrompts.find((p) => p.id === id);
+
+    // 展開按鈕
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'pp-item-action';
+    expandBtn.textContent = '▸';
+    expandBtn.title = '展開內容';
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isOpen = contentArea.hidden;
+      contentArea.hidden = !isOpen;
+      expandBtn.textContent = isOpen ? '▾' : '▸';
+      expandBtn.classList.toggle('open', isOpen);
+    });
+
+    // 複製按鈕
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'pp-item-action';
+    copyBtn.textContent = '⧉';
+    copyBtn.title = '複製提示詞';
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!prompt?.content) return;
+      navigator.clipboard.writeText(prompt.content).then(() => {
+        copyBtn.textContent = '✓';
+        setTimeout(() => { copyBtn.textContent = '⧉'; }, 1200);
+      }).catch(() => {
+        // fallback for HTTP
+        const ta = document.createElement('textarea');
+        ta.value = prompt.content;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        copyBtn.textContent = '✓';
+        setTimeout(() => { copyBtn.textContent = '⧉'; }, 1200);
+      });
+    });
+
+    // 刪除按鈕
+    const del = document.createElement('button');
+    del.className = 'pp-item-del';
+    del.textContent = '✕';
+    del.title = '刪除';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deletePrompt(id);
+    });
+
+    row.append(expandBtn, copyBtn, del);
+
+    // ── 展開內容區 ──
+    var contentArea = document.createElement('div');
+    contentArea.className = 'pp-item-content';
+    contentArea.textContent = prompt?.content || '';
+    contentArea.hidden = true;
+    wrapper.append(row, contentArea);
+  } else {
+    wrapper.appendChild(row);
+  }
+
+  row.addEventListener('click', async () => {
+    await selectPrompt(id);
+  });
+
+  return wrapper;
+}
+
+async function selectPrompt(id) {
+  _selectedPromptId = id;
+  await persistPrompts();
+  renderPromptList();
+}
+
+async function deletePrompt(id) {
+  if (_selectedPromptId === id) _selectedPromptId = null;
+  _savedPrompts = _savedPrompts.filter((p) => p.id !== id);
+  await persistPrompts();
+  renderPromptList();
+}
+
+async function addNewPrompt() {
+  const nameEl = $('#pp-name');
+  const contentEl = $('#pp-content');
+  const name = nameEl.value.trim();
+  const content = contentEl.value.trim();
+  if (!name) { showToast('請輸入名稱', 'err'); nameEl.focus(); return; }
+  if (!content) { showToast('請輸入提示詞內容', 'err'); contentEl.focus(); return; }
+  const id = `p_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  _savedPrompts.push({ id, name, content });
+  await persistPrompts();
+  nameEl.value = '';
+  contentEl.value = '';
+  renderPromptList();
+  showToast(`已新增「${name}」`, 'info');
+}
+
+function openPromptPanel() {
+  ppPanel.hidden = false;
+  ppBackdrop.hidden = false;
+  $('#btn-prompt-settings').classList.add('active');
+  renderPromptList();
+}
+
+function closePromptPanel() {
+  ppPanel.hidden = true;
+  ppBackdrop.hidden = true;
+  $('#btn-prompt-settings').classList.remove('active');
+}
+
+function togglePromptPanel() {
+  if (ppPanel.hidden) openPromptPanel();
+  else closePromptPanel();
+}
+
+function getNotebookId() {
+  return selectEl?.value || '';
 }
 
 async function bgSend(action, payload = {}) {
@@ -30,11 +236,70 @@ async function bgSend(action, payload = {}) {
   });
 }
 
-function disableButtons(disabled) {
-  ['#btn-import', '#btn-clear', '#btn-generate', '#btn-combined'].forEach((s) => {
-    const el = $(s);
-    if (el) el.disabled = disabled;
-  });
+// ── Toast（暫時提示）─────────────────────────────────────────────────
+
+let _toastTimer = null;
+function showToast(text, kind = 'info') {
+  const old = document.querySelector('.toast');
+  if (old) old.remove();
+  const el = document.createElement('div');
+  el.className = `toast ${kind === 'err' ? 'err' : ''}`;
+  el.textContent = text;
+  document.body.appendChild(el);
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { el.remove(); }, 2500);
+}
+
+// ── Notebook 下拉 ──────────────────────────────────────────────────────
+
+async function loadNotebooks({ forceRefresh = false } = {}) {
+  selectEl.innerHTML = '<option value="">載入筆記本中…</option>';
+  selectEl.disabled = true;
+
+  const { lastNotebookId, cachedNotebooks_v2 } = await chrome.storage.local.get(['lastNotebookId', 'cachedNotebooks_v2']);
+
+  if (!forceRefresh && Array.isArray(cachedNotebooks_v2) && cachedNotebooks_v2.length > 0) {
+    renderNotebookOptions(cachedNotebooks_v2, lastNotebookId);
+  }
+
+  const resp = await bgSend('list_notebooks');
+  if (!resp.ok) {
+    if (!Array.isArray(cachedNotebooks_v2) || cachedNotebooks_v2.length === 0) {
+      selectEl.innerHTML = '<option value="">❌ 載入失敗</option>';
+      showToast(`載入筆記本失敗：${resp.error || '未登入'}`, 'err');
+    }
+    selectEl.disabled = false;
+    return;
+  }
+  const notebooks = resp.data || [];
+  await chrome.storage.local.set({ cachedNotebooks_v2: notebooks });
+  renderNotebookOptions(notebooks, lastNotebookId);
+}
+
+function renderNotebookOptions(notebooks, preferredId) {
+  if (!notebooks || notebooks.length === 0) {
+    selectEl.innerHTML = '<option value="">（沒有筆記本，請按「+ 建立新筆記本」）</option>';
+    selectEl.disabled = false;
+    return;
+  }
+  selectEl.innerHTML = '';
+  for (const nb of notebooks) {
+    const opt = document.createElement('option');
+    opt.value = nb.id;
+    opt.textContent = nb.title;
+    selectEl.appendChild(opt);
+  }
+  if (preferredId && notebooks.some((n) => n.id === preferredId)) {
+    selectEl.value = preferredId;
+  } else {
+    selectEl.value = notebooks[0].id;
+  }
+  selectEl.disabled = false;
+  rememberNotebook();
+}
+
+async function rememberNotebook() {
+  await chrome.storage.local.set({ lastNotebookId: getNotebookId() });
 }
 
 async function rememberKind() {
@@ -43,26 +308,16 @@ async function rememberKind() {
 
 async function restoreKind() {
   const { lastKind } = await chrome.storage.local.get('lastKind');
-  if (lastKind) {
-    const radio = document.querySelector(`input[name="kind"][value="${lastKind}"]`);
-    if (radio) radio.checked = true;
-  }
+  const kind = lastKind || 'none';
+  const radio = document.querySelector(`input[name="kind"][value="${kind}"]`);
+  if (radio) radio.checked = true;
 }
 
 async function checkConfig() {
   const resp = await bgSend('get_settings');
   if (!resp.ok) return;
   const s = resp.data;
-  const missing = [];
-  if (!s.notebookIdNews) missing.push('新聞 notebook ID');
-  if (!s.notebookIdYt) missing.push('YouTube notebook ID');
-  if (missing.length > 0) {
-    configHint.innerHTML = `⚠ 尚未設定：${missing.join('、')} <a href="#" id="open-options-2" class="link">設定</a>`;
-    document.getElementById('open-options-2')?.addEventListener('click', openOptions);
-  } else {
-    const mode = s.skipVmPush ? '本機模式（不推 VM）' : `VM: ${s.vmBaseUrl}`;
-    configHint.textContent = mode;
-  }
+  configHint.textContent = s.skipVmPush ? '本機模式（不推 VM）' : `VM: ${s.vmBaseUrl}`;
 }
 
 function openOptions(e) {
@@ -82,193 +337,287 @@ async function readClipboardUrls() {
   return ext.data;
 }
 
-// ── 狀態還原 / 即時刷新 ────────────────────────────────────────────────
+// ── Task 列表渲染 ──────────────────────────────────────────────────────
 
-const ACTIVE_PHASES = new Set([
-  'starting', 'clear', 'import', 'generate', 'download', 'push',
-  'combined-start', 'between',
-]);
-
-function fmtElapsed(startedAt) {
-  if (!startedAt) return '';
-  const sec = Math.round((Date.now() - startedAt) / 1000);
-  if (sec < 60) return `${sec}s`;
-  return `${Math.floor(sec / 60)}m${sec % 60}s`;
+function upsertTaskRow(task) {
+  let entry = taskRows.get(task.id);
+  if (!entry) {
+    const tpl = document.getElementById('task-row-template');
+    const rowEl = tpl.content.firstElementChild.cloneNode(true);
+    rowEl.dataset.taskId = task.id;
+    rowEl.querySelector('.task-cancel').addEventListener('click', () => {
+      bgSend('cancel_task', { taskId: task.id });
+    });
+    rowEl.querySelector('.task-dismiss').addEventListener('click', () => {
+      bgSend('dismiss_task', { taskId: task.id });
+    });
+    // 新 task 放最上面，方便看
+    taskListEl.insertBefore(rowEl, taskListEl.firstChild);
+    entry = { rowEl, task };
+    taskRows.set(task.id, entry);
+  } else {
+    entry.task = task;
+  }
+  renderTaskRow(entry.rowEl, task);
+  updateEmptyState();
+  updateGlobalCancelVisibility();
 }
 
-function renderRunState(state) {
-  if (!state) {
-    setStatus('👋 選擇 notebook 後點按鈕開始', 'run', '');
-    disableButtons(false);
-    return;
+function removeTaskRow(taskId) {
+  const entry = taskRows.get(taskId);
+  if (entry) {
+    entry.rowEl.remove();
+    taskRows.delete(taskId);
   }
+  updateEmptyState();
+  updateGlobalCancelVisibility();
+}
 
-  // 進行中
-  if (state.phase && ACTIVE_PHASES.has(state.phase)) {
-    const elapsed = fmtElapsed(state.startedAt);
-    const head = `[${state.label}] 進行中 · 已 ${elapsed}`;
-    let body = state.message || '';
-    if (state.total > 0 && state.phase !== 'generate') {
-      body = `進度 ${state.current}/${state.total}\n${body}`;
+function renderTaskRow(rowEl, task) {
+  const active = isActivePhase(task.phase);
+  rowEl.classList.remove('active', 'ok', 'err', 'cancelled');
+  if (active) rowEl.classList.add('active');
+  else if (task.cancelled) rowEl.classList.add('cancelled');
+  else if (task.ok) rowEl.classList.add('ok');
+  else rowEl.classList.add('err');
+
+  const icon = rowEl.querySelector('.task-icon');
+  const label = rowEl.querySelector('.task-label');
+  const elapsed = rowEl.querySelector('.task-elapsed');
+  const cancelBtn = rowEl.querySelector('.task-cancel');
+  const dismissBtn = rowEl.querySelector('.task-dismiss');
+  const meta = rowEl.querySelector('.task-meta');
+  const progress = rowEl.querySelector('.task-progress');
+
+  if (active) icon.textContent = '⏳';
+  else if (task.cancelled) icon.textContent = '⛔';
+  else if (task.ok) icon.textContent = '✅';
+  else icon.textContent = '❌';
+
+  label.textContent = task.label;
+  elapsed.textContent = active
+    ? fmtElapsed(task.startedAt)
+    : `耗時 ${fmtElapsed(task.startedAt, task.finishedAt)}`;
+
+  cancelBtn.hidden = !active;
+  dismissBtn.hidden = active;
+
+  const kindStr = task.kind ? ` · ${kindBadge(task.kind)}` : '';
+  meta.textContent = `📒 ${task.notebookTitle}${kindStr}`;
+
+  let progressText = task.message || '';
+  if (task.total > 0 && task.phase !== 'generate' && active) {
+    progressText = `${task.current}/${task.total} · ${progressText}`;
+  }
+  if (!active && (task.summary || task.error)) {
+    progressText = task.summary || task.error || '';
+  }
+  progress.textContent = progressText;
+}
+
+function updateEmptyState() {
+  if (taskRows.size === 0) {
+    if (!emptyStateEl.parentElement) taskListEl.appendChild(emptyStateEl);
+    emptyStateEl.hidden = false;
+  } else {
+    emptyStateEl.hidden = true;
+  }
+}
+
+function updateGlobalCancelVisibility() {
+  let activeCount = 0;
+  for (const { task } of taskRows.values()) {
+    if (isActivePhase(task.phase)) activeCount += 1;
+  }
+  cancelAllBtn.hidden = activeCount < 2;
+}
+
+async function loadTasks() {
+  const resp = await bgSend('list_tasks');
+  if (!resp.ok) return;
+  const tasks = resp.data || [];
+  // 由舊到新加入（內部 insertBefore firstChild 會自動讓最新的在最上面）
+  for (const task of tasks.sort((a, b) => a.startedAt - b.startedAt)) {
+    upsertTaskRow(task);
+  }
+}
+
+// 每秒更新 elapsed（只對 active task）
+setInterval(() => {
+  for (const { rowEl, task } of taskRows.values()) {
+    if (isActivePhase(task.phase)) {
+      rowEl.querySelector('.task-elapsed').textContent = fmtElapsed(task.startedAt);
     }
-    setStatus(head, 'run', body);
-    disableButtons(true);
-    return;
   }
+}, 1000);
 
-  // 已完成
-  if (state.phase === 'done') {
-    const elapsed = state.finishedAt && state.startedAt
-      ? fmtElapsed(state.startedAt).replace(/^/, '耗時 ')
-      : '';
-    const headIcon = state.ok ? '✅' : '❌';
-    setStatus(
-      `${headIcon} [${state.label}] ${state.ok ? '完成' : '失敗'}${elapsed ? ` · ${elapsed.replace('已 ', '')}` : ''}`,
-      state.ok ? 'ok' : 'err',
-      state.message || state.error || '',
-    );
-    disableButtons(false);
-    return;
-  }
-
-  // 其他/未知狀態
-  setStatus('👋 選擇 notebook 後點按鈕開始', 'run', '');
-  disableButtons(false);
-}
-
-async function loadInitialRunState() {
-  const resp = await bgSend('get_last_run');
-  const state = resp.ok ? resp.data : null;
-  // 太舊（>30 分鐘）的 done 狀態就不顯示了，避免混淆
-  if (state && state.phase === 'done' && state.finishedAt && Date.now() - state.finishedAt > 30 * 60 * 1000) {
-    renderRunState(null);
-    return;
-  }
-  renderRunState(state);
-}
-
-// 訂閱 progress 廣播（popup 開著時即時刷新）
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.action === 'progress' && msg.state) {
-    renderRunState(msg.state);
+  if (msg?.action === 'task_update' && msg.task) {
+    upsertTaskRow(msg.task);
+  } else if (msg?.action === 'task_remove' && msg.taskId) {
+    removeTaskRow(msg.taskId);
   }
 });
 
-// 進行中時每秒更新「已 Xs」計時
-let _tickTimer = null;
-function startTick() {
-  if (_tickTimer) return;
-  _tickTimer = setInterval(async () => {
-    const resp = await bgSend('get_last_run');
-    if (!resp.ok || !resp.data) return;
-    if (ACTIVE_PHASES.has(resp.data.phase)) {
-      renderRunState(resp.data);
-    } else {
-      stopTick();
-    }
-  }, 1000);
-}
-function stopTick() {
-  if (_tickTimer) { clearInterval(_tickTimer); _tickTimer = null; }
-}
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.action === 'progress' && msg.state) {
-    if (ACTIVE_PHASES.has(msg.state.phase)) startTick(); else stopTick();
-  }
-});
+// ── 動作（每個都即發即返，task 在背景跑）─────────────────────────────
 
-// ── 動作 ──────────────────────────────────────────────────────────────
+function requireNotebook() {
+  const id = getNotebookId();
+  if (!id) {
+    showToast('請先在上方下拉選一個筆記本', 'err');
+    return null;
+  }
+  return id;
+}
+
+async function startTask(action, payload, errMsg) {
+  const resp = await bgSend(action, payload);
+  if (!resp.ok) {
+    showToast(errMsg + '：' + (resp.error || ''), 'err');
+    return false;
+  }
+  return true;
+}
+
+async function handleImportCurrent() {
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
+  await rememberKind();
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) throw new Error('找不到目前頁面 URL（可能是 chrome:// 內部頁）');
+    if (!/^https?:\/\//i.test(tab.url)) {
+      throw new Error(`不支援此 URL 類型：${tab.url.slice(0, 60)}`);
+    }
+    await startTask('import_urls', { notebookId, urls: [tab.url] }, '開啟匯入任務失敗');
+  } catch (e) {
+    showToast(String(e?.message || e), 'err');
+  }
+}
 
 async function handleImport() {
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
   await rememberKind();
-  setStatus('讀取剪貼簿…', 'run');
-  disableButtons(true);
   try {
     const urls = await readClipboardUrls();
     if (urls.length === 0) {
-      setStatus('剪貼簿沒有 URL', 'err', '請先複製含 URL 的文字到剪貼簿');
-      disableButtons(false);
+      showToast('剪貼簿沒有 URL，請先複製含 URL 的文字', 'err');
       return;
     }
-    startTick();
-    const resp = await bgSend('import_urls', { kind: getKind(), urls });
-    if (!resp.ok) throw new Error(resp.error);
-    // 完成狀態由 progress 廣播 + finishRun 處理，這裡不主動覆蓋
+    await startTask('import_urls', { notebookId, urls }, '開啟匯入任務失敗');
   } catch (e) {
-    setStatus(`❌ ${e?.message || e}`, 'err');
-    disableButtons(false);
-  } finally {
-    stopTick();
+    showToast(String(e?.message || e), 'err');
   }
 }
 
 async function handleClear() {
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
+  const nbTitle = selectEl.options[selectEl.selectedIndex]?.textContent || notebookId;
+  if (!confirm(`確定要清空「${nbTitle}」內所有非 [SKILL] sources？`)) return;
   await rememberKind();
-  const kind = getKind();
-  if (!confirm(`確定要清空 ${kind === 'yt' ? 'YouTube' : '新聞'} notebook 內所有非 [SKILL] sources？`)) return;
-  setStatus('準備清空…', 'run');
-  disableButtons(true);
-  try {
-    startTick();
-    const resp = await bgSend('clear_sources', { kind });
-    if (!resp.ok) throw new Error(resp.error);
-  } catch (e) {
-    setStatus(`❌ ${e?.message || e}`, 'err');
-    disableButtons(false);
-  } finally {
-    stopTick();
-  }
+  await startTask('clear_sources', { notebookId }, '開啟清空任務失敗');
 }
 
 async function handleGenerate() {
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
   await rememberKind();
-  setStatus('準備產生…', 'run', '可以關閉 popup，完成後會跳桌面通知；重開 popup 也能看到進度');
-  disableButtons(true);
-  try {
-    startTick();
-    const resp = await bgSend('generate_report', { kind: getKind() });
-    if (!resp.ok) throw new Error(resp.error);
-  } catch (e) {
-    setStatus(`❌ ${e?.message || e}`, 'err');
-    disableButtons(false);
-  } finally {
-    stopTick();
-  }
+  await startTask('generate_report', {
+    notebookId,
+    kind: getKind(),
+    customPrompt: getSelectedPromptContent(),
+  }, '開啟分析任務失敗');
 }
 
 async function handleCombined() {
-  await rememberKind();
-  const kind = getKind();
-  if (!confirm(`一鍵流程：\n1️⃣ 清空 ${kind === 'yt' ? 'YouTube' : '新聞'} notebook 內所有非 [SKILL] sources\n2️⃣ 匯入剪貼簿 URL（請先複製好）\n3️⃣ 產生分析報告並推送 VM\n\n總時間最久 5 分鐘，要繼續嗎？`)) return;
-  setStatus('讀取剪貼簿…', 'run');
-  disableButtons(true);
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
+  // 先讀剪貼簿（popup 此時有 focus，clipboard API 才允許讀取）
+  // 必須在 confirm() 之前，因為 confirm 彈出後 document 暫時失去 focus
+  let urls;
   try {
-    const urls = await readClipboardUrls();
+    urls = await readClipboardUrls();
     if (urls.length === 0) {
-      setStatus('剪貼簿沒有 URL', 'err', '請先複製含 URL 的文字到剪貼簿');
-      disableButtons(false);
+      showToast('剪貼簿沒有 URL，請先複製含 URL 的文字', 'err');
       return;
     }
-    startTick();
-    const resp = await bgSend('run_combined', { kind, urls });
-    if (!resp.ok) throw new Error(resp.error);
   } catch (e) {
-    setStatus(`❌ ${e?.message || e}`, 'err');
-    disableButtons(false);
-  } finally {
-    stopTick();
+    showToast(String(e?.message || e), 'err');
+    return;
   }
+  const nbTitle = selectEl.options[selectEl.selectedIndex]?.textContent || notebookId;
+  if (!confirm(`一鍵流程（在「${nbTitle}」）：\n1️⃣ 清空所有非 [SKILL] sources\n2️⃣ 匯入 ${urls.length} 個 URL\n3️⃣ 產生分析報告並推送 VM\n\n要繼續嗎？`)) return;
+  await rememberKind();
+  try {
+    await startTask('run_combined', {
+      notebookId,
+      kind: getKind(),
+      customPrompt: getSelectedPromptContent(),
+      urls,
+    }, '開啟一鍵流程失敗');
+  } catch (e) {
+    showToast(String(e?.message || e), 'err');
+  }
+}
+
+async function handleOpenNotebook() {
+  const notebookId = requireNotebook();
+  if (!notebookId) return;
+  await bgSend('open_notebook', { notebookId });
+}
+
+async function handleCreateNotebook() {
+  const title = prompt('新筆記本名稱：', `新筆記本 ${new Date().toLocaleDateString('zh-TW')}`);
+  if (title === null) return;
+  if (!title.trim()) { showToast('名稱不能空白', 'err'); return; }
+  showToast('建立筆記本中…', 'info');
+  const resp = await bgSend('create_notebook', { title: title.trim() });
+  if (!resp.ok) { showToast('建立失敗：' + resp.error, 'err'); return; }
+  showToast(`✅ 已建立「${resp.data.title}」`, 'info');
+  await chrome.storage.local.set({ lastNotebookId: resp.data.id });
+  await loadNotebooks({ forceRefresh: true });
+}
+
+async function handleRefreshNotebooks() {
+  await loadNotebooks({ forceRefresh: true });
+}
+
+async function handleCancelAll() {
+  const resp = await bgSend('cancel_all_tasks');
+  if (resp.ok) showToast(`已對 ${resp.count || 0} 個任務送取消`, 'info');
 }
 
 // ── 綁定 ──────────────────────────────────────────────────────────────
 
+$('#btn-import-current').addEventListener('click', handleImportCurrent);
 $('#btn-import').addEventListener('click', handleImport);
 $('#btn-clear').addEventListener('click', handleClear);
 $('#btn-generate').addEventListener('click', handleGenerate);
 $('#btn-combined').addEventListener('click', handleCombined);
+$('#btn-open-notebook').addEventListener('click', handleOpenNotebook);
+$('#btn-create-notebook').addEventListener('click', handleCreateNotebook);
+$('#btn-refresh-notebooks').addEventListener('click', handleRefreshNotebooks);
+$('#btn-cancel-all').addEventListener('click', handleCancelAll);
 $('#open-options').addEventListener('click', openOptions);
-document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener('change', rememberKind));
+$('#btn-prompt-settings').addEventListener('click', togglePromptPanel);
+$('#pp-close').addEventListener('click', closePromptPanel);
+$('#pp-backdrop').addEventListener('click', closePromptPanel);
+$('#pp-add-btn').addEventListener('click', addNewPrompt);
+selectEl.addEventListener('change', rememberNotebook);
+document.querySelectorAll('input[name="kind"]').forEach((r) => {
+  r.addEventListener('change', rememberKind);
+});
+
+// 清掉 v0.5.0 那一版錯誤 parse 結果留下的舊 cache
+chrome.storage.local.remove('cachedNotebooks');
 
 restoreKind();
 checkConfig();
-loadInitialRunState();
+loadNotebooks();
+loadTasks();
+loadSavedPrompts().then(() => {
+  // 更新 ✏️ 按鈕的小圓點指示（有選取非預設提示詞時顯示）
+  $('#btn-prompt-settings').classList.toggle('has-selection', _selectedPromptId !== null);
+});
