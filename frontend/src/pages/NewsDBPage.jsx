@@ -548,6 +548,15 @@ export default function NewsDBPage() {
           <span className="text-xs text-dark-500">
             顯示 {total} 篇
           </span>
+          <select
+            value={pageSize}
+            onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+            className="input text-xs py-1 w-28"
+          >
+            {[10, 20, 50, 100, 200, 300].map(n => (
+              <option key={n} value={n}>每頁 {n} 篇</option>
+            ))}
+          </select>
         </div>
 
         <div className="flex flex-wrap gap-2 md:gap-3 items-center">
@@ -777,15 +786,6 @@ export default function NewsDBPage() {
               <button onClick={() => setPage(p => p + 1)}
                 disabled={(page + 1) * pageSize >= total}
                 className="btn-secondary text-sm">下一頁</button>
-              <select
-                value={pageSize}
-                onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                className="input text-xs py-1 w-28"
-              >
-                {[10, 20, 50, 100, 200].map(n => (
-                  <option key={n} value={n}>每頁 {n} 篇</option>
-                ))}
-              </select>
             </div>
           )}
         </div>

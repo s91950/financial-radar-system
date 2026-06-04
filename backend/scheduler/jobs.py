@@ -172,6 +172,18 @@ def start_scheduler(ws_manager):
         coalesce=True,
     )
 
+    # 新聞資料庫每日清理：保留近 3 個月；1~3 個月只留 critical/high
+    scheduler.add_job(
+        cleanup_old_news,
+        "cron",
+        hour=4,
+        minute=30,
+        id="old_news_cleanup",
+        name="新聞資料庫每日清理",
+        misfire_grace_time=3600,
+        coalesce=True,
+    )
+
     # LINE 彙整通知：台北時間 07:00 / 12:00 / 17:00 = UTC 23:00 / 04:00 / 09:00
     scheduler.add_job(
         line_critical_digest,
@@ -342,6 +354,69 @@ async def cleanup_raw_articles():
         _flog(f"[CLEANUP] raw_articles: 刪除 {deleted} 筆 7 天前資料")
     except Exception as e:
         logger.warning(f"raw_articles cleanup failed: {e}")
+    finally:
+        db.close()
+
+
+async def cleanup_old_news():
+    """每日清理 articles 表，控制新聞資料庫大小（避免新聞 DB 頁面載入變慢）：
+
+    保留策略（以 fetched_at 為準）：
+    1. 超過 3 個月（90 天）的文章 → 全部刪除
+    2. 1～3 個月（30~90 天）之間的文章 → 只保留 critical / high，其餘（low / 無風險）刪除
+
+    嚴重度判定沿用 news_db 路由的邏輯：優先用掃描時存入的 `severity` 欄位，
+    舊資料（severity=NULL）fallback 以關鍵字比對（_CRITICAL_KWS / _HIGH_KWS）。
+    """
+    from sqlalchemy import text, or_, not_
+    from backend.database import Article
+    from backend.routers.news_db import _CRITICAL_KWS, _HIGH_KWS, _kw_filter
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        cutoff_1m = now - timedelta(days=30)
+        cutoff_3m = now - timedelta(days=90)
+
+        # 1) 超過 3 個月：全刪
+        deleted_old = (
+            db.query(Article)
+            .filter(Article.fetched_at < cutoff_3m)
+            .delete(synchronize_session=False)
+        )
+
+        # 2) 1~3 個月：刪掉非 critical/high（即 low / medium / 無關鍵字命中的 NULL）
+        not_high_or_critical = or_(
+            Article.severity == 'low',
+            Article.severity == 'medium',
+            (Article.severity == None)
+            & not_(_kw_filter(_CRITICAL_KWS))
+            & not_(_kw_filter(_HIGH_KWS)),
+        )
+        deleted_mid = (
+            db.query(Article)
+            .filter(
+                Article.fetched_at >= cutoff_3m,
+                Article.fetched_at < cutoff_1m,
+                not_high_or_critical,
+            )
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+        try:
+            db.execute(text("PRAGMA incremental_vacuum"))
+            db.commit()
+        except Exception:
+            pass
+
+        logger.info(
+            f"old_news cleanup: deleted {deleted_old} (>3mo) + {deleted_mid} (1-3mo non-high)"
+        )
+        _flog(
+            f"[CLEANUP] articles: 刪除 {deleted_old} 筆(>3個月) + {deleted_mid} 筆(1~3個月非高風險)"
+        )
+    except Exception as e:
+        logger.warning(f"old_news cleanup failed: {e}")
     finally:
         db.close()
 
