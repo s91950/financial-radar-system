@@ -634,12 +634,25 @@ async function getAutoIntervalHours() {
 async function setupAutoAlarm() {
   const news = await getAutoKindConfig('news');
   const yt = await getAutoKindConfig('yt');
-  await chrome.alarms.clear(AUTO_YT_ALARM);
-  if (!news.enabled && !yt.enabled) return;
+  const existing = await chrome.alarms.get(AUTO_YT_ALARM);
+
+  if (!news.enabled && !yt.enabled) {
+    if (existing) await chrome.alarms.clear(AUTO_YT_ALARM);
+    return;
+  }
+
   const hours = await getAutoIntervalHours();
   // 下限 30 分鐘，避免設太短狂打 NLM / VM
   const minutes = Math.max(30, Math.round(hours * 60));
-  await chrome.alarms.create(AUTO_YT_ALARM, { periodInMinutes: minutes, delayInMinutes: 1 });
+
+  // ⚠ 關鍵：MV3 service worker 閒置就被殺、有事件再重啟，每次重啟都會重跑這支頂層 setup。
+  // 若每次都 clear+create（且 delay=1 分），排程會被反覆重設成「1 分鐘後再跑」→ 變成狂跑、
+  // 燒光 NotebookLM 每日產報告配額（症狀：常常自己跑、且報「API 沒回 artifact_id」）。
+  // 因此：只有在 alarm 不存在、或使用者改了間隔（週期不同）時才重建；否則保留現有排程不動。
+  if (existing && Math.abs((existing.periodInMinutes || 0) - minutes) < 0.01) return;
+
+  // 首次建立 / 間隔變更 → 第一次也等一個完整間隔再跑（要立刻跑請用「立即跑一次」按鈕）
+  await chrome.alarms.create(AUTO_YT_ALARM, { periodInMinutes: minutes, delayInMinutes: minutes });
 }
 
 // 單一 kind 的執行（不含 busy 鎖，鎖由 runAuto 持有）
