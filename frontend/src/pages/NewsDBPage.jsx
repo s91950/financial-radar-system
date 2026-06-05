@@ -82,6 +82,11 @@ export default function NewsDBPage() {
 
   // Reset to page 0 when pageSize or severity filter changes
   const handlePageSizeChange = (newSize) => { setPageSize(newSize); setPage(0) }
+  // 換頁後捲回頂部，方便瀏覽新一頁文章（参考一般新聞網站做法）
+  const goToPage = (updater) => {
+    setPage(updater)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
   const handleSeverityFilter = (v) => { setDbSeverityFilter(v); setPage(0); setSelectedDbIds(new Set()) }
 
   useEffect(() => {
@@ -778,12 +783,12 @@ export default function NewsDBPage() {
           {/* Pagination */}
           {total > 0 && (
             <div className="flex items-center justify-center gap-3 pt-4 flex-wrap">
-              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+              <button onClick={() => goToPage(p => Math.max(0, p - 1))} disabled={page === 0}
                 className="btn-secondary text-sm">上一頁</button>
               <span className="text-sm text-dark-400">
                 第 {page + 1} / {Math.ceil(total / pageSize)} 頁
               </span>
-              <button onClick={() => setPage(p => p + 1)}
+              <button onClick={() => goToPage(p => p + 1)}
                 disabled={(page + 1) * pageSize >= total}
                 className="btn-secondary text-sm">下一頁</button>
             </div>
