@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
-**2026-06-05 — Extension v0.7.0：定時自動 YouTube 分析（瀏覽器活 session，免 notebooklm login）**：
+**2026-06-05 — Extension v0.7.x：定時自動分析（新聞 + YT，瀏覽器活 session，免 notebooklm login）**：
 - 痛點：NLM hourly（`notebooklm_hourly.py`）靠無頭 cookie，Google 一直讓它過期 → 自 5/8 停擺。解法是改用「活著的瀏覽器 session」，正是 Extension 的強項（直接吃瀏覽器既有 NotebookLM cookies）。
-- [background.js](extension/background.js)：新增 `AUTO_YT_ALARM` 排程 + `runAutoYt(trigger)` + `setupAutoYtAlarm()`。alarm 喚醒 SW → 抓 VM `GET /api/youtube/videos?new_only=true` → 用 `autoYtAnalyzedIds` 本機去重 → 對指定 notebook 跑 `runCombinedForTask`（清空→匯入→產報告→推 `extension-report` kind=yt）→ 成功才記去重 id。`storage.onChanged` 監看 enable/interval 改動重建 alarm。`_autoYtRunning` 防重入。間隔下限 30 分。
-- [options.html](extension/options.html) / [options.js](extension/options.js)：新增「⏰ 定時自動 YouTube 分析」區塊：啟用開關、間隔小時、notebook 下拉（list_notebooks）、立即執行一次、重置去重、即時狀態。新 message：`get_auto_yt_status` / `run_auto_yt_now` / `reset_auto_yt_dedup`。
-- **與三路並存**：NLM hourly（📺 NLM YouTube，需 login，仍可用）、VM Gemini YT（📺 Gemini YouTube，最穩備援）、本自動路徑（→ 🧩 Extension YT）。報告進「分析結果 → 🧩 Extension YT」。前提：Chrome 開著 + 已在某分頁登入 NotebookLM（不需 `notebooklm login` CLI）。
+- [background.js](extension/background.js)：`AUTO_YT_ALARM` 排程（新聞+YT 共用）+ `runAuto(kinds, trigger)` / `_runAutoOne(kind, trigger)` / `setupAutoAlarm()` / `AUTO_FETCHERS{news,yt}`。alarm 喚醒 SW → 依序跑啟用的 kind（news 先 yt 後，`_autoBusy` 單鎖防並發）→ 各自抓 VM（news: `GET /api/news/articles?limit=60` 去重 key=source_url；yt: `GET /api/youtube/videos?new_only=true` 去重 key=video_id）→ 本機去重 → 對該 kind 指定 notebook 跑 `runCombinedForTask`（清空→匯入→產報告→推 `extension-report` kind=news|yt）→ generateOk 才記去重。間隔下限 30 分；`storage.onChanged` 監看 enable/interval 重建 alarm。
+- [options.html](extension/options.html) / [options.js](extension/options.js)：「⏰ 定時自動分析（新聞 + YT）」區塊：共用間隔 + 新聞/YT 各自啟用開關、notebook 下拉、立即跑一次、重置去重、即時狀態。新 message：`get_auto_status` / `run_auto_now{kind?}` / `reset_auto_dedup{kind}`。**提示詞顯示**：options 載入時用 `get_settings` 把實際生效的新聞/YT 提示詞（含內建預設）填進 textarea 供檢視編輯。
+- **與三路並存**：NLM hourly（📺 NLM，需 login）、VM Gemini（📺 Gemini，最穩備援）、本自動路徑（→ 🧩 Extension 新聞 / 🧩 Extension YT）。前提：Chrome 開著 + 已在某分頁登入 NotebookLM（不需 `notebooklm login` CLI）。
 
 **2026-05-21 — LINE 分析指令改回 Extension；Extension 匯入 bug 修正**：
 - [line_webhook.py](backend/routers/line_webhook.py)：「分析」/「yt分析」指令從讀 `SystemConfig["nlm_latest_report"]` 改為查 `NlmReport` 表最新 `extension_manual` 記錄（`[news]`/`[yt]` 前綴區分），新增 `_get_latest_extension_report(db, kind)` helper
@@ -649,8 +649,8 @@ MV3 Chrome 擴充功能，仿照「NotebookLM 網頁匯入器」UIUX（淺色介
 - `savedPrompts`：使用者儲存的提示詞收藏 `[{id, name, content}]`
 - `selectedPromptId`：目前選用的提示詞 ID（`null` = 用 options 預設）
 - `vmBaseUrl`、`apiToken`、`newsPrompt`、`ytPrompt`、`nonePrompt`、`skipVmPush`：在 options.html 設定
-- `autoYtEnabled`、`autoYtIntervalHours`、`autoYtNotebookId`、`autoYtNotebookTitle`：**v0.7 定時自動 YT 分析**設定（options.html）
-- `autoYtAnalyzedIds`（最近 500 個已分析 video_id，去重用）、`autoYtLastRun`、`autoYtLastResult`：自動 YT 分析執行狀態
+- **v0.7 定時自動分析（新聞 + YT）**設定（options.html）：`autoIntervalHours`（共用間隔，向後相容舊 `autoYtIntervalHours`）；新聞 `autoNewsEnabled`/`autoNewsNotebookId`/`autoNewsNotebookTitle`、YT `autoYtEnabled`/`autoYtNotebookId`/`autoYtNotebookTitle`
+- 自動分析執行狀態 / 去重：新聞 `autoNewsAnalyzedKeys`（去重 key = source_url）/`autoNewsLastRun`/`autoNewsLastResult`、YT `autoYtAnalyzedIds`（去重 key = video_id）/`autoYtLastRun`/`autoYtLastResult`（皆保留最近 500 筆）
 
 **v0.4 → v0.5 重大變更**：
 - **動態 notebook 下拉**取代固定「新聞 / YT radio」：popup 開啟時呼 `list_notebooks` 透過 NLM `LIST_NOTEBOOKS` RPC（`wXbhsf`）拉所有 notebooks，記憶 `lastNotebookId` 在 `chrome.storage.local`，下次開啟自動選回。先用 `cachedNotebooks` 渲染、背景 refresh 拉新清單，避免每次開 popup 空白等 1-2 秒
