@@ -608,10 +608,11 @@ export default function RadarPage({ wsSubscribe }) {
                       {articleLines.length > 0 && (
                         <div className="mt-1.5 space-y-0.5">
                           {(() => {
-                            const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                            const visibleLines = orderByMode(filterSeverity !== 'all'
-                              ? numberedLines.filter(l => l.severity === filterSeverity)
-                              : numberedLines)
+                            // 先按風險排序，再編號（風險最高 = 1）
+                            const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
+                            const visibleLines = filterSeverity !== 'all'
+                              ? orderedLines.filter(l => l.severity === filterSeverity)
+                              : orderedLines
                             const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
                             let kwCount = 0
                             return (
@@ -669,10 +670,11 @@ export default function RadarPage({ wsSubscribe }) {
                     {articleLines.length > 0 && (
                       <div className="mt-1.5 space-y-0.5">
                         {(() => {
-                          const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                          const visibleLines = orderByMode(filterSeverity !== 'all'
-                            ? numberedLines.filter(l => l.severity === filterSeverity)
-                            : numberedLines)
+                          // 先按風險排序，再編號（風險最高 = 1）
+                          const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
+                          const visibleLines = filterSeverity !== 'all'
+                            ? orderedLines.filter(l => l.severity === filterSeverity)
+                            : orderedLines
                           const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
                           return (
                             <>
@@ -706,13 +708,14 @@ export default function RadarPage({ wsSubscribe }) {
 
                       {/* Source URLs with checkboxes and copy buttons */}
                       {alert.source_urls && alert.source_urls.length > 0 && (() => {
-                        const allUrls = alert.source_urls.map((u, idx) => ({ ...parseSourceUrl(u), num: idx + 1 }))
+                        // 先按風險排序，再編號（風險最高 = 1），與卡片內新聞列表一致
+                        const allUrls = orderByMode(alert.source_urls.map(parseSourceUrl))
+                          .map((p, idx) => ({ ...p, num: idx + 1 }))
                         let displayUrls = allUrls
                         if (filterSeverity !== 'all') {
                           const filtered = allUrls.filter(u => u.severity === filterSeverity)
                           displayUrls = filtered.length > 0 ? filtered : allUrls
                         }
-                        displayUrls = orderByMode(displayUrls)
                         if (displayUrls.length === 0) return null;
 
                         return (

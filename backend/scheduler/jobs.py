@@ -1126,6 +1126,13 @@ async def _radar_scan_inner(force: bool = False):
         matched = match_positions_to_news(positions, new_articles) if positions else []
         exposure_summary = format_exposure_summary(matched) if matched else ""
 
+        # 依風險程度排序（critical→high→low），讓標題取風險最高的一篇、
+        # content / source_urls 也以風險序寫入（前端編號 1) 即風險最高）。
+        # 穩定排序：同風險維持原收集順序。
+        new_articles.sort(
+            key=lambda a: _SEVERITY_ORDER.get(_article_severity(a), 0), reverse=True
+        )
+
         # Build title
         first_title = new_articles[0].get("title", "").strip()
         if len(new_articles) == 1:
