@@ -108,6 +108,20 @@ export default function RadarPage({ wsSubscribe }) {
       (a, b) => (SEVERITY_RANK[b.severity] ?? -1) - (SEVERITY_RANK[a.severity] ?? -1)
     )
 
+  // 卡片標題一律顯示 [N 則]（N = 卡片內新聞數）。
+  // 舊告警標題可能帶 [手動]/[N 則相關]/[N 主題 / N 則]，先剝掉再以實際則數重組（idempotent）。
+  const formatAlertTitle = (alert, count) => {
+    let t = (alert.title || '').trim()
+    let forced = ''
+    const fm = t.match(/^\[手動\]\s*/)
+    if (fm) { forced = '[手動] '; t = t.slice(fm[0].length) }
+    t = t
+      .replace(/^\[\d+\s*則相關\]\s*/, '')
+      .replace(/^\[\d+\s*主題\s*\/\s*\d+\s*則\]\s*/, '')
+      .replace(/^\[\d+\s*則\]\s*/, '')
+    return `${forced}[${count} 則] ${t}`
+  }
+
   // Client-side filter & sort
   let displayAlerts = alerts
   if (filterSaved) {
@@ -604,16 +618,16 @@ export default function RadarPage({ wsSubscribe }) {
                         {alert.type !== 'news' && severityBadge(alert.severity)}
                         {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
                       </div>
-                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.type === 'news' ? formatAlertTitle(alert, articleLines.length) : alert.title}</h4>
                       {articleLines.length > 0 && (
                         <div className="mt-1.5 space-y-0.5">
                           {(() => {
-                            // 先按風險排序，再編號（風險最高 = 1）
+                            // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
                             const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
                             const visibleLines = filterSeverity !== 'all'
                               ? orderedLines.filter(l => l.severity === filterSeverity)
                               : orderedLines
-                            const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
+                            const showLines = visibleLines
                             let kwCount = 0
                             return (
                               <>
@@ -633,9 +647,6 @@ export default function RadarPage({ wsSubscribe }) {
                                     </p>
                                   )
                                 })}
-                                {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
-                                  <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
-                                )}
                               </>
                             )
                           })()}
@@ -666,16 +677,16 @@ export default function RadarPage({ wsSubscribe }) {
 
                   {/* 手機版：標題全寬 + 文章列表（關鍵字標籤限2個） */}
                   <div className="min-w-0 sm:hidden">
-                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.type === 'news' ? formatAlertTitle(alert, articleLines.length) : alert.title}</h4>
                     {articleLines.length > 0 && (
                       <div className="mt-1.5 space-y-0.5">
                         {(() => {
-                          // 先按風險排序，再編號（風險最高 = 1）
+                          // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
                           const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
                           const visibleLines = filterSeverity !== 'all'
                             ? orderedLines.filter(l => l.severity === filterSeverity)
                             : orderedLines
-                          const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
+                          const showLines = visibleLines
                           return (
                             <>
                               {showLines.map((line, i) => (
@@ -685,9 +696,6 @@ export default function RadarPage({ wsSubscribe }) {
                                   <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
                                 </p>
                               ))}
-                              {selectedAlert?.id !== alert.id && visibleLines.length > 3 && (
-                                <p className="text-xs text-dark-500">...共 {visibleLines.length} 則</p>
-                              )}
                             </>
                           )
                         })()}

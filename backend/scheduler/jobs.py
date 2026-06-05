@@ -1133,14 +1133,9 @@ async def _radar_scan_inner(force: bool = False):
             key=lambda a: _SEVERITY_ORDER.get(_article_severity(a), 0), reverse=True
         )
 
-        # Build title
+        # Build title：一律 [N 則]（含單則 [1 則]）
         first_title = new_articles[0].get("title", "").strip()
-        if len(new_articles) == 1:
-            alert_title = first_title
-        elif len(article_groups) == 1:
-            alert_title = f"[{len(new_articles)} 則相關] {first_title}"
-        else:
-            alert_title = f"[{len(article_groups)} 主題 / {len(new_articles)} 則] {first_title}"
+        alert_title = f"[{len(new_articles)} 則] {first_title}"
         if force:
             alert_title = f"[手動] {alert_title}"
 
