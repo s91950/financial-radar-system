@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "金融雷達 NotebookLM 助手",
-  "version": "0.6.3",
-  "description": "匯入網頁 / 剪貼簿 URL 至 NotebookLM（動態列出 / 建立筆記本，可同時對多個筆記本並行操作）、清空 sources（保留 [SKILL]）、產生分析報告並推送至金融雷達系統。每個任務可獨立取消。",
+  "version": "0.7.0",
+  "description": "匯入網頁 / 剪貼簿 URL 至 NotebookLM（動態列出 / 建立筆記本，可同時對多個筆記本並行操作）、清空 sources（保留 [SKILL]）、產生分析報告並推送至金融雷達系統。每個任務可獨立取消。v0.7：定時自動 YouTube 分析（用活著的瀏覽器 session 定期把系統新影片匯入 NLM 分析推回系統）。",
   "permissions": [
     "storage",
     "clipboardRead",

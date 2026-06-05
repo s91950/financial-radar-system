@@ -87,6 +87,44 @@
     <textarea id="nonePrompt" placeholder="留空 = NLM 內建預設"></textarea>
   </div>
 
+  <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;" />
+  <h1 style="font-size: 17px;">⏰ 定時自動 YouTube 分析</h1>
+  <p class="sub" style="margin-bottom: 16px;">
+    瀏覽器開著時，定期自動把「系統偵測到的新影片」匯入下方 notebook 分析、推回系統（分析結果 → 🧩 Extension YT）。
+    用的是你目前瀏覽器登入的 NotebookLM session，<b>不需要 notebooklm login、不會過期</b>。每輪會清空該 notebook 的非 [SKILL] sources、匯入新影片、產生報告。
+  </p>
+
+  <div class="field">
+    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal;">
+      <input id="autoYtEnabled" type="checkbox" style="width: auto; margin: 0;" />
+      <span><b>啟用定時自動 YT 分析</b></span>
+    </label>
+    <div class="hint">需保持 Chrome 開著（service worker 才會被 alarm 喚醒）。停用時排程會清除。</div>
+  </div>
+
+  <div class="field">
+    <label for="autoYtIntervalHours">執行間隔（小時）</label>
+    <div class="hint">每隔幾小時跑一次，下限 0.5 小時。建議 3（對齊系統影片偵測累積量）。</div>
+    <input id="autoYtIntervalHours" type="number" min="0.5" step="0.5" placeholder="3" />
+  </div>
+
+  <div class="field">
+    <label for="autoYtNotebookId">分析用 notebook</label>
+    <div class="hint">建議指定一個專用的 YT notebook（會被反覆清空＋重灌新影片）。清單來自你的 NotebookLM。</div>
+    <select id="autoYtNotebookId" style="width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px;">
+      <option value="">— 載入中… —</option>
+    </select>
+    <button id="refreshNotebooks" class="secondary" style="margin-top: 8px; margin-left: 0;">重新載入 notebook 清單</button>
+  </div>
+
+  <div class="field">
+    <button id="runAutoNow">立即執行一次</button>
+    <button id="resetDedup" class="secondary">重置「已分析」去重紀錄</button>
+    <div id="autoStatus" class="hint" style="margin-top: 10px;">—</div>
+  </div>
+
+  <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;" />
+
   <button id="save">儲存設定</button>
   <button id="reset" class="secondary">恢復預設提示詞</button>
 

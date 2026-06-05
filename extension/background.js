@@ -10,6 +10,9 @@ import { NotebookLMClient, extractUrlsFromText } from './lib/notebooklm.js';
 
 const SKILL_PREFIX = '[SKILL] ';
 const KEEPALIVE_ALARM = 'nlm-keepalive';
+// 定時自動 YT 分析：用活著的瀏覽器 session 定期把系統偵測到的新影片匯入 NLM 分析推回系統
+const AUTO_YT_ALARM = 'nlm-auto-yt';
+const AUTO_YT_MAX_ANALYZED_IDS = 500;
 const PER_URL_TIMEOUT_MS = 60_000;
 // PDF 需要 NLM 伺服器端同步下載整個檔案才回應，60s 通常不夠，給 90s。
 const PDF_TIMEOUT_MS = 90_000;
@@ -243,6 +246,9 @@ async function stopKeepalive() {
 
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === KEEPALIVE_ALARM) return;
+  if (a.name === AUTO_YT_ALARM) {
+    runAutoYt('alarm').catch(() => { /* runAutoYt 內已自行收尾 */ });
+  }
 });
 
 async function withKeepalive(fn) {
@@ -555,6 +561,136 @@ function runTaskInBackground(task, coreFn, onSuccess, errorTitle) {
   })();
 }
 
+// ── 定時自動 YT 分析 ─────────────────────────────────────────────────────
+// 用「活著的瀏覽器 session」定期跑：抓 VM 新影片 → 清空+匯入+產報告 → 推回系統。
+// 這樣完全不依賴 notebooklm-py 的無頭 cookie（會一直過期），跟使用者手動點 popup 同一條路。
+
+let _autoYtRunning = false;
+
+async function getAutoYtConfig() {
+  const data = await chrome.storage.local.get([
+    'autoYtEnabled', 'autoYtIntervalHours', 'autoYtNotebookId', 'autoYtNotebookTitle',
+    'autoYtAnalyzedIds', 'autoYtLastRun', 'autoYtLastResult',
+  ]);
+  return {
+    enabled: !!data.autoYtEnabled,
+    intervalHours: Number(data.autoYtIntervalHours) || 3,
+    notebookId: data.autoYtNotebookId || '',
+    notebookTitle: data.autoYtNotebookTitle || '',
+    analyzedIds: Array.isArray(data.autoYtAnalyzedIds) ? data.autoYtAnalyzedIds : [],
+    lastRun: data.autoYtLastRun || null,
+    lastResult: data.autoYtLastResult || null,
+  };
+}
+
+async function setupAutoYtAlarm() {
+  const cfg = await getAutoYtConfig();
+  await chrome.alarms.clear(AUTO_YT_ALARM);
+  if (!cfg.enabled) return;
+  // 下限 30 分鐘，避免設太短狂打 NLM / VM
+  const minutes = Math.max(30, Math.round(cfg.intervalHours * 60));
+  await chrome.alarms.create(AUTO_YT_ALARM, { periodInMinutes: minutes, delayInMinutes: 1 });
+}
+
+async function fetchNewVideos(settings) {
+  const headers = {};
+  if (settings.apiToken) headers['X-API-Key'] = settings.apiToken;
+  const url = `${settings.vmBaseUrl}/api/youtube/videos?new_only=true&limit=50`;
+  const resp = await withTimeout(fetch(url, { headers }), 30_000, 'fetch videos');
+  if (!resp.ok) throw new Error(`抓影片失敗 HTTP ${resp.status}`);
+  const data = await resp.json();
+  return Array.isArray(data) ? data : [];
+}
+
+// 回傳 { ran:boolean, reason?, summary? }；trigger='alarm'|'manual'
+async function runAutoYt(trigger = 'alarm') {
+  if (_autoYtRunning) return { ran: false, reason: 'busy' };
+  const cfg = await getAutoYtConfig();
+  if (!cfg.enabled && trigger === 'alarm') return { ran: false, reason: 'disabled' };
+  if (!cfg.notebookId) {
+    if (trigger === 'manual') notify('⚠ 自動 YT 分析', '尚未在設定頁選擇要用的 notebook', 'err');
+    return { ran: false, reason: 'no-notebook' };
+  }
+
+  _autoYtRunning = true;
+  try {
+    const settings = await getSettings();
+    let videos;
+    try {
+      videos = await fetchNewVideos(settings);
+    } catch (e) {
+      await chrome.storage.local.set({ autoYtLastRun: Date.now(), autoYtLastResult: `❌ ${e.message}` });
+      if (trigger === 'manual') notify('❌ 自動 YT 分析', String(e.message), 'err');
+      return { ran: false, reason: 'fetch-failed', summary: String(e.message) };
+    }
+
+    const analyzed = new Set(cfg.analyzedIds);
+    const fresh = videos.filter((v) => {
+      const id = v.video_id || v.youtube_id || String(v.id || '');
+      return id && v.url && !analyzed.has(id);
+    });
+
+    if (fresh.length === 0) {
+      await chrome.storage.local.set({ autoYtLastRun: Date.now(), autoYtLastResult: '無新影片' });
+      if (trigger === 'manual') notify('✓ 自動 YT 分析', '目前沒有未分析的新影片', 'basic');
+      return { ran: false, reason: 'no-new', summary: '無新影片' };
+    }
+
+    const urls = fresh.map((v) => v.url);
+    const ids = fresh.map((v) => v.video_id || v.youtube_id || String(v.id));
+    const notebookTitle = cfg.notebookTitle || await getNotebookTitle(cfg.notebookId);
+
+    const task = await createTask(`⏰ 自動 YT 分析（${fresh.length} 部）`, {
+      notebookId: cfg.notebookId,
+      notebookTitle,
+      kind: 'yt',
+    });
+
+    try {
+      const data = await withKeepalive(() => runCombinedForTask(task, urls));
+      const generateOk = data.generate.skipped || data.generate.pushed;
+      const summary = fmtCombined(data);
+      await finishTask(task, { ok: generateOk, summary });
+      notify(
+        generateOk ? '✅ 自動 YT 分析完成' : '⚠ 自動 YT 分析有問題',
+        `${notebookTitle} · ${summary}`,
+        generateOk ? 'basic' : 'err',
+      );
+      // 推送成功（或純本機模式跳過）才記錄已分析，避免推送失敗時漏掉、下輪重試
+      if (generateOk) {
+        const merged = [...cfg.analyzedIds, ...ids].slice(-AUTO_YT_MAX_ANALYZED_IDS);
+        await chrome.storage.local.set({ autoYtAnalyzedIds: merged });
+      }
+      await chrome.storage.local.set({ autoYtLastRun: Date.now(), autoYtLastResult: summary });
+      return { ran: true, summary };
+    } catch (e) {
+      if (isCancelError(e)) {
+        await finishTask(task, { ok: false, cancelled: true, summary: '⛔ 已取消' });
+        await chrome.storage.local.set({ autoYtLastRun: Date.now(), autoYtLastResult: '⛔ 已取消' });
+        return { ran: false, reason: 'cancelled' };
+      }
+      const errMsg = String(e?.message || e);
+      await finishTask(task, { ok: false, error: errMsg, summary: `❌ ${errMsg}` });
+      await chrome.storage.local.set({ autoYtLastRun: Date.now(), autoYtLastResult: `❌ ${errMsg}` });
+      notify('❌ 自動 YT 分析失敗', `${notebookTitle} · ${errMsg.slice(0, 150)}`, 'err');
+      return { ran: false, reason: 'error', summary: errMsg };
+    }
+  } finally {
+    _autoYtRunning = false;
+  }
+}
+
+// 啟動時 + 設定變動時建立 / 更新排程
+setupAutoYtAlarm().catch(() => { /* ignore */ });
+chrome.runtime.onInstalled.addListener(() => { setupAutoYtAlarm().catch(() => {}); });
+chrome.runtime.onStartup?.addListener?.(() => { setupAutoYtAlarm().catch(() => {}); });
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if ('autoYtEnabled' in changes || 'autoYtIntervalHours' in changes) {
+    setupAutoYtAlarm().catch(() => {});
+  }
+});
+
 // ── Message router ─────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -606,6 +742,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       // ── Notebook 管理 ─────────────────────────────────────────────
+
+      // ── 定時自動 YT 分析 ──────────────────────────────────────────
+      if (msg?.action === 'get_auto_yt_status') {
+        const cfg = await getAutoYtConfig();
+        sendResponse({ ok: true, data: {
+          enabled: cfg.enabled,
+          intervalHours: cfg.intervalHours,
+          notebookId: cfg.notebookId,
+          notebookTitle: cfg.notebookTitle,
+          lastRun: cfg.lastRun,
+          lastResult: cfg.lastResult,
+          running: _autoYtRunning,
+          analyzedCount: cfg.analyzedIds.length,
+        } });
+        return;
+      }
+
+      if (msg?.action === 'run_auto_yt_now') {
+        // 立即手動觸發一次（不 await，背景跑；立刻回應）
+        sendResponse({ ok: true });
+        runAutoYt('manual').catch(() => {});
+        return;
+      }
+
+      if (msg?.action === 'reset_auto_yt_dedup') {
+        await chrome.storage.local.set({ autoYtAnalyzedIds: [] });
+        sendResponse({ ok: true });
+        return;
+      }
 
       if (msg?.action === 'list_notebooks') {
         try {

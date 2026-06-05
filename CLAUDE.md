@@ -6,36 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
+**2026-06-05 — Extension v0.7.0：定時自動 YouTube 分析（瀏覽器活 session，免 notebooklm login）**：
+- 痛點：NLM hourly（`notebooklm_hourly.py`）靠無頭 cookie，Google 一直讓它過期 → 自 5/8 停擺。解法是改用「活著的瀏覽器 session」，正是 Extension 的強項（直接吃瀏覽器既有 NotebookLM cookies）。
+- [background.js](extension/background.js)：新增 `AUTO_YT_ALARM` 排程 + `runAutoYt(trigger)` + `setupAutoYtAlarm()`。alarm 喚醒 SW → 抓 VM `GET /api/youtube/videos?new_only=true` → 用 `autoYtAnalyzedIds` 本機去重 → 對指定 notebook 跑 `runCombinedForTask`（清空→匯入→產報告→推 `extension-report` kind=yt）→ 成功才記去重 id。`storage.onChanged` 監看 enable/interval 改動重建 alarm。`_autoYtRunning` 防重入。間隔下限 30 分。
+- [options.html](extension/options.html) / [options.js](extension/options.js)：新增「⏰ 定時自動 YouTube 分析」區塊：啟用開關、間隔小時、notebook 下拉（list_notebooks）、立即執行一次、重置去重、即時狀態。新 message：`get_auto_yt_status` / `run_auto_yt_now` / `reset_auto_yt_dedup`。
+- **與三路並存**：NLM hourly（📺 NLM YouTube，需 login，仍可用）、VM Gemini YT（📺 Gemini YouTube，最穩備援）、本自動路徑（→ 🧩 Extension YT）。報告進「分析結果 → 🧩 Extension YT」。前提：Chrome 開著 + 已在某分頁登入 NotebookLM（不需 `notebooklm login` CLI）。
+
+**2026-05-21 — LINE 分析指令改回 Extension；Extension 匯入 bug 修正**：
+- [line_webhook.py](backend/routers/line_webhook.py)：「分析」/「yt分析」指令從讀 `SystemConfig["nlm_latest_report"]` 改為查 `NlmReport` 表最新 `extension_manual` 記錄（`[news]`/`[yt]` 前綴區分），新增 `_get_latest_extension_report(db, kind)` helper
+- [background.js](extension/background.js)：`PER_URL_TIMEOUT_MS` 30s → **60s**（World Bank 等政府網站同步抓取需更長等待，耗時剛好 30s 就是 timeout 觸發）
+- [popup.js](extension/popup.js)：`handleCombined()` 改為先讀剪貼簿再 `confirm()`，修正 `confirm()` 後 document 失焦導致 `clipboard.readText()` 拋 "Document is not focused" 的問題；確認訊息同時顯示解析到的 URL 數量
+
 **2026-05-19 — Extension v0.6.3：UI 全面改版 + PDF 超時修正 + 寬鬆匯入判定**：
-- **SVG 圖示系統**：popup.html 頂部加入 `<svg display:none>` 集中定義 13 個 symbol（`ic-settings` / `ic-external-link` / `ic-refresh` / `ic-ban` / `ic-news` / `ic-play` / `ic-edit` / `ic-pin` / `ic-file-plus` / `ic-download` / `ic-trash` / `ic-analyze` / `ic-zap`），所有按鈕從 emoji 改成 `<svg class="icon"><use href="#ic-xxx"/></svg>`（black/white stroke currentColor，深/淺色背景均適用）
-- **提示詞收藏側邊面板**（`#pp-panel`）：點 ✏️（`#btn-prompt-settings`）滑出 `position: fixed; right: 0` 的書籤式抽屜，可新增 / 刪除 / 展開預覽 / 複製到剪貼簿；選取後 popup 上的 ✏️ 按鈕右上角顯示紫點 `.has-selection::after` indicator。選取的提示詞 ID 存 `chrome.storage.local.selectedPromptId`；內容陣列存 `chrome.storage.local.savedPrompts: [{id, name, content}]`
-- **Kind chip 預設「不推送」**：chip 順序改為「🚫 不推送（預設）→ 📰 新聞 → 📺 YT」；`restoreKind()` 讀不到舊偏好時 default `'none'`
-- **批次操作三合一列**：匯入 / 清空 / 分析三顆按鈕合成一列 `actions-row3`（icon 上、文字下的 column flex）；一鍵按鈕獨立佔下一行
-- **寬鬆匯入判定**：`import_urls` task 成功標準從 `data.failed === 0` 改為 `data.succeeded > 0`（任一 URL 成功即算 ✅ + 加「含警告」）— 與一鍵流程一致；避免 80/81 成功卻顯示 ❌ 的誤報
-- **PDF 超時修正**：`isPdfUrl(url)` 偵測 `.pdf` 結尾 URL；PDF 用 `PDF_TIMEOUT_MS = 90_000`，一般網頁維持 30s；progress message 遇 PDF 顯示 `📄 PDF` 標記
+- **SVG 圖示系統**：popup.html 頂部 `<svg display:none>` 集中定義 13 個 symbol，所有按鈕從 emoji 改成 `<svg class="icon"><use href="#ic-xxx"/>` （black/white stroke currentColor，深/淺色背景均適用）
+- **提示詞收藏側邊面板**（`#pp-panel`）：點 ✏️（`#btn-prompt-settings`）滑出 `position: fixed; right: 0` 的書籤式抽屜；選取的提示詞 ID 存 `chrome.storage.local.selectedPromptId`；內容陣列存 `savedPrompts: [{id, name, content}]`
+- **Kind chip 預設「不推送」**；批次操作三合一列 `actions-row3`；寬鬆匯入判定 `succeeded > 0`；PDF 超時 `PDF_TIMEOUT_MS = 90_000`（一般網頁 60s）
 
 **2026-05-14 — RBAC 收緊 + LINE 群組彙整推送 + 多處 bug 修正**：
-- `ROLE_ORDER` guest 從 1（=regular）收回 0；guest 只能存取「未上鎖 endpoint」（雷達讀取、分析、新聞 GET、YouTube GET、`/api/news/fetch` 的 `gn_only` 模式）
-- [backend/main.py](backend/main.py) `news_db` / `youtube` 拿掉 router-level `require_regular`，改成個別 endpoint 自帶 `require_admin` / `require_regular`，讓 guest 能 GET
-- [news_db.py POST /fetch](backend/routers/news_db.py) 拆細認證：`gn_only` 訪客可用（只打 GN RSS）、`sources_only` 仍需 admin（會觸發大量 RSS / 網頁 / MOPS 爬蟲）
-- 前端 [services/api.js](frontend/src/services/api.js) 新增 `hasRole(minRole)` helper；RadarPage / NewsDBPage / AnalysisPage / YouTubePage 用 `isAdmin = hasRole('admin')` 包住所有 admin-only 按鈕（掃描 / 刪除 / 主動分析 / 抓取 / 儲存等），訪客直接看不到、不會撞 401
-- Sidebar：訪客側欄只剩 `/` `/news` `/analysis` `/youtube`；`/dashboard` 從訪客可見改為 requiresRole=regular
-- [hooks/useWebSocket.js](frontend/src/hooks/useWebSocket.js) 預設 URL 從寫死 `ws://localhost:8000/ws` 改成 `ws://${window.location.host}/ws`（生產 nginx 已有 `/ws` proxy）— 修正部署到 VM IP 時全員顯示「離線中」的問題
-- LINE webhook 加「ID」指令：回覆當前 source 的 group/room/user ID，方便取得群組 ID 設定 `LINE_TARGET_ID`
-- 新增 `line_critical_digest` 排程作業，cron `hour="23,4,9", minute=0` UTC（= 台北 07:00 / 12:00 / 17:00），推送上次推送以來的 critical 警報；SystemConfig `line_last_digest_at` 記錄基準時間。沿用 `send_line_broadcast`，`LINE_TARGET_ID` 設為群組 ID 時只推該群組
-- [news_db.py:120-127](backend/routers/news_db.py#L120-L127) `fetched_after` tz bug：cutoff 帶 tz 時先轉成 naive UTC 再比，否則 SQLite 字串比較會把「TW 00:00-08:00 抓的、UTC 是昨日的文章」整批排除（這就是 Google Sheets `pullFromVM` 早上 08:00 前看不到當日資料的根因）
-- Sidebar 排序：`/reports` `/dashboard` 移到 `/analysis` 之後、`/feedback` 之前
-- SearchPage 首次載入後自動展開第一個主題
-
-**2026-05-08 ~ 05-09 — 全棧帳號系統 + RBAC 一波到位**（細節保留供未來追溯）：
-- 引入 [backend/auth.py](backend/auth.py) 三模式（JWT / Service Key / Legacy API_TOKEN）；[backend/security.py](backend/security.py) bcrypt + JWT helpers
-- 新增 `User` + `ServiceApiKey` models、`/api/auth` `/api/users` `/api/service-keys` 三 router
-- Owner bootstrap：`OWNER_USERNAME` + `OWNER_PASSWORD` 在 users 表空時自動建
-- 前端：`LoginPage` / `AuthGate`（取代原 TokenGate）/ `UsersPage` / `ServiceKeysPage`
-- **過期 JWT 視同 guest**：`_try_jwt` 不 raise，讓訪客體驗不被 token 失效打斷
-- axios interceptor：只在「**帶了 Bearer 卻 401**」（token 失效）才廣播 `auth-required` 彈登入；沒帶 Bearer 的 401（訪客撞 admin endpoint）+ 所有 403（角色不夠）都靜默
-- 訪客背景 fetch 防呆：guest-accessible 頁面（RadarPage、DashboardPage）的 useEffect 開頭 `if (!getCurrentUser()) return`，避免訪客一進首頁就被 admin endpoint 401 推進登入彈窗
-- 同日資安：[backend/services/url_safety.py](backend/services/url_safety.py) SSRF 防禦、LINE webhook fail-closed、`/api/utils/resolve-stored-urls` 加 60 秒重入鎖、NLM/Extension report POST 加 Pydantic 5 MB 上限、CORS 僅在 `ENVIRONMENT != production` 啟用
+- `ROLE_ORDER` guest 從 1 收回 0；`news_db` / `youtube` router 拿掉 router-level dep，改個別 endpoint 自帶 auth 讓 guest 能 GET
+- LINE webhook 加「ID」指令；新增 `line_critical_digest` 排程（台北 07/12/17 彙整 critical 到群組）
+- WebSocket URL 改動態 `${window.location.host}/ws`（修全員「離線中」）；`fetched_after` tz bug 修正（GAS pullFromVM 早上 08:00 前看不到當日資料根因）
 
 **目前 VM 狀態速覽**：
 - Owner / admin / regular 帳號已建；Service Keys：`hourly_script`（admin，給本機 NLM 排程）、`Chrome Extension`（admin，給瀏覽器 extension）
@@ -483,11 +473,11 @@ Bot only responds to specific commands — all other messages are silently ignor
 | Input pattern | Response |
 |---------------|----------|
 | `ID`（大小寫不拘）| 回覆當前 event source 的類型與 ID（`groupId` / `roomId` / `userId`），方便取得群組 ID 設定 `LINE_TARGET_ID` |
-| `分析` / any text containing `分析` | Latest NotebookLM **news** analysis report from `SystemConfig["nlm_latest_report"]` |
+| `分析` / any text containing `分析` | Latest **Extension** news analysis report（`NlmReport` 表最新 `extension_manual` + `[news]` 前綴，via `_get_latest_extension_report(db, "news")`） |
 | `通知` | Unread critical news alerts since last query (updates `line_last_reply_at`) |
 | `通知1天` / `通知今日` / `通知3小時` | Critical news from that time range |
 | `yt` / `YT` / `yt通知` | Unread YouTube videos since last query (updates `line_last_yt_reply_at`) |
-| `yt分析` | Latest NotebookLM **YouTube** analysis report from `SystemConfig["nlm_yt_latest_report"]` |
+| `yt分析` | Latest **Extension** YouTube analysis report（`NlmReport` 表最新 `extension_manual` + `[yt]` 前綴） |
 | `yt1天` / `yt今日` / `yt3小時` | YouTube videos from that time range |
 | `來源` / `健檢` (text containing `來源`) | 來源健康狀態：超過閾值未成功的來源清單（`_build_health_reply`） |
 | anything else | no reply |
@@ -549,9 +539,12 @@ Copy `.env.example` to `.env`. Key variables:
 - `NEWS_API_KEY` — For NewsAPI headline fetching
 - `LINE_CHANNEL_ACCESS_TOKEN` + `LINE_CHANNEL_SECRET` — LINE Bot webhook (passive reply, free). `LINE_TARGET_ID` left empty disables active push while keeping passive reply active.
 - `LINE_NOTIFY_TOKEN` — Legacy LINE Notify (deprecated, use Messaging API instead)
-- `GOOGLE_APPS_SCRIPT_URL` — Preferred method for Google Sheets write (GAS Web App)
+- `GOOGLE_APPS_SCRIPT_URL` — Preferred method for Google Sheets write (GAS Web App). **VM-only**；local `.env` 留空，避免 local dev 把資料推到 Sheets
 - `GOOGLE_SHEETS_CREDENTIALS_FILE` + `GOOGLE_SHEETS_SPREADSHEET_ID` — Legacy method (Service Account JSON)
-- `RADAR_INTERVAL_MINUTES`, `MARKET_CHECK_INTERVAL_MINUTES` — Scheduler timing (fixed-interval, not post-completion)
+- `GOOGLE_SHEETS_POSITION_SHEET` / `GOOGLE_SHEETS_NEWS_SHEET` — 工作表名稱（預設 `positions` / `news_archive`）
+- `RADAR_INTERVAL_MINUTES` — 雷達掃描間隔（預設 5；同時存於 `SystemConfig["radar_interval_minutes"]`，重啟時從 DB 讀取覆蓋 env）
+- `MARKET_CHECK_INTERVAL_MINUTES` — 市場監控間隔（預設 60）
+- `NEWS_SCHEDULE_HOUR` / `NEWS_SCHEDULE_MINUTE` — 每日新聞排程執行時間（VM 為 UTC，預設 2:00 UTC = 台北 10:00）
 - `JWT_SECRET` — JWT 簽章密鑰（必填，啟動 owner 帳號功能必備）。產生：`python -c "import secrets; print(secrets.token_urlsafe(64))"`
 - `JWT_EXPIRE_HOURS` — JWT 有效期（預設 24）
 - `OWNER_USERNAME` / `OWNER_PASSWORD` — 首次啟動 bootstrap owner 帳號用；建好後可清空
@@ -656,6 +649,8 @@ MV3 Chrome 擴充功能，仿照「NotebookLM 網頁匯入器」UIUX（淺色介
 - `savedPrompts`：使用者儲存的提示詞收藏 `[{id, name, content}]`
 - `selectedPromptId`：目前選用的提示詞 ID（`null` = 用 options 預設）
 - `vmBaseUrl`、`apiToken`、`newsPrompt`、`ytPrompt`、`nonePrompt`、`skipVmPush`：在 options.html 設定
+- `autoYtEnabled`、`autoYtIntervalHours`、`autoYtNotebookId`、`autoYtNotebookTitle`：**v0.7 定時自動 YT 分析**設定（options.html）
+- `autoYtAnalyzedIds`（最近 500 個已分析 video_id，去重用）、`autoYtLastRun`、`autoYtLastResult`：自動 YT 分析執行狀態
 
 **v0.4 → v0.5 重大變更**：
 - **動態 notebook 下拉**取代固定「新聞 / YT radio」：popup 開啟時呼 `list_notebooks` 透過 NLM `LIST_NOTEBOOKS` RPC（`wXbhsf`）拉所有 notebooks，記憶 `lastNotebookId` 在 `chrome.storage.local`，下次開啟自動選回。先用 `cachedNotebooks` 渲染、背景 refresh 拉新清單，避免每次開 popup 空白等 1-2 秒
@@ -699,7 +694,7 @@ chrome.alarms.create('nlm-keepalive', { periodInMinutes: 0.4 })  // 每 24 秒�
 搭配 `withKeepalive(fn)` wrapper：每個長操作開始前 startKeepalive、結束後 stopKeepalive；引用計數讓巢狀（一鍵流程內呼三個動作）也安全。
 
 **配套保險**：
-- 每個 URL 包 `withTimeout(promise, 30_000)`，單個卡死的 URL 不會凍結整批
+- 每個 URL 包 `withTimeout(promise, PER_URL_TIMEOUT_MS)`（目前 **60s**，PDF 用 `PDF_TIMEOUT_MS=90s`），單個卡死的 URL 不會凍結整批
 - v0.5.2 之前：連續呼叫之間 sleep 300ms 避免 rate limiting；**v0.5.3 改 worker pool 並行**：`IMPORT_CONCURRENCY=3`、`CLEAR_CONCURRENCY=5`，N 個 worker 從共享 `nextIndex` 取下個 URL 處理，沒有 sleep（worker 之間自然錯開）。實測 116 URL 從 ~2 分鐘 → ~30 秒（~4x 加速）。Cancel 仍可隨時生效 — worker 開頭 `if (_cancelRequested) return`，外層 `Promise.all` 收完所有 worker 後 `checkCancel()` 統一拋 CancelError 走「已取消」路徑
 
 ### 多任務並行（v0.6.0+）
@@ -761,7 +756,7 @@ chrome.alarms.create('nlm-keepalive', { periodInMinutes: 0.4 })  // 每 24 秒�
 
 ### PDF 匯入 timeout — 90s
 
-`addUrlSource` RPC 是同步的：NLM 伺服器在回傳之前會先 HTTP 抓取並初始驗證該 URL 的內容。一般網頁只需讀 `<head>` 幾秒，但 PDF 要下載整個檔案再完成驗證，常超過 30 秒。`background.js` 新增 `isPdfUrl(url)`（偵測 `.pdf` 結尾）和 `PDF_TIMEOUT_MS = 90_000`；`importUrlsToTask` worker 自動依 URL 類型切換 timeout，不需呼叫方感知。若以後遇到其他慢 URL 類型（如大型 PPTX），套用相同模式新增類型判斷 + 對應常數。
+`addUrlSource` RPC 是同步的：NLM 伺服器在回傳之前會先 HTTP 抓取並初始驗證該 URL 的內容。一般網頁用 `PER_URL_TIMEOUT_MS = 60_000`（60s，World Bank 等政府網站頁面複雜，30s 不夠）；PDF 另用 `PDF_TIMEOUT_MS = 90_000`（NLM 需下載整個檔案）。`background.js` 的 `isPdfUrl(url)` 偵測 `.pdf` 結尾；`importUrlsToTask` worker 自動切換，不需呼叫方感知。若以後遇到其他慢 URL 類型（如大型 PPTX），套用相同模式新增類型判斷 + 對應常數。
 
 ### `skipVmPush` 設計（給沒有自架 VM 的使用者用）
 
