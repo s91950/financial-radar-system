@@ -17,6 +17,7 @@ export default function RadarPage({ wsSubscribe }) {
   const [filterUnread, setFilterUnread] = useState(false)
   const [filterSaved, setFilterSaved] = useState(false)
   const [sortOrder, setSortOrder] = useState('desc')
+  const [lineSortMode, setLineSortMode] = useState('time')  // 卡片內新聞排序：'time'（收集序）/ 'severity'（風險優先）
   const [filterKeyword, setFilterKeyword] = useState('')
   const [copiedUrl, setCopiedUrl] = useState(null)
   // Source URL selection (global across all alerts)
@@ -98,6 +99,16 @@ export default function RadarPage({ wsSubscribe }) {
         kw: extractMatchedKw(rawKw),
       }
     })
+  }
+
+  // 卡片內新聞「風險優先」排序：critical > high > medium > low > 無等級
+  // 傳入的物件需已帶原始 num（顯示編號維持原序，只重排顯示順序，URL 對應隨物件一起走不會錯位）
+  const SEVERITY_RANK = { critical: 3, high: 2, medium: 1, low: 0 }
+  const orderByMode = (items) => {
+    if (lineSortMode !== 'severity') return items
+    return [...items].sort(
+      (a, b) => (SEVERITY_RANK[b.severity] ?? -1) - (SEVERITY_RANK[a.severity] ?? -1)
+    )
   }
 
   // Client-side filter & sort
@@ -444,10 +455,21 @@ export default function RadarPage({ wsSubscribe }) {
             </button>
           )}
 
-          {/* Sort */}
+          {/* Sort：卡片之間依時間 */}
           <button onClick={() => setSortOrder(v => v === 'desc' ? 'asc' : 'desc')}
             className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500 transition-colors">
             {sortOrder === 'desc' ? '↓ 最新' : '↑ 最舊'}
+          </button>
+
+          {/* Sort：卡片內新聞依風險 / 時間 */}
+          <button onClick={() => setLineSortMode(v => v === 'severity' ? 'time' : 'severity')}
+            title="卡片內新聞排序方式（依風險程度 / 依收集時間）"
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              lineSortMode === 'severity'
+                ? 'bg-red-500/15 text-red-300 border-red-500/40'
+                : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+            }`}>
+            {lineSortMode === 'severity' ? '⚠ 風險優先' : '🕘 依時間'}
           </button>
 
           {/* Keyword search */}
@@ -601,9 +623,9 @@ export default function RadarPage({ wsSubscribe }) {
                         <div className="mt-1.5 space-y-0.5">
                           {(() => {
                             const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                            const visibleLines = filterSeverity !== 'all'
+                            const visibleLines = orderByMode(filterSeverity !== 'all'
                               ? numberedLines.filter(l => l.severity === filterSeverity)
-                              : numberedLines
+                              : numberedLines)
                             const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
                             let kwCount = 0
                             return (
@@ -662,9 +684,9 @@ export default function RadarPage({ wsSubscribe }) {
                       <div className="mt-1.5 space-y-0.5">
                         {(() => {
                           const numberedLines = articleLines.map((l, idx) => ({ ...l, num: idx + 1 }))
-                          const visibleLines = filterSeverity !== 'all'
+                          const visibleLines = orderByMode(filterSeverity !== 'all'
                             ? numberedLines.filter(l => l.severity === filterSeverity)
-                            : numberedLines
+                            : numberedLines)
                           const showLines = selectedAlert?.id === alert.id ? visibleLines : visibleLines.slice(0, 3)
                           return (
                             <>
@@ -704,6 +726,7 @@ export default function RadarPage({ wsSubscribe }) {
                           const filtered = allUrls.filter(u => u.severity === filterSeverity)
                           displayUrls = filtered.length > 0 ? filtered : allUrls
                         }
+                        displayUrls = orderByMode(displayUrls)
                         if (displayUrls.length === 0) return null;
 
                         return (
