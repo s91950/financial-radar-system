@@ -5,7 +5,7 @@
 import urllib.request, urllib.error, json, ssl
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-BASE = "http://34.23.154.194"
+BASE = "http://35.231.159.224"
 
 def get_sources():
     with urllib.request.urlopen(f"{BASE}/api/settings/sources", timeout=10) as r:

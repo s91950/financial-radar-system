@@ -8,7 +8,7 @@
 | 機型 | e2-micro（2 vCPU, 1GB RAM） |
 | 地區 | us-east1-d（美國東部） |
 | OS | Ubuntu 22.04 LTS |
-| 公開 IP | 34.23.154.194 |
+| 公開 IP | 35.231.159.224 |
 | 費用 | 永久免費（Always Free 方案） |
 
 ## 免費額度說明

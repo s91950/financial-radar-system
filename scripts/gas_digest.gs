@@ -17,7 +17,7 @@
  *
  * ─────────────────────────────────────────
  * 指令碼屬性（「專案設定」→「指令碼屬性」）：
- *   VM_API_URL    = http://34.23.154.194     ← VM 公開 IP（無尾斜線）
+ *   VM_API_URL    = http://35.231.159.224     ← VM 公開 IP（無尾斜線）
  *   GEMINI_API_KEY = ...                     ← 選用（hourlyDigest 用）
  *   LINE_TOKEN     = ...                     ← 選用（hourlyDigest 用）
  *   LINE_TARGET_ID = ...                     ← 選用（hourlyDigest 用）

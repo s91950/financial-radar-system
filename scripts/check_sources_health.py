@@ -5,7 +5,7 @@
 
 使用方法：
   python scripts/check_sources_health.py                    # 讀本地 DB
-  python scripts/check_sources_health.py http://34.23.154.194  # 從 VM API 取來源清單
+  python scripts/check_sources_health.py http://35.231.159.224  # 從 VM API 取來源清單
   python scripts/check_sources_health.py --active-only       # 只檢查啟用的來源
   python scripts/check_sources_health.py -v                  # 顯示樣本標題
 

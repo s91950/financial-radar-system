@@ -53,7 +53,7 @@ async function getSettings() {
     'vmBaseUrl', 'apiToken', 'newsPrompt', 'ytPrompt', 'nonePrompt', 'skipVmPush',
   ]);
   return {
-    vmBaseUrl: (data.vmBaseUrl || 'http://34.23.154.194').replace(/\/$/, ''),
+    vmBaseUrl: (data.vmBaseUrl || 'http://35.231.159.224').replace(/\/$/, ''),
     apiToken: data.apiToken || '',
     newsPrompt: data.newsPrompt || DEFAULT_NEWS_PROMPT,
     ytPrompt: data.ytPrompt || DEFAULT_YT_PROMPT,

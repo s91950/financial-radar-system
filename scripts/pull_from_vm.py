@@ -4,7 +4,7 @@
 VM 上的設定為最新版本，本地端以 VM 為準。
 
 使用方法：
-  python scripts/pull_from_vm.py http://34.23.154.194
+  python scripts/pull_from_vm.py http://35.231.159.224
   python scripts/pull_from_vm.py  # 使用 .env.local 中的 API_BASE_URL
 
 同步項目：

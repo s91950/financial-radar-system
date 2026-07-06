@@ -6,7 +6,7 @@
 |------|------|------|--------|
 | `http://localhost:5173` | 本機開發 | 前端開發伺服器 | 本機開著才有效 |
 | `http://localhost:8000` | 本機開發 | 後端 API | 本機開著才有效 |
-| `http://34.23.154.194` | 雲端（正式） | 系統主網頁 | 永久固定 |
+| `http://35.231.159.224` | 雲端（正式） | 系統主網頁 | 永久固定 |
 | `https://donate-collections-smooth-educational.trycloudflare.com` | 雲端（HTTPS 通道） | LINE Webhook 專用 | VM 重啟後會變 |
 
 ---
@@ -31,7 +31,7 @@
 
 ### 雲端正式環境
 
-#### `http://34.23.154.194` ← 給使用者的主網址
+#### `http://35.231.159.224` ← 給使用者的主網址
 - **用途**：系統正式網頁介面
 - **伺服器**：Google Cloud VM（us-east1-d，美國）
 - **服務**：nginx 提供前端靜態檔案，並將 `/api/` 轉發到後端
@@ -54,7 +54,7 @@
 使用者瀏覽器
     │
     ▼
-http://34.23.154.194         ← 系統網頁入口
+http://35.231.159.224         ← 系統網頁入口
     │
     ▼
 Google Cloud VM（nginx）
@@ -80,7 +80,7 @@ Google Cloud VM（同一台）
 
 | 目前 | 升級後 |
 |------|--------|
-| `http://34.23.154.194` | `https://radar.example.com` |
+| `http://35.231.159.224` | `https://radar.example.com` |
 | `https://donate-...trycloudflare.com/api/line/webhook` | `https://radar.example.com/api/line/webhook` |
 
 兩個功能合一，使用者和 LINE 都用同一個網址，且支援 HTTPS。

@@ -30,7 +30,7 @@ async function load() {
     if (el) el.checked = !!data[f];
   }
   if (!document.getElementById('vmBaseUrl').value) {
-    document.getElementById('vmBaseUrl').value = 'http://34.23.154.194';
+    document.getElementById('vmBaseUrl').value = 'http://35.231.159.224';
   }
 
   // 提示詞：帶出目前「實際使用」的內容（含內建預設）讓使用者看得到、可編輯

@@ -12,7 +12,7 @@
   ],
   "host_permissions": [
     "https://notebooklm.google.com/*",
-    "http://34.23.154.194/*",
+    "http://35.231.159.224/*",
     "http://localhost:8000/*"
   ],
   "background": {

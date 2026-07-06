@@ -28,7 +28,7 @@
 需要填：
 - **新聞 notebook ID** — 從 `notebooklm.google.com/notebook/{ID}` 抓
 - **YouTube notebook ID** — 同上，建議用獨立 notebook 給 YT 影片
-- **VM API Base URL** — 預設 `http://34.23.154.194`，產生報告後會 POST 到 `{base}/api/radar/extension-report`
+- **VM API Base URL** — 預設 `http://35.231.159.224`，產生報告後會 POST 到 `{base}/api/radar/extension-report`
 - **新聞／YT 提示詞** — 留空使用內建預設（繁體中文、固定 3 點格式、最多 2 分類）
 
 ## 使用方式
