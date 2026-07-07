@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'react-hot-toast'
-import { radarAPI, resolveUrl, settingsAPI, copyToClipboard, getCurrentUser, hasRole } from '../services/api'
+import { radarAPI, resolveUrl, copyToClipboard, hasRole } from '../services/api'
 
 export default function RadarPage({ wsSubscribe }) {
   const [alerts, setAlerts] = useState([])
-  const [selectedAlert, setSelectedAlert] = useState(null)
-  const [analyzingId, setAnalyzingId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [scanResult, setScanResult] = useState(null)
-  const [aiLabel, setAiLabel] = useState('Gemini')
   const isAdmin = hasRole('admin')
 
   // Filter & sort state
@@ -18,18 +15,8 @@ export default function RadarPage({ wsSubscribe }) {
   const [filterSaved, setFilterSaved] = useState(false)
   const [sortOrder, setSortOrder] = useState('desc')
   const [filterKeyword, setFilterKeyword] = useState('')
-  const [copiedUrl, setCopiedUrl] = useState(null)
   // Source URL selection (global across all alerts)
   const [selectedSourceUrls, setSelectedSourceUrls] = useState(new Set())
-
-  useEffect(() => {
-    // 訪客（未登入）跳過：/settings/ai-model 是 admin-only，
-    // 訪客打會 401 觸發登入彈窗，破壞訪客體驗
-    if (!getCurrentUser()) return
-    settingsAPI.getAIModel().then(({ data }) => {
-      setAiLabel(data.model === 'gemini' ? 'Gemini' : 'Claude')
-    }).catch(() => {})
-  }, [])
 
   const loadAlerts = useCallback(async () => {
     try {
@@ -108,20 +95,6 @@ export default function RadarPage({ wsSubscribe }) {
       (a, b) => (SEVERITY_RANK[b.severity] ?? -1) - (SEVERITY_RANK[a.severity] ?? -1)
     )
 
-  // 卡片標題一律顯示 [N 則]（N = 卡片內新聞數）。
-  // 舊告警標題可能帶 [手動]/[N 則相關]/[N 主題 / N 則]，先剝掉再以實際則數重組（idempotent）。
-  const formatAlertTitle = (alert, count) => {
-    let t = (alert.title || '').trim()
-    let forced = ''
-    const fm = t.match(/^\[手動\]\s*/)
-    if (fm) { forced = '[手動] '; t = t.slice(fm[0].length) }
-    t = t
-      .replace(/^\[\d+\s*則相關\]\s*/, '')
-      .replace(/^\[\d+\s*主題\s*\/\s*\d+\s*則\]\s*/, '')
-      .replace(/^\[\d+\s*則\]\s*/, '')
-    return `${forced}[${count} 則] ${t}`
-  }
-
   // Client-side filter & sort
   let displayAlerts = alerts
   if (filterSaved) {
@@ -199,7 +172,6 @@ export default function RadarPage({ wsSubscribe }) {
     try {
       const { data } = await radarAPI.toggleSaveAlert(alertId)
       setAlerts(prev => prev.map(a => a.id === alertId ? { ...a, is_saved: data.is_saved } : a))
-      if (selectedAlert?.id === alertId) setSelectedAlert(prev => ({ ...prev, is_saved: data.is_saved }))
     } catch (err) {
       console.error('Failed to toggle save:', err)
     }
@@ -210,48 +182,9 @@ export default function RadarPage({ wsSubscribe }) {
     try {
       await radarAPI.deleteAlert(alertId)
       setAlerts(prev => prev.filter(a => a.id !== alertId))
-      if (selectedAlert?.id === alertId) setSelectedAlert(null)
     } catch (err) {
       console.error('Failed to delete alert:', err)
     }
-  }
-
-  const handleAnalyze = async (e, alert) => {
-    e.stopPropagation()
-    setAnalyzingId(alert.id)
-    try {
-      const { data } = await radarAPI.analyzeAlert(alert.id)
-      setAlerts(prev => prev.map(a => a.id === alert.id ? { ...a, analysis: data.analysis } : a))
-      if (selectedAlert?.id === alert.id) {
-        setSelectedAlert(prev => ({ ...prev, analysis: data.analysis }))
-      }
-    } catch (err) {
-      console.error('Failed to analyze alert:', err)
-    }
-    setAnalyzingId(null)
-  }
-
-  const handleCopyUrl = async (e, url) => {
-    e.stopPropagation()
-    try {
-      const finalUrl = await resolveUrl(url)
-      await copyToClipboard(finalUrl)
-      setCopiedUrl(url)
-      toast.success('已複製連結')
-      setTimeout(() => setCopiedUrl(null), 2000)
-    } catch (err) {
-      console.error('Copy failed:', err)
-    }
-  }
-
-  const handleToggleSourceUrl = (e, url) => {
-    e.stopPropagation()
-    setSelectedSourceUrls(prev => {
-      const next = new Set(prev)
-      if (next.has(url)) next.delete(url)
-      else next.add(url)
-      return next
-    })
   }
 
   const handleSelectAllFilteredUrls = () => {
@@ -297,7 +230,6 @@ export default function RadarPage({ wsSubscribe }) {
     try {
       await Promise.all(readAlerts.map(a => radarAPI.deleteAlert(a.id)))
       setAlerts(prev => prev.filter(a => !a.is_read))
-      if (selectedAlert && readAlerts.find(a => a.id === selectedAlert.id)) setSelectedAlert(null)
     } catch (err) {
       console.error(err)
     }
@@ -326,47 +258,6 @@ export default function RadarPage({ wsSubscribe }) {
       <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border font-medium whitespace-nowrap ${styles[severity] || ''}`}>
         {SEVERITY_LABELS[severity] || severity}
       </span>
-    )
-  }
-
-  const parseAnalysisSections = (text) => {
-    if (!text) return null
-    const sections = []
-    const regex = /【([^】]+)】\s*([\s\S]*?)(?=【|$)/g
-    let match
-    while ((match = regex.exec(text)) !== null) {
-      const content = match[2].trim()
-      if (content) sections.push({ title: match[1], content })
-    }
-    return sections.length ? sections : null
-  }
-
-  const sectionStyle = (title) => {
-    if (title.includes('摘要') || title.includes('發生')) {
-      return { box: 'bg-blue-500/10 border border-blue-500/20', heading: 'text-blue-400' }
-    }
-    if (title.includes('暴險') || title.includes('部位')) {
-      return { box: 'bg-yellow-500/10 border border-yellow-500/20', heading: 'text-yellow-400' }
-    }
-    return { box: 'bg-purple-500/10 border border-purple-500/20', heading: 'text-purple-400' }
-  }
-
-  const renderFollowUp = (content) => {
-    const parts = content.split(/\n|(?=樂觀情境[：:]|基本情境[：:]|悲觀情境[：:])/)
-      .map(s => s.replace(/^[•\-\s]+/, '').trim())
-      .filter(Boolean)
-    if (parts.length < 2) {
-      return <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{content}</p>
-    }
-    return (
-      <ul className="space-y-2">
-        {parts.map((item, i) => (
-          <li key={i} className="text-sm text-gray-300 flex gap-2 leading-relaxed">
-            <span className="text-purple-400 shrink-0 mt-0.5">•</span>
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
     )
   }
 
@@ -567,19 +458,22 @@ export default function RadarPage({ wsSubscribe }) {
             </div>
           ) : (
             displayAlerts.map(alert => {
-              const articleLines = splitArticleLines(alert.content)
+              const rawLines = splitArticleLines(alert.content)
+              // 標題點擊直達新聞：content 行與 source_urls 同源同序（後端以風險序寫入），
+              // 數量一致時逐行配對 URL；不一致（少數舊告警有缺 URL 的文章）該行退回純文字。
+              // URL 綁在行物件上一起參與風險排序，不會錯位。
+              const parsedUrls = (alert.source_urls || []).map(parseSourceUrl)
+              const articleLines = rawLines.length === parsedUrls.length
+                ? rawLines.map((l, i) => ({ ...l, url: parsedUrls[i].url }))
+                : rawLines
               return (
                 <div
                   key={alert.id}
-                  className={`card-hover cursor-pointer ${!alert.is_read ? 'border-l-4' : ''} ${
+                  className={`card-hover ${!alert.is_read ? 'border-l-4' : ''} ${
                     alert.severity === 'critical' ? 'border-l-red-500' :
                     alert.severity === 'high' ? 'border-l-orange-500' :
                     alert.severity === 'medium' ? 'border-l-yellow-500' : 'border-l-green-500'
                   }`}
-                  onClick={() => {
-                    setSelectedAlert(selectedAlert?.id === alert.id ? null : alert)
-                    if (!alert.is_read) handleMarkRead(alert)
-                  }}
                 >
                   {/* 手機版：日期+刪除獨立一行，標題全寬 */}
                   <div className="flex items-center justify-between gap-2 mb-1 sm:hidden">
@@ -618,9 +512,12 @@ export default function RadarPage({ wsSubscribe }) {
                         {alert.type !== 'news' && severityBadge(alert.severity)}
                         {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
                       </div>
-                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.type === 'news' ? formatAlertTitle(alert, articleLines.length) : alert.title}</h4>
+                      {/* 卡片不顯示大標題（新聞行本身就是內容）；非新聞類或無行可顯示時仍用告警標題 */}
+                      {(alert.type !== 'news' || articleLines.length === 0) && (
+                        <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                      )}
                       {articleLines.length > 0 && (
-                        <div className="mt-1.5 space-y-0.5">
+                        <div className="space-y-0.5">
                           {(() => {
                             // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
                             const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
@@ -638,7 +535,16 @@ export default function RadarPage({ wsSubscribe }) {
                                     <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
                                       {line.severity && lineSeverityBadge(line.severity)}
                                       <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                      <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                      {line.url ? (
+                                        <a href={line.url} target="_blank" rel="noopener noreferrer"
+                                          onClick={() => { if (!alert.is_read) handleMarkRead(alert) }}
+                                          title={line.url}
+                                          className="min-w-0 flex-1 line-clamp-2 text-gray-300 hover:text-primary-400 hover:underline">
+                                          {line.displayLine}
+                                        </a>
+                                      ) : (
+                                        <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                      )}
                                       {hasKw && kwCount <= 4 && (
                                         <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
                                           {line.kw}
@@ -675,11 +581,13 @@ export default function RadarPage({ wsSubscribe }) {
                     </div>
                   </div>
 
-                  {/* 手機版：標題全寬 + 文章列表（關鍵字標籤限2個） */}
+                  {/* 手機版：文章列表全寬（不顯示大標題） */}
                   <div className="min-w-0 sm:hidden">
-                    <h4 className="font-medium text-gray-200 line-clamp-2">{alert.type === 'news' ? formatAlertTitle(alert, articleLines.length) : alert.title}</h4>
+                    {(alert.type !== 'news' || articleLines.length === 0) && (
+                      <h4 className="font-medium text-gray-200 line-clamp-2">{alert.title}</h4>
+                    )}
                     {articleLines.length > 0 && (
-                      <div className="mt-1.5 space-y-0.5">
+                      <div className="space-y-0.5">
                         {(() => {
                           // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
                           const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
@@ -693,7 +601,15 @@ export default function RadarPage({ wsSubscribe }) {
                                 <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
                                   {line.severity && lineSeverityBadge(line.severity)}
                                   <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
-                                  <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                  {line.url ? (
+                                    <a href={line.url} target="_blank" rel="noopener noreferrer"
+                                      onClick={() => { if (!alert.is_read) handleMarkRead(alert) }}
+                                      className="min-w-0 flex-1 line-clamp-2 text-gray-300 active:text-primary-400">
+                                      {line.displayLine}
+                                    </a>
+                                  ) : (
+                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                  )}
                                 </p>
                               ))}
                             </>
@@ -703,188 +619,6 @@ export default function RadarPage({ wsSubscribe }) {
                     )}
                   </div>
 
-                  {/* Expanded Detail */}
-                  {selectedAlert?.id === alert.id && (
-                    <div className="mt-4 pt-4 border-t border-dark-700 space-y-3">
-                      {/* Exposure Summary */}
-                      {alert.exposure_summary && (
-                        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
-                          <h5 className="text-sm font-semibold text-yellow-400 mb-1">可能影響部位</h5>
-                          <pre className="text-sm text-gray-300 whitespace-pre-wrap">{alert.exposure_summary}</pre>
-                        </div>
-                      )}
-
-                      {/* Source URLs with checkboxes and copy buttons */}
-                      {alert.source_urls && alert.source_urls.length > 0 && (() => {
-                        // 先按風險排序，再編號（風險最高 = 1），與卡片內新聞列表一致
-                        const allUrls = orderByMode(alert.source_urls.map(parseSourceUrl))
-                          .map((p, idx) => ({ ...p, num: idx + 1 }))
-                        let displayUrls = allUrls
-                        if (filterSeverity !== 'all') {
-                          const filtered = allUrls.filter(u => u.severity === filterSeverity)
-                          displayUrls = filtered.length > 0 ? filtered : allUrls
-                        }
-                        if (displayUrls.length === 0) return null;
-
-                        return (
-                          <div>
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <h5 className="text-sm font-semibold text-dark-300">資料來源</h5>
-                              {/* Per-alert select-all — inline with title */}
-                              <label className="flex items-center gap-1 cursor-pointer select-none" onClick={(e) => e.stopPropagation()}>
-                                <input
-                                    type="checkbox"
-                                    checked={displayUrls.every(u => selectedSourceUrls.has(u.raw))}
-                                    onChange={(e) => {
-                                      e.stopPropagation()
-                                      if (e.target.checked) {
-                                        setSelectedSourceUrls(prev => {
-                                          const next = new Set(prev)
-                                          displayUrls.forEach(u => next.add(u.raw))
-                                          return next
-                                        })
-                                      } else {
-                                        setSelectedSourceUrls(prev => {
-                                          const next = new Set(prev)
-                                          displayUrls.forEach(u => next.delete(u.raw))
-                                          return next
-                                        })
-                                      }
-                                    }}
-                                    className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-3.5 h-3.5 cursor-pointer"
-                                  />
-                                  <span className="text-xs text-dark-500">全選此則</span>
-                              </label>
-                            </div>
-                            <div className="space-y-1.5">
-                              {displayUrls.map((parsed, i) => (
-                                <div key={i} className={`flex items-center gap-2 p-1 rounded transition-colors ${selectedSourceUrls.has(parsed.raw) ? 'bg-primary-600/10' : ''}`}>
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedSourceUrls.has(parsed.raw)}
-                                    onChange={(e) => handleToggleSourceUrl(e, parsed.raw)}
-                                    className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-4 h-4 shrink-0 cursor-pointer"
-                                  />
-                                  {parsed.severity && lineSeverityBadge(parsed.severity)}
-                                  <span className="shrink-0 text-xs text-dark-500 font-mono">{parsed.num})</span>
-                                  <a href={parsed.url} target="_blank" rel="noopener noreferrer"
-                                    onClick={(e) => e.stopPropagation()}
-                                    title={parsed.url}
-                                    className="text-xs text-primary-400 hover:underline break-all flex-1 line-clamp-1">
-                                    {parsed.url}
-                                  </a>
-                                  <button
-                                    onClick={(e) => handleCopyUrl(e, parsed.url)}
-                                    className="shrink-0 p-1.5 rounded text-dark-500 hover:text-primary-400 hover:bg-dark-700 transition-colors"
-                                    title="複製連結"
-                                  >
-                                    {copiedUrl === parsed.url ? (
-                                      <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                                      </svg>
-                                    ) : (
-                                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                          d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                      </svg>
-                                    )}
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )
-                      })()}
-
-                      {/* AI Analysis */}
-                      {alert.analysis ? (
-                        <div>
-                          <h5 className="text-sm font-semibold text-primary-400 mb-2">AI 分析</h5>
-                          {(() => {
-                            const sections = parseAnalysisSections(alert.analysis)
-                            if (sections) {
-                              return (
-                                <div className="space-y-2">
-                                  {sections.map(sec => {
-                                    const style = sectionStyle(sec.title)
-                                    return (
-                                      <div key={sec.title} className={`rounded-lg p-3 ${style.box}`}>
-                                        <h6 className={`text-xs font-bold mb-1.5 ${style.heading}`}>【{sec.title}】</h6>
-                                        {sec.title.includes('後續') ? renderFollowUp(sec.content) : (
-                                          <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{sec.content}</p>
-                                        )}
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                              )
-                            }
-                            return <p className="text-sm text-gray-300 whitespace-pre-wrap">{alert.analysis}</p>
-                          })()}
-                        </div>
-                      ) : isAdmin ? (
-                        <button
-                          onClick={(e) => handleAnalyze(e, alert)}
-                          disabled={analyzingId === alert.id}
-                          className="btn-primary text-sm flex items-center gap-2"
-                        >
-                          {analyzingId === alert.id ? (
-                            <>
-                              <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                              </svg>
-                              AI 分析中...
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
-                              </svg>
-                              AI 深度分析
-                              <span className="text-xs opacity-60 ml-1">[{aiLabel}]</span>
-                            </>
-                          )}
-                        </button>
-                      ) : (
-                        <p className="text-xs text-dark-500 italic">尚無 AI 分析</p>
-                      )}
-
-                      {/* Legacy source_url fallback */}
-                      {alert.source_url && !alert.source_urls?.length && (
-                        <div className={`flex items-center gap-2 p-1 rounded transition-colors ${selectedSourceUrls.has(alert.source_url) ? 'bg-primary-600/10' : ''}`}>
-                          <input
-                            type="checkbox"
-                            checked={selectedSourceUrls.has(alert.source_url)}
-                            onChange={(e) => handleToggleSourceUrl(e, alert.source_url)}
-                            className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-4 h-4 shrink-0 cursor-pointer"
-                          />
-                          <a href={alert.source_url} target="_blank" rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-xs text-primary-400 hover:underline break-all flex-1">
-                            查看原始來源
-                          </a>
-                          <button
-                            onClick={(e) => handleCopyUrl(e, alert.source_url)}
-                            className="shrink-0 p-1.5 rounded text-dark-500 hover:text-primary-400 hover:bg-dark-700 transition-colors"
-                            title="複製連結"
-                          >
-                            {copiedUrl === alert.source_url ? (
-                              <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                              </svg>
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
               )
             })
