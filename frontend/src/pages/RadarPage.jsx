@@ -15,6 +15,7 @@ export default function RadarPage({ wsSubscribe }) {
   const [filterSaved, setFilterSaved] = useState(false)
   const [sortOrder, setSortOrder] = useState('desc')
   const [filterKeyword, setFilterKeyword] = useState('')
+  const [copiedUrl, setCopiedUrl] = useState(null)
   // Source URL selection (global across all alerts)
   const [selectedSourceUrls, setSelectedSourceUrls] = useState(new Set())
 
@@ -185,6 +186,29 @@ export default function RadarPage({ wsSubscribe }) {
     } catch (err) {
       console.error('Failed to delete alert:', err)
     }
+  }
+
+  const handleCopyUrl = async (e, url) => {
+    e.stopPropagation()
+    try {
+      const finalUrl = await resolveUrl(url)
+      await copyToClipboard(finalUrl)
+      setCopiedUrl(url)
+      toast.success('已複製連結')
+      setTimeout(() => setCopiedUrl(null), 2000)
+    } catch (err) {
+      console.error('Copy failed:', err)
+    }
+  }
+
+  const handleToggleSourceUrl = (e, url) => {
+    e.stopPropagation()
+    setSelectedSourceUrls(prev => {
+      const next = new Set(prev)
+      if (next.has(url)) next.delete(url)
+      else next.add(url)
+      return next
+    })
   }
 
   const handleSelectAllFilteredUrls = () => {
@@ -368,8 +392,8 @@ export default function RadarPage({ wsSubscribe }) {
             placeholder="關鍵字篩選..."
             className="text-xs px-3 py-1.5 rounded-lg bg-dark-800 border border-dark-600 text-gray-300 placeholder-dark-500 w-full sm:w-36 focus:outline-none focus:border-primary-500/50" />
 
-          {/* Select all filtered URLs */}
-          {hasActiveFilter && displayAlerts.length > 0 && (
+          {/* Select all URLs（不再需要先套篩選條件） */}
+          {displayAlerts.length > 0 && (
             <button
               onClick={handleSelectAllFilteredUrls}
               className="text-xs px-2.5 py-1 rounded-full border bg-dark-800 text-dark-400 border-dark-600 hover:text-primary-400 hover:border-primary-500/40 transition-colors"
@@ -462,10 +486,23 @@ export default function RadarPage({ wsSubscribe }) {
               // 標題點擊直達新聞：content 行與 source_urls 同源同序（後端以風險序寫入），
               // 數量一致時逐行配對 URL；不一致（少數舊告警有缺 URL 的文章）該行退回純文字。
               // URL 綁在行物件上一起參與風險排序，不會錯位。
+              // rawUrl（含 {sev} 前綴的原始字串）是勾選/批次複製的 key，與「全選連結」共用同一套。
               const parsedUrls = (alert.source_urls || []).map(parseSourceUrl)
               const articleLines = rawLines.length === parsedUrls.length
-                ? rawLines.map((l, i) => ({ ...l, url: parsedUrls[i].url }))
+                ? rawLines.map((l, i) => ({ ...l, url: parsedUrls[i].url, rawUrl: parsedUrls[i].raw }))
                 : rawLines
+              // 此卡可勾選的行（套用嚴重度篩選後、且有 URL 的行），供「全選」checkbox 用
+              const selectableLines = (filterSeverity !== 'all'
+                ? articleLines.filter(l => l.severity === filterSeverity)
+                : articleLines).filter(l => l.rawUrl)
+              const cardSelectAll = (e) => {
+                const checked = e.target.checked
+                setSelectedSourceUrls(prev => {
+                  const next = new Set(prev)
+                  selectableLines.forEach(l => checked ? next.add(l.rawUrl) : next.delete(l.rawUrl))
+                  return next
+                })
+              }
               return (
                 <div
                   key={alert.id}
@@ -481,6 +518,17 @@ export default function RadarPage({ wsSubscribe }) {
                       <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
                       {alert.type !== 'news' && severityBadge(alert.severity)}
                       {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
+                      {selectableLines.length > 0 && (
+                        <label className="flex items-center gap-1 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={selectableLines.every(l => selectedSourceUrls.has(l.rawUrl))}
+                            onChange={cardSelectAll}
+                            className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-3.5 h-3.5 cursor-pointer"
+                          />
+                          <span className="text-xs text-dark-500">全選</span>
+                        </label>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-dark-500 whitespace-nowrap">
@@ -511,6 +559,17 @@ export default function RadarPage({ wsSubscribe }) {
                         <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
                         {alert.type !== 'news' && severityBadge(alert.severity)}
                         {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
+                        {selectableLines.length > 0 && (
+                          <label className="flex items-center gap-1 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={selectableLines.every(l => selectedSourceUrls.has(l.rawUrl))}
+                              onChange={cardSelectAll}
+                              className="rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-3.5 h-3.5 cursor-pointer"
+                            />
+                            <span className="text-xs text-dark-500">全選</span>
+                          </label>
+                        )}
                       </div>
                       {/* 卡片不顯示大標題（新聞行本身就是內容）；非新聞類或無行可顯示時仍用告警標題 */}
                       {(alert.type !== 'news' || articleLines.length === 0) && (
@@ -519,12 +578,11 @@ export default function RadarPage({ wsSubscribe }) {
                       {articleLines.length > 0 && (
                         <div className="space-y-0.5">
                           {(() => {
-                            // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
-                            const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
-                            const visibleLines = filterSeverity !== 'all'
+                            // 按風險排序（critical 最前）；一律全部顯示
+                            const orderedLines = orderByMode(articleLines)
+                            const showLines = filterSeverity !== 'all'
                               ? orderedLines.filter(l => l.severity === filterSeverity)
                               : orderedLines
-                            const showLines = visibleLines
                             let kwCount = 0
                             return (
                               <>
@@ -533,8 +591,15 @@ export default function RadarPage({ wsSubscribe }) {
                                   if (hasKw) kwCount++
                                   return (
                                     <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                      {line.rawUrl && (
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedSourceUrls.has(line.rawUrl)}
+                                          onChange={(e) => handleToggleSourceUrl(e, line.rawUrl)}
+                                          className="mt-0.5 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-3.5 h-3.5 shrink-0 cursor-pointer"
+                                        />
+                                      )}
                                       {line.severity && lineSeverityBadge(line.severity)}
-                                      <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
                                       {line.url ? (
                                         <a href={line.url} target="_blank" rel="noopener noreferrer"
                                           onClick={() => { if (!alert.is_read) handleMarkRead(alert) }}
@@ -549,6 +614,24 @@ export default function RadarPage({ wsSubscribe }) {
                                         <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
                                           {line.kw}
                                         </span>
+                                      )}
+                                      {line.url && (
+                                        <button
+                                          onClick={(e) => handleCopyUrl(e, line.url)}
+                                          className="shrink-0 p-0.5 rounded text-dark-500 hover:text-primary-400 hover:bg-dark-700 transition-colors"
+                                          title="複製連結"
+                                        >
+                                          {copiedUrl === line.url ? (
+                                            <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                                            </svg>
+                                          ) : (
+                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                            </svg>
+                                          )}
+                                        </button>
                                       )}
                                     </p>
                                   )
@@ -589,18 +672,24 @@ export default function RadarPage({ wsSubscribe }) {
                     {articleLines.length > 0 && (
                       <div className="space-y-0.5">
                         {(() => {
-                          // 先按風險排序，再編號（風險最高 = 1）；一律全部顯示
-                          const orderedLines = orderByMode(articleLines).map((l, idx) => ({ ...l, num: idx + 1 }))
-                          const visibleLines = filterSeverity !== 'all'
+                          // 按風險排序（critical 最前）；一律全部顯示
+                          const orderedLines = orderByMode(articleLines)
+                          const showLines = filterSeverity !== 'all'
                             ? orderedLines.filter(l => l.severity === filterSeverity)
                             : orderedLines
-                          const showLines = visibleLines
                           return (
                             <>
                               {showLines.map((line, i) => (
                                 <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
+                                  {line.rawUrl && (
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedSourceUrls.has(line.rawUrl)}
+                                      onChange={(e) => handleToggleSourceUrl(e, line.rawUrl)}
+                                      className="mt-0.5 rounded border-dark-600 bg-dark-800 text-primary-500 focus:ring-primary-500 w-4 h-4 shrink-0 cursor-pointer"
+                                    />
+                                  )}
                                   {line.severity && lineSeverityBadge(line.severity)}
-                                  <span className="shrink-0 text-xs text-dark-500 font-mono">{line.num})</span>
                                   {line.url ? (
                                     <a href={line.url} target="_blank" rel="noopener noreferrer"
                                       onClick={() => { if (!alert.is_read) handleMarkRead(alert) }}
@@ -609,6 +698,24 @@ export default function RadarPage({ wsSubscribe }) {
                                     </a>
                                   ) : (
                                     <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                  )}
+                                  {line.url && (
+                                    <button
+                                      onClick={(e) => handleCopyUrl(e, line.url)}
+                                      className="shrink-0 p-1 rounded text-dark-500 active:text-primary-400 transition-colors"
+                                      title="複製連結"
+                                    >
+                                      {copiedUrl === line.url ? (
+                                        <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                                        </svg>
+                                      ) : (
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                        </svg>
+                                      )}
+                                    </button>
                                   )}
                                 </p>
                               ))}
