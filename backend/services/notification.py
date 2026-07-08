@@ -170,7 +170,8 @@ async def send_email(
 
 
 _SEV_EMOJI = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
-_SEV_LABEL = {"critical": "緊急", "high": "高", "medium": "中", "low": "低"}
+# 三級顯示：critical→「高」、high/medium→「中」、low→「低」（資料值不變，僅改顯示文字）
+_SEV_LABEL = {"critical": "高", "high": "中", "medium": "中", "low": "低"}
 import re as _re
 
 

@@ -3,11 +3,12 @@ import { toast } from 'react-hot-toast'
 import { topicsAPI, resolveUrl, settingsAPI, copyToClipboard } from '../services/api'
 
 // --- Severity helpers ---
-const SEV_LABELS = { critical: '緊急', high: '高', medium: '中', low: '低' }
+// 三級顯示：critical→「高」（紅）、high→「中」（橘）、low→「低」（綠）；資料值不變，舊 medium 併入「中」樣式
+const SEV_LABELS = { critical: '高', high: '中', medium: '中', low: '低' }
 const SEV_STYLES = {
   critical: 'bg-red-500/20 text-red-400 border-red-500/30',
   high:     'bg-orange-500/20 text-orange-400 border-orange-500/30',
-  medium:   'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  medium:   'bg-orange-500/20 text-orange-400 border-orange-500/30',
   low:      'bg-green-500/20 text-green-400 border-green-500/30',
 }
 function SeverityBadge({ severity }) {
@@ -145,13 +146,13 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                           isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
                         }`}
-                      >緊急</button>
+                      >高</button>
                       <button
                         onClick={() => onAddToSeverity?.('high', t)}
                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                           isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
                         }`}
-                      >高</button>
+                      >中</button>
                     </div>
                   )}
                   <span
@@ -418,7 +419,7 @@ export default function SearchPage() {
     setSeverityKws(updated)
     try {
       await settingsAPI.updateSeverityKeywords({ critical: updated.critical, high: updated.high })
-      const label = level === 'critical' ? '緊急' : '高'
+      const label = level === 'critical' ? '高' : '中'
       const isAdd = level === 'critical' ? updated.critical.includes(keyword) : updated.high.includes(keyword)
       toast.success(isAdd ? `"${keyword}" 已標記為${label}風險` : `已移除 "${keyword}" 的${label}標記`)
     } catch {
@@ -523,7 +524,10 @@ export default function SearchPage() {
   // --- Compute filtered + sorted articles ---
   let displayArticles = topicData?.articles || []
   if (filterSeverity !== 'all') {
-    displayArticles = displayArticles.filter(a => a.severity === filterSeverity)
+    // 舊資料殘留的 medium 併入「中」（high）一起被篩到
+    displayArticles = displayArticles.filter(a =>
+      a.severity === filterSeverity || (filterSeverity === 'high' && a.severity === 'medium')
+    )
   }
   if (filterSource !== 'all') {
     displayArticles = displayArticles.filter(a => a.add_source === filterSource)
@@ -685,13 +689,13 @@ export default function SearchPage() {
                                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                                           isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
                                         }`}
-                                      >緊急</button>
+                                      >高</button>
                                       <button
                                         onClick={() => handleAddToSeverity('high', kw)}
                                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                                           isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
                                         }`}
-                                      >高</button>
+                                      >中</button>
                                     </div>
                                   )}
                                   <span
@@ -743,13 +747,13 @@ export default function SearchPage() {
                                                   className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                                                     isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
                                                   }`}
-                                                >緊急</button>
+                                                >高</button>
                                                 <button
                                                   onClick={() => handleAddToSeverity('high', t)}
                                                   className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                                                     isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
                                                   }`}
-                                                >高</button>
+                                                >中</button>
                                               </div>
                                             )}
                                             <span
@@ -898,10 +902,9 @@ export default function SearchPage() {
                 <div className="flex items-center gap-1">
                   {[
                     { v: 'all',      label: '全部風險' },
-                    { v: 'critical', label: '緊急', cls: 'text-red-400' },
-                    { v: 'high',     label: '高',   cls: 'text-orange-400' },
-                    { v: 'medium',   label: '中',   cls: 'text-yellow-400' },
-                    { v: 'low',      label: '低',   cls: 'text-green-400' },
+                    { v: 'critical', label: '高', cls: 'text-red-400' },
+                    { v: 'high',     label: '中', cls: 'text-orange-400' },
+                    { v: 'low',      label: '低', cls: 'text-green-400' },
                   ].map(({ v, label, cls }) => (
                     <button
                       key={v}

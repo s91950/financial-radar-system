@@ -4,8 +4,8 @@
 Reply API 完全免費，不計入每月 200 則 Messaging API 配額。
 
 支援指令：
-  通知          → 未讀緊急新聞警報（自上次查詢後）
-  通知 + 時間   → 指定時間範圍的緊急新聞（如：通知1天、通知今日、通知3小時）
+  通知          → 未讀高風險新聞警報（severity=critical，自上次查詢後）
+  通知 + 時間   → 指定時間範圍的高風險新聞（如：通知1天、通知今日、通知3小時）
   分析          → 最新 Extension 手動新聞分析報告
   yt / YT       → 未讀 YouTube 影片
   yt + 時間     → 指定時間範圍的 YouTube 影片（如：yt1天、yt今日、yt通知）
@@ -268,13 +268,13 @@ def _build_analysis_reply(
 
 
 def _build_news_reply(alerts: list, since: datetime | None, label: str | None = None) -> list[str]:
-    """格式化緊急新聞警報，回傳 LINE 多訊息清單（最多 5 則）。"""
+    """格式化高風險新聞警報（severity=critical），回傳 LINE 多訊息清單（最多 5 則）。"""
     if not alerts:
         if label:
-            return [f"過去 {label} 內沒有緊急警報。"]
+            return [f"過去 {label} 內沒有高風險警報。"]
         if since:
-            return [f"自 {_utc_to_local_str(since)} 起沒有新的緊急警報。"]
-        return ["目前沒有緊急警報。"]
+            return [f"自 {_utc_to_local_str(since)} 起沒有新的高風險警報。"]
+        return ["目前沒有高風險警報。"]
 
     seen_titles: set[str] = set()
     all_articles: list[tuple[str, str]] = []
@@ -286,10 +286,10 @@ def _build_news_reply(alerts: list, since: datetime | None, label: str | None = 
 
     total = len(all_articles)
     if label:
-        header = f"[過去 {label} {total} 則緊急新聞]"
+        header = f"[過去 {label} {total} 則高風險新聞]"
     else:
         since_str = _utc_to_local_str(since) if since else "–"
-        header = f"[{since_str} 後 {total} 則緊急新聞]"
+        header = f"[{since_str} 後 {total} 則高風險新聞]"
 
     messages: list[str] = []
     chunks = [all_articles[i:i + _ARTICLES_PER_MSG] for i in range(0, total, _ARTICLES_PER_MSG)]
@@ -355,7 +355,7 @@ async def line_webhook(request: Request):
 
     指令：
       分析        → 最新 Extension 手動新聞分析報告
-      通知        → 未讀緊急新聞
+      通知        → 未讀高風險新聞
       通知 + 時間  → 指定時間範圍新聞
       yt/YT       → 未讀 YouTube 影片
       yt + 時間   → 指定時間範圍 YouTube 影片

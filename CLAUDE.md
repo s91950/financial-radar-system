@@ -6,7 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
-**2026-06-08 — 雷達卡片：風險排序貫通 + 標題改 [N 則] + 一律全部顯示**（[jobs.py](backend/scheduler/jobs.py) + [RadarPage.jsx](frontend/src/pages/RadarPage.jsx)）：
+**2026-07-08 — 風險等級全系統改為三級顯示「高 / 中 / 低」＋雷達選取模式**（前端四頁 + backend 通知文字 + scripts，**資料值不變**）：
+- **命名轉換（僅顯示層）**：`critical`→顯示「高」（沿用紅色）、`high`→「中」（沿用橘色）、`low`→「低」（綠）；「緊急」一詞全面退場。DB / API / `Alert.content` 的 `{critical}` 前綴 / GAS Sheet 嚴重度欄的英文值**全部不動**，未來看到 UI「高」要對應到程式裡的 `critical`、UI「中」對應 `high`。
+- 改動位置：[RadarPage.jsx](frontend/src/pages/RadarPage.jsx)（pills 拿掉 medium、`SEVERITY_LABELS`、新增 `sevMatch()` 讓舊 medium 資料併入「中」篩選）、[NewsDBPage.jsx](frontend/src/pages/NewsDBPage.jsx)（`SEVERITY_CFG` + 兩組 pills）、[SearchPage.jsx](frontend/src/pages/SearchPage.jsx)（`SEV_LABELS` + 風險標記 picker + pills）、[SettingsPage.jsx](frontend/src/pages/SettingsPage.jsx)（布林規則、最低風險等級、GN 僅高風險、嚴重度關鍵字區、LINE 推播門檻）、[notification.py](backend/services/notification.py) `_SEV_LABEL`、[line_webhook.py](backend/routers/line_webhook.py)「通知」回覆改稱「高風險新聞」、`gas_digest.gs` / `perplexity_digest.py` 標籤（GAS 需手動重新部署才生效）。舊 medium 資料一律併入「中」（橘色）顯示與篩選。
+- **雷達選取模式**：篩選列新增「選取」切換鈕（在「全選連結」旁），開啟後卡片內勾選框才顯示；關閉時清空已選；「全選連結」點擊會自動開啟選取模式。
+
+**2026-07-07 — 雷達卡片再改版：移除大標題/展開功能，新聞標題變直達超連結**（[RadarPage.jsx](frontend/src/pages/RadarPage.jsx)，純前端）：
+- **拿掉卡片大標題**（`[N 則] 標題...`）與**移除編號 `1) 2)`**：卡片不再可點擊展開，直接是一份新聞清單；非 `news` 類型或無新聞行可顯示時仍 fallback 顯示 `alert.title`。
+- **新聞標題本身變成超連結**：`content` 行與 `source_urls` 同源同序（後端仍以風險序寫入），前端在**排序前**把 `parseSourceUrl(source_urls[i]).url` 逐行配對綁到該行物件上再一起排序，避免「風險重排後點第 3 則卻開到別篇」；兩陣列長度不一致時（少數缺 URL 的舊告警）整卡退回純文字不給點，寧可不能點也不開錯篇。
+- **勾選/複製/收藏功能改做在卡片行內**（取代原本只能在展開詳情面板操作）：每行新聞前有勾選框（key 用含 `{sev}` 前綴的 `source_urls` 原始字串，與篩選列「複製 N 個連結 / 收藏」批次流程共用同一個 `selectedSourceUrls` Set）、卡片 meta 列有「全選」（只勾套用嚴重度篩選後、有 URL 的行）、每行尾端有單行複製按鈕。篩選列「全選連結」按鈕不再需要先套篩選條件才出現。
+- **連帶移除的入口（其功能本身未刪，只是拿掉 RadarPage 側呼叫點）**：「AI 深度分析」按鈕（`POST /api/radar/alerts/{id}/analyze`）、「可能影響部位」`exposure_summary` 顯示區塊。**目前狀態**：`exposure_summary` 仍由 `_radar_scan_inner()` 照常計算並寫入 `Alert` 表，但整個前端已無任何頁面顯示它；`radarAPI.analyzeAlert()` 與 `searchAPI.analyzeTopic()` 這兩支 API client 方法目前在全部 `frontend/src/pages/*.jsx` 中都無呼叫端（純 backend 能力保留，UI 入口暫無）——修改「AI 分析」相關功能前務必先 grep 確認呼叫端是否存在，不要假設按鈕還在。
+
+**2026-06-08 — 雷達卡片：風險排序貫通 + 標題改 [N 則] + 一律全部顯示**（[jobs.py](backend/scheduler/jobs.py) + [RadarPage.jsx](frontend/src/pages/RadarPage.jsx)，**部分已被 2026-07-07 改版取代**：標題與編號已移除，風險排序邏輯仍適用於行內顯示順序）：
 - **卡片內新聞固定按風險排序** critical→high→medium→low（無等級墊底）。後端建立 Alert 前先對 `new_articles` 做**穩定排序**（`key=_SEVERITY_ORDER[_article_severity(a)]`，同風險維持原收集序），讓 `content` / `source_urls` 以風險序寫入 DB；前端 `orderByMode()` 也對顯示再排一次當保險（舊告警 DB 內仍是收集序，靠前端顯示時重排）。
 - **序號跟著風險重編**：前端**先排序再編號**（`num = idx+1`），所以風險最高 = `1)`。**踩坑**：卡片內新聞列表（來自 `content`）與詳情面板「資料來源」清單（來自 `source_urls`）是兩條各自編號的陣列，必須**用同一把風險 key 排序、各自重編號**才能對齊；num 與 url 綁在同一物件一起走，避免「點第 3 則卻開到別篇」。
 - **標題一律 `[N 則]`**（含單則 `[1 則]`）：後端直接產 `[N 則]`，不再有 `[N 主題 / N 則]` / `[N 則相關]`。前端 `formatAlertTitle(alert, count)` 把舊告警殘留前綴（`[手動]` / `[N 則相關]` / `[N 主題 / N 則]` / `[N 則]`）剝掉後以實際則數重組（idempotent），新舊告警顯示一致；只對 `alert.type === 'news'` 套用。
@@ -44,6 +55,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Extension manifest VM URL 仍是 HTTP `35.231.159.224`（要改 HTTPS 需建 Cloudflare named tunnel）
 - WebSocket `/ws` 沒做認證 — 只廣播警報通知，敏感性低
 - `GET /api/news/export` endpoint 還在但前端按鈕已移除（產出亂碼、實用價值低）
+- `Alert.exposure_summary`（部位暴險比對）仍持續計算寫入，但 2026-07-07 RadarPage 改版後前端已無任何頁面顯示它；`POST /api/radar/alerts/{id}/analyze` 與 `/api/search/topic/analyze` 同樣目前無前端呼叫端（詳見上方 2026-07-07 changelog）
 
 **部署備忘**：改 `backend/` → VM `git pull` + `sudo systemctl restart financial-radar`；改 `frontend/` → 加 `cd frontend && npm run build`。VM 用 `s9195000409898` 帳號，SSH key `C:\Users\User\.ssh\google_compute_engine`。
 
@@ -273,7 +285,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 ### Modules (10 pages)
 
-1. **即時雷達 (Radar)** `/` — Auto-scans RSS + Google News every 5min, creates alerts with position exposure. AI analysis is **on-demand only** (user clicks button) to save API costs.
+1. **即時雷達 (Radar)** `/` — Auto-scans RSS + Google News every 5min, creates alerts with position exposure computed server-side. Cards are a flat list of clickable article-title links (direct to source, no card expansion) — see 2026-07-07 changelog entry above for why `exposure_summary` and the alert-analyze endpoint currently have no display surface in this page.
 2. **主題追蹤 (Topics)** `/search` — User-defined topics with boolean keywords. Radar auto-imports matching articles AND merges them into radar alerts.
 3. **新聞資料庫 (News DB)** `/news` — Fetch returns a **preview** (not auto-saved). User selects which articles to save to SQLite + Google Sheets. Includes sentiment/heat dashboard. Source and keyword filter dropdowns; source list cross-references `MonitorSource` names, ungrouped sources show as "其他". Articles display `matched_keyword` tags inline.
 4. **研究報告 (Research)** `/reports` — Daily auto-fetch from IMF, BIS, Fed, ECB, BOJ, BOE, NBER. Dual-mode: RSS for working feeds, **RePEc/IDEAS HTML scraping** for institutions with broken RSS (IMF, ECB, NBER). Same preview → select → save flow.
@@ -332,7 +344,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 ### Key Design Decisions
 
-- **AI is never auto-triggered** in scans or searches. The `analysis` field on Alert starts as `None`; user triggers via `POST /api/radar/alerts/{id}/analyze` or `POST /api/search/topic/analyze`.
+- **AI is never auto-triggered** in scans or searches. The `analysis` field on Alert starts as `None`; on-demand trigger is `POST /api/radar/alerts/{id}/analyze` or `POST /api/search/topic/analyze`. **Currently no frontend page calls either** (RadarPage's button was removed 2026-07-07; SearchPage never had one wired) — the endpoints and `radarAPI.analyzeAlert()` / `searchAPI.analyzeTopic()` client methods still exist for a future UI or direct API use.
 - **AI Factory pattern** (`services/ai_factory.py`): `get_ai_service()` returns either `gemini_ai` or `claude_ai` module based on `DEFAULT_AI_MODEL` config. Both expose identical interfaces: `analyze_news()`, `analyze_news_for_alert()`, `search_and_analyze()`, `analyze_market_signal()`. **Gemini is default** (free tier).
 - **Signal conditions** use priority-based evaluation — first matching condition wins. Market alerts fire only on **state change** (prevents duplicates).
 - **Position exposure** matching (`services/exposure.py`) uses keyword scoring: symbol match (+3), name match (+2), category match (+0.5).
@@ -399,7 +411,7 @@ The frontend (`RadarPage`) parses these with `parseSourceUrl()` and `splitArticl
 - `critical` → always returns critical immediately (no dynamic assessment)
 - `high` → floor is high + injects `source_weight_override=1.6` into dynamic assessment, making high keywords able to reach critical (e.g. 2 high keywords: `2.0×1.6×1.1=3.52≥3.5→critical`)
 - `low` → floor only, no credibility boost
-At scan start, a `_source_fixed_sev: dict[str, str]` map is built from active sources with this field set. The helper `_article_severity(a)` handles the three cases, then applies `max(dynamic, floor)` via `_SEVERITY_ORDER`. This applies everywhere severity is assessed: `_fmt_article_line`, `source_urls` construction, GN critical-only pre-filter, and GAS urgent-rows filter. The source list in SettingsPage shows a coloured badge (最低緊急 / 最低高風險 / 最低低風險) and a dropdown in the expanded view.
+At scan start, a `_source_fixed_sev: dict[str, str]` map is built from active sources with this field set. The helper `_article_severity(a)` handles the three cases, then applies `max(dynamic, floor)` via `_SEVERITY_ORDER`. This applies everywhere severity is assessed: `_fmt_article_line`, `source_urls` construction, GN critical-only pre-filter, and GAS urgent-rows filter. The source list in SettingsPage shows a coloured badge (最低高風險 / 最低中風險 / 最低低風險) and a dropdown in the expanded view.
 
 `_assess_severity_single()` in `scheduler/jobs.py` uses a **multi-dimensional scoring model**:
 
@@ -532,7 +544,7 @@ Seventeen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`
 - **Real-time:** `useWebSocket` hook subscribes to backend WebSocket for live alerts. Default URL is **dynamic** — `${ws|wss}://${window.location.host}/ws`，避免寫死 `ws://localhost:8000/ws` 害部署到 VM IP 的使用者瀏覽器去連自己的 127.0.0.1 而全員顯示「離線中」。生產 nginx 與 dev vite.config 都有 `/ws` proxy。
 - **Styling:** Tailwind CSS dark theme, custom classes `card`, `card-hover`, `btn-primary`, `btn-secondary`, `btn-danger`, `input` defined in `index.css`.
 - **Severity display** (`NewsDBPage`): `assessSeverity(title, content)` runs client-side with the same keyword lists as the backend. `SeverityBadge` renders text pills (緊急/高/低). Not a server field — computed on render.
-- **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle and a `fixed_severity` dropdown (動態評估 / 緊急 / 高風險 / 低風險). Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category. Source expanded view includes a type dropdown (RSS / 網頁爬蟲 / 社群) for non-mops/research sources.
+- **SettingsPage source list**: drag handle (`⠿`) for drag-to-sort (calls `PUT /sources/reorder`); hover name to reveal inline rename input (Enter/blur saves, Escape cancels). All source types including MOPS have a `fetch_all` toggle and a `fixed_severity` dropdown (動態評估 / 高風險 / 中風險 / 低風險). Keyword category manager uses `CAT_COLORS` (8 colours) — clicking a keyword pill opens a popover to assign it to a named category. Source expanded view includes a type dropdown (RSS / 網頁爬蟲 / 社群) for non-mops/research sources.
 - **SettingsPage radar keywords**: Category-based structure — keywords are organized into named categories (`[{name, lang: "tw"|"en", keywords: [...]}]`), stored in `SystemConfig["radar_topic_categories"]` via `GET/PUT /api/settings/radar-topic-categories`. On save, TW categories flatten to `radar_topics`, EN categories to `radar_topics_us`. Each category renders as a coloured card (`CAT_COLORS`, 8 colours) with TW/EN badge; simple keywords as pills, boolean combos via `GroupedKeywordCard`. Backward-compatible: old flat lists auto-migrate to a single "未分類" category on load. `stripNotTerms(kw)` extracts `NOT term` / `NOT "multi word"` clauses from boolean keyword strings; `serializeGroups(groups, notTerms)` appends them at the end. Boolean keyword cards show NOT terms as red chips; the edit panel has a dedicated "排除詞（NOT）" input section. Global exclusion keywords are managed in a red-bordered section below the categories — saved alongside topics via `updateRadarTopics(..., exclusion_keywords)`. `parseGroupedKeyword(kw)` calls `stripNotTerms` before regex parsing so NOT clauses don't break group detection.
 - **AnalysisPage** (`/analysis`): **檔案總管式導覽**（非分頁）。`ENGINES`（extension / gemini / nlm）× `KINDS`（news / yt）下鑽至報告；state 為 `path`（`[]` / `[engine]` / `[engine, kind]`）+ `viewing`（`{leafKey, id}`）。`TAB_CONFIG` 以 `{engine}_{kind}` 為 key，共 **6 個 leaf**（`extension_news` / `extension_yt` / `gemini_news` / `gemini_yt` / `nlm_news` / `nlm_yt`），每個 leaf 形狀為 `{emptyMsg, emptyHint, getById, group}`；`group` 是 `'nlm'`（primary 紫紅）/ `'gemini'`（blue）/ `'extension'`（violet），驅動全部配色。`histories` state 一次載入全部 6 個 leaf 的歷史清單供下鑽選日期。 `renderReport()` renders Markdown headings, dividers, bold text; `renderInline()` handles `**bold**` and URLs in the same line; `linkify()` converts bare URLs to `<a>` links. Shows `generated_at` timestamp and `source_title` metadata. Empty state shown when no report exists. All `generated_at` timestamps are tagged with `Z` by `_iso_utc()` in `radar.py` so JavaScript interprets them as UTC, not local time.
 - **Routing constraint**: `PUT /api/settings/sources/reorder` must be declared **before** `PUT /api/settings/sources/{source_id}` in `settings.py` or FastAPI will match `"reorder"` as a source ID.

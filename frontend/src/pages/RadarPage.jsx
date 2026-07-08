@@ -18,6 +18,8 @@ export default function RadarPage({ wsSubscribe }) {
   const [copiedUrl, setCopiedUrl] = useState(null)
   // Source URL selection (global across all alerts)
   const [selectedSourceUrls, setSelectedSourceUrls] = useState(new Set())
+  // 選取模式：開啟後卡片內才顯示勾選框；關閉時一併清空已選
+  const [selectMode, setSelectMode] = useState(false)
 
   const loadAlerts = useCallback(async () => {
     try {
@@ -96,6 +98,13 @@ export default function RadarPage({ wsSubscribe }) {
       (a, b) => (SEVERITY_RANK[b.severity] ?? -1) - (SEVERITY_RANK[a.severity] ?? -1)
     )
 
+  // 三級篩選比對：舊資料殘留的 medium 併入「中」（high）一起被篩到
+  const sevMatch = (sev, filter) =>
+    filter === 'all' || sev === filter || (filter === 'high' && sev === 'medium')
+
+  // 手機版新聞標題預設全文顯示；只有 @realdonaldtrump 來源（推文全文可能很長）維持兩行截斷
+  const isTrumpSourceLine = (displayLine) => /^\[[^\]]*realdonaldtrump/i.test(displayLine || '')
+
   // Client-side filter & sort
   let displayAlerts = alerts
   if (filterSaved) {
@@ -110,9 +119,9 @@ export default function RadarPage({ wsSubscribe }) {
   // Severity filter: keep alert only if it has at least one matching article line
   if (filterSeverity !== 'all') {
     displayAlerts = displayAlerts.filter(a => {
-      if (a.type !== 'news') return a.severity === filterSeverity
+      if (a.type !== 'news') return sevMatch(a.severity, filterSeverity)
       const lines = splitArticleLines(a.content)
-      return lines.some(l => l.severity === filterSeverity)
+      return lines.some(l => sevMatch(l.severity, filterSeverity))
     })
   }
   if (sortOrder === 'asc') {
@@ -212,12 +221,13 @@ export default function RadarPage({ wsSubscribe }) {
   }
 
   const handleSelectAllFilteredUrls = () => {
+    setSelectMode(true)
     const next = new Set()
     displayAlerts.forEach(a => {
       if (a.source_urls) {
         a.source_urls.forEach(rawU => {
           const parsed = parseSourceUrl(rawU)
-          if (filterSeverity === 'all' || parsed.severity === filterSeverity) {
+          if (sevMatch(parsed.severity, filterSeverity)) {
             next.add(rawU)
           }
         })
@@ -259,13 +269,15 @@ export default function RadarPage({ wsSubscribe }) {
     }
   }
 
-  const SEVERITY_LABELS = { critical: '緊急', high: '高', medium: '中', low: '低' }
+  // 三級顯示：critical→「高」（沿用紅色）、high→「中」（沿用橘色）、low→「低」；
+  // 資料值（critical/high/medium/low）不變，僅改顯示；殘留的舊 medium 資料併入「中」樣式
+  const SEVERITY_LABELS = { critical: '高', high: '中', medium: '中', low: '低' }
 
   const severityBadge = (severity) => {
     const cls = {
       critical: 'badge-critical',
       high: 'badge-high',
-      medium: 'badge-medium',
+      medium: 'badge-high',
       low: 'badge-low',
     }
     return <span className={cls[severity] || 'badge'}>{SEVERITY_LABELS[severity] || severity}</span>
@@ -275,7 +287,7 @@ export default function RadarPage({ wsSubscribe }) {
     const styles = {
       critical: 'bg-red-500/20 text-red-400 border-red-500/30',
       high: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
-      medium: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      medium: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
       low: 'bg-green-500/20 text-green-400 border-green-500/30',
     }
     return (
@@ -287,9 +299,8 @@ export default function RadarPage({ wsSubscribe }) {
 
   const severityPills = [
     { v: 'all', label: '全部', color: '' },
-    { v: 'critical', label: '緊急', color: 'text-red-400' },
-    { v: 'high', label: '高', color: 'text-orange-400' },
-    { v: 'medium', label: '中', color: 'text-yellow-400' },
+    { v: 'critical', label: '高', color: 'text-red-400' },
+    { v: 'high', label: '中', color: 'text-orange-400' },
     { v: 'low', label: '低', color: 'text-green-400' },
   ]
 
@@ -392,7 +403,21 @@ export default function RadarPage({ wsSubscribe }) {
             placeholder="關鍵字篩選..."
             className="text-xs px-3 py-1.5 rounded-lg bg-dark-800 border border-dark-600 text-gray-300 placeholder-dark-500 w-full sm:w-36 focus:outline-none focus:border-primary-500/50" />
 
-          {/* Select all URLs（不再需要先套篩選條件） */}
+          {/* 選取模式切換：開啟後卡片內才顯示勾選框 */}
+          {displayAlerts.length > 0 && (
+            <button
+              onClick={() => {
+                if (selectMode) setSelectedSourceUrls(new Set())
+                setSelectMode(v => !v)
+              }}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                selectMode
+                  ? 'bg-primary-600/20 text-primary-400 border-primary-500/40'
+                  : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+              }`}>選取</button>
+          )}
+
+          {/* Select all URLs（不再需要先套篩選條件；點擊會自動開啟選取模式） */}
           {displayAlerts.length > 0 && (
             <button
               onClick={handleSelectAllFilteredUrls}
@@ -493,7 +518,7 @@ export default function RadarPage({ wsSubscribe }) {
                 : rawLines
               // 此卡可勾選的行（套用嚴重度篩選後、且有 URL 的行），供「全選」checkbox 用
               const selectableLines = (filterSeverity !== 'all'
-                ? articleLines.filter(l => l.severity === filterSeverity)
+                ? articleLines.filter(l => sevMatch(l.severity, filterSeverity))
                 : articleLines).filter(l => l.rawUrl)
               const cardSelectAll = (e) => {
                 const checked = e.target.checked
@@ -509,7 +534,7 @@ export default function RadarPage({ wsSubscribe }) {
                   className={`card-hover ${!alert.is_read ? 'border-l-4' : ''} ${
                     alert.severity === 'critical' ? 'border-l-red-500' :
                     alert.severity === 'high' ? 'border-l-orange-500' :
-                    alert.severity === 'medium' ? 'border-l-yellow-500' : 'border-l-green-500'
+                    alert.severity === 'medium' ? 'border-l-orange-500' : 'border-l-green-500'
                   }`}
                 >
                   {/* 手機版：日期+刪除獨立一行，標題全寬 */}
@@ -518,7 +543,7 @@ export default function RadarPage({ wsSubscribe }) {
                       <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
                       {alert.type !== 'news' && severityBadge(alert.severity)}
                       {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
-                      {selectableLines.length > 0 && (
+                      {selectMode && selectableLines.length > 0 && (
                         <label className="flex items-center gap-1 cursor-pointer select-none">
                           <input
                             type="checkbox"
@@ -559,7 +584,7 @@ export default function RadarPage({ wsSubscribe }) {
                         <span className="text-xs text-dark-400 uppercase">{alert.type}</span>
                         {alert.type !== 'news' && severityBadge(alert.severity)}
                         {!alert.is_read && <span className="w-2 h-2 rounded-full bg-primary-500" />}
-                        {selectableLines.length > 0 && (
+                        {selectMode && selectableLines.length > 0 && (
                           <label className="flex items-center gap-1 cursor-pointer select-none">
                             <input
                               type="checkbox"
@@ -581,7 +606,7 @@ export default function RadarPage({ wsSubscribe }) {
                             // 按風險排序（critical 最前）；一律全部顯示
                             const orderedLines = orderByMode(articleLines)
                             const showLines = filterSeverity !== 'all'
-                              ? orderedLines.filter(l => l.severity === filterSeverity)
+                              ? orderedLines.filter(l => sevMatch(l.severity, filterSeverity))
                               : orderedLines
                             let kwCount = 0
                             return (
@@ -591,7 +616,7 @@ export default function RadarPage({ wsSubscribe }) {
                                   if (hasKw) kwCount++
                                   return (
                                     <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
-                                      {line.rawUrl && (
+                                      {selectMode && line.rawUrl && (
                                         <input
                                           type="checkbox"
                                           checked={selectedSourceUrls.has(line.rawUrl)}
@@ -675,13 +700,13 @@ export default function RadarPage({ wsSubscribe }) {
                           // 按風險排序（critical 最前）；一律全部顯示
                           const orderedLines = orderByMode(articleLines)
                           const showLines = filterSeverity !== 'all'
-                            ? orderedLines.filter(l => l.severity === filterSeverity)
+                            ? orderedLines.filter(l => sevMatch(l.severity, filterSeverity))
                             : orderedLines
                           return (
                             <>
                               {showLines.map((line, i) => (
                                 <p key={i} className="text-sm text-dark-400 flex items-start gap-1.5">
-                                  {line.rawUrl && (
+                                  {selectMode && line.rawUrl && (
                                     <input
                                       type="checkbox"
                                       checked={selectedSourceUrls.has(line.rawUrl)}
@@ -693,11 +718,11 @@ export default function RadarPage({ wsSubscribe }) {
                                   {line.url ? (
                                     <a href={line.url} target="_blank" rel="noopener noreferrer"
                                       onClick={() => { if (!alert.is_read) handleMarkRead(alert) }}
-                                      className="min-w-0 flex-1 line-clamp-2 text-gray-300 active:text-primary-400">
+                                      className={`min-w-0 flex-1 ${isTrumpSourceLine(line.displayLine) ? 'line-clamp-2' : ''} text-gray-300 active:text-primary-400`}>
                                       {line.displayLine}
                                     </a>
                                   ) : (
-                                    <span className="min-w-0 flex-1 line-clamp-2">{line.displayLine}</span>
+                                    <span className={`min-w-0 flex-1 ${isTrumpSourceLine(line.displayLine) ? 'line-clamp-2' : ''}`}>{line.displayLine}</span>
                                   )}
                                   {line.url && (
                                     <button

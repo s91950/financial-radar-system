@@ -191,7 +191,7 @@ def start_scheduler(ws_manager):
         hour="23,4,9",
         minute=0,
         id="line_critical_digest",
-        name="LINE 緊急新聞彙整推送",
+        name="LINE 高風險新聞彙整推送",
         misfire_grace_time=3600,
         coalesce=True,
     )

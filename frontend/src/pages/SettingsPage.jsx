@@ -223,13 +223,13 @@ function GroupedKeywordCard({ topicStr, onSave, onRemove, onSplit, severityKws =
                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                           isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
                         }`}
-                      >緊急</button>
+                      >高</button>
                       <button
                         onClick={() => onAddToSeverity?.('high', t)}
                         className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
                           isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
                         }`}
-                      >高</button>
+                      >中</button>
                     </div>
                   )}
                   <span
@@ -410,7 +410,7 @@ function SeverityRuleCard({ rule, onSave, onRemove, canMoveUp, canMoveDown, onMo
   const sevCls = rule.severity === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
     rule.severity === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
     'bg-gray-500/20 text-gray-400 border-gray-500/30'
-  const sevLabel = rule.severity === 'critical' ? '緊急' : rule.severity === 'high' ? '高' : '低'
+  const sevLabel = rule.severity === 'critical' ? '高' : rule.severity === 'high' ? '中' : '低'
 
   return (
     <div className="rounded-lg bg-dark-800 border border-dark-600 overflow-hidden">
@@ -461,8 +461,8 @@ function SeverityRuleCard({ rule, onSave, onRemove, canMoveUp, canMoveDown, onMo
             addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
           <div className="flex flex-wrap gap-2 items-center">
             <select value={draftSeverity} onChange={e => setDraftSeverity(e.target.value)} className="input text-xs py-1 w-20 shrink-0">
-              <option value="critical">緊急</option>
-              <option value="high">高</option>
+              <option value="critical">高</option>
+              <option value="high">中</option>
               <option value="low">低</option>
             </select>
             <input value={draftNote} onChange={e => setDraftNote(e.target.value)} placeholder="備註（選填）"
@@ -504,8 +504,8 @@ function NewRuleBuilder({ onAdd, onClose }) {
         addTerm={addTerm} removeTerm={removeTerm} addGroup={addGroup} removeGroup={removeGroup} />
       <div className="flex flex-wrap gap-2 items-center">
         <select value={severity} onChange={e => setSeverity(e.target.value)} className="input text-xs py-1 w-20 shrink-0">
-          <option value="critical">緊急</option>
-          <option value="high">高</option>
+          <option value="critical">高</option>
+          <option value="high">中</option>
           <option value="low">低</option>
         </select>
         <input value={note} onChange={e => setNote(e.target.value)} placeholder="備註（選填）"
@@ -1203,7 +1203,7 @@ export default function SettingsPage() {
                           source.fixed_severity === 'critical' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
                           source.fixed_severity === 'high' ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' :
                           'bg-green-500/20 text-green-400 border-green-500/30'
-                        }`} title="最低風險等級下限，關鍵字仍可調升">{source.fixed_severity === 'critical' ? '最低緊急' : source.fixed_severity === 'high' ? '最低高風險' : '最低低風險'}</span>
+                        }`} title="最低風險等級下限，關鍵字仍可調升">{source.fixed_severity === 'critical' ? '最低高風險' : source.fixed_severity === 'high' ? '最低中風險' : '最低低風險'}</span>
                       )}
                       {source.keywords && source.keywords.length > 0
                         ? <span className="text-xs text-dark-500">{source.keywords.length} 個關鍵字</span>
@@ -1379,8 +1379,8 @@ export default function SettingsPage() {
                         <span className="text-xs text-dark-300 font-medium">最低風險等級</span>
                         <span className="text-xs text-dark-500 ml-2">
                           {source.fixed_severity ? `最低為「${
-                            source.fixed_severity === 'critical' ? '緊急' :
-                            source.fixed_severity === 'high' ? '高風險' : '低風險'
+                            source.fixed_severity === 'critical' ? '高風險' :
+                            source.fixed_severity === 'high' ? '中風險' : '低風險'
                           }」，關鍵字可再調升` : '依關鍵字動態評估'}
                         </span>
                       </div>
@@ -1394,7 +1394,7 @@ export default function SettingsPage() {
                               ? { ...s, fixed_severity: val || null }
                               : s
                             ))
-                            toast.success(val ? `已設為${val === 'critical' ? '緊急' : val === 'high' ? '高風險' : '低風險'}` : '已恢復動態評估')
+                            toast.success(val ? `已設為${val === 'critical' ? '高風險' : val === 'high' ? '中風險' : '低風險'}` : '已恢復動態評估')
                           } catch {
                             toast.error('更新失敗')
                           }
@@ -1402,8 +1402,8 @@ export default function SettingsPage() {
                         className="text-xs bg-dark-700 border border-dark-600 rounded px-2 py-1 text-dark-300"
                       >
                         <option value="">動態評估</option>
-                        <option value="critical">🔴 緊急</option>
-                        <option value="high">🟠 高風險</option>
+                        <option value="critical">🔴 高風險</option>
+                        <option value="high">🟠 中風險</option>
                         <option value="low">🟢 低風險</option>
                       </select>
                     </div>
@@ -1726,12 +1726,12 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Google News 僅緊急 */}
+        {/* Google News 僅高風險（資料值仍為 critical） */}
         <div className="p-3 rounded-lg border border-dark-700 bg-dark-900/40 space-y-2">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">Google News 僅緊急</p>
-              <p className="text-xs text-dark-400 mt-0.5">Google News 文章篩選為僅緊急，RSS 來源不受影響</p>
+              <p className="text-sm font-medium">Google News 僅高風險</p>
+              <p className="text-xs text-dark-400 mt-0.5">Google News 文章篩選為僅高風險，RSS 來源不受影響</p>
             </div>
             <button
               type="button"
@@ -1831,8 +1831,8 @@ export default function SettingsPage() {
             {/* Critical */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs px-2 py-0.5 rounded border bg-red-500/20 text-red-400 border-red-500/30 font-medium">緊急</span>
-                <span className="text-xs text-dark-500">符合任一關鍵字即標記為緊急</span>
+                <span className="text-xs px-2 py-0.5 rounded border bg-red-500/20 text-red-400 border-red-500/30 font-medium">高</span>
+                <span className="text-xs text-dark-500">符合任一關鍵字即標記為高風險</span>
               </div>
               <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
                 {severityKws.critical.map(kw => (
@@ -1856,8 +1856,8 @@ export default function SettingsPage() {
             {/* High */}
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-xs px-2 py-0.5 rounded border bg-orange-500/20 text-orange-400 border-orange-500/30 font-medium">高</span>
-                <span className="text-xs text-dark-500">符合任一關鍵字即標記為高（未命中緊急時）</span>
+                <span className="text-xs px-2 py-0.5 rounded border bg-orange-500/20 text-orange-400 border-orange-500/30 font-medium">中</span>
+                <span className="text-xs text-dark-500">符合任一關鍵字即標記為中風險（未命中高風險時）</span>
               </div>
               <div className="flex flex-wrap gap-1.5 mb-2 min-h-8">
                 {severityKws.high.map(kw => (
@@ -1972,8 +1972,8 @@ export default function SettingsPage() {
                         onChange={e => handleLineMinSeverityChange(e.target.value)}
                         className="input text-xs py-0.5 px-2 h-6"
                       >
-                        <option value="critical">僅緊急</option>
-                        <option value="high">高＋緊急</option>
+                        <option value="critical">僅高風險</option>
+                        <option value="high">中＋高</option>
                         <option value="all">所有警報</option>
                       </select>
                     </div>

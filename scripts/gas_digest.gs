@@ -287,7 +287,7 @@ function _formatTW_(isoStr) {
 }
 
 function _sevLabel_(sev) {
-  var map = { critical: '🔴 緊急', high: '🟡 高', low: '⚪ 低' };
+  var map = { critical: '🔴 高', high: '🟡 中', low: '⚪ 低' };
   return map[sev] || sev || '';
 }
 

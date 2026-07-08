@@ -102,7 +102,7 @@ def get_recent_articles() -> list[dict]:
 
 # ── 提示詞組建 ────────────────────────────────────────────────────────────
 
-_SEV_LABEL = {"critical": "🔴 緊急", "high": "🟠 高"}
+_SEV_LABEL = {"critical": "🔴 高", "high": "🟠 中"}
 
 def build_prompt(articles: list[dict]) -> str:
     critical = [a for a in articles if a["severity"] == "critical"]
@@ -111,11 +111,11 @@ def build_prompt(articles: list[dict]) -> str:
     lines = [f"以下是過去 {HOURS_BACK} 小時內偵測到的財經重要新聞，請用繁體中文分析：\n"]
 
     if critical:
-        lines.append("【緊急】")
+        lines.append("【高風險】")
         for i, a in enumerate(critical, 1):
             lines.append(f"  {i}. {a['text']}")
     if high:
-        lines.append("【高重要度】")
+        lines.append("【中風險】")
         for i, a in enumerate(high, 1):
             lines.append(f"  {i}. {a['text']}")
 

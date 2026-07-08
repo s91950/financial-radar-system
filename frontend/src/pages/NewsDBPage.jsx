@@ -17,11 +17,12 @@ function assessSeverity(title = '', content = '') {
   return 'low'
 }
 
+// 三級顯示：critical→「高」（紅）、high→「中」（橘）、low→「低」（綠）；資料值不變，舊 medium 併入「中」樣式
 const SEVERITY_CFG = {
-  critical: { label: '緊急', pill: 'bg-red-500/20 text-red-400 border-red-500/30' },
-  high:     { label: '高',   pill: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
-  medium:   { label: '中',   pill: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
-  low:      { label: '低',   pill: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  critical: { label: '高', pill: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  high:     { label: '中', pill: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  medium:   { label: '中', pill: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  low:      { label: '低', pill: 'bg-green-500/20 text-green-400 border-green-500/30' },
 }
 
 function SeverityBadge({ severity }) {
@@ -310,9 +311,9 @@ export default function NewsDBPage() {
 
   const PREVIEW_SEVERITY_PILLS = [
     { v: 'all', label: '全部' },
-    { v: 'critical', label: '緊急' },
-    { v: 'high', label: '高風險' },
-    { v: 'low', label: '低風險' },
+    { v: 'critical', label: '高' },
+    { v: 'high', label: '中' },
+    { v: 'low', label: '低' },
   ]
 
   return (
@@ -531,8 +532,8 @@ export default function NewsDBPage() {
         <div className="flex items-center gap-1.5 flex-wrap">
           {[
             { v: 'all', label: '全部' },
-            { v: 'critical', label: '緊急' },
-            { v: 'high', label: '高' },
+            { v: 'critical', label: '高' },
+            { v: 'high', label: '中' },
             { v: 'low', label: '低' },
           ].map(({ v, label }) => {
             const cfg = SEVERITY_CFG[v]
