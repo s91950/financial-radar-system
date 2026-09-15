@@ -30,34 +30,41 @@ function fmtValue(v, unit) {
   return unit === 'percent' ? `${v.toFixed(3)}%` : v.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
+// recharts 的 dataKey 是字串時會被當成巢狀路徑（lodash get），代碼裡的「.」
+// 會被拆開——`DX-Y.NYB` 會去找 row['DX-Y']['NYB'] 而取不到值，圖就是空的。
+// 因此列資料一律改用安全鍵 s0/s1/…，顯示時再映射回指標代碼。
+const safeKey = (index) => `s${index}`
+
 /** 把多條序列依時間合併成 recharts 需要的列陣列。
  *  indexed=true 時各序列除以自己的起始值 ×100，讓不同量級能放在同一個軸上比較。 */
-function mergeSeries(series, indexed, hourly) {
+function mergeSeries(series, indexed, hourly, keyBySymbol) {
   const rows = new Map()
   for (const s of series) {
+    const k = keyBySymbol[s.symbol]
+    if (!k) continue
     const pts = (s.points || []).filter(p => p.close !== null && p.close !== undefined)
     const base = indexed ? pts.find(p => p.close)?.close : null
     for (const p of pts) {
       const key = hourly ? p.time : p.time.slice(0, 10)
       if (!rows.has(key)) rows.set(key, { time: key })
       const val = indexed && base ? (p.close / base) * 100 : p.close
-      rows.get(key)[s.symbol] = Number(val.toFixed(4))
+      rows.get(key)[k] = Number(val.toFixed(4))
     }
   }
   return [...rows.values()].sort((a, b) => a.time.localeCompare(b.time))
 }
 
-function ChartTooltip({ active, payload, label, metaBySymbol, indexed }) {
+function ChartTooltip({ active, payload, label, metaBySymbol, symbolByKey, indexed }) {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 shadow-xl">
       <div className="text-xs text-dark-400 mb-1">{label}</div>
       {payload.map(p => {
-        const meta = metaBySymbol[p.dataKey]
+        const meta = metaBySymbol[symbolByKey[p.dataKey]]
         return (
           <div key={p.dataKey} className="flex items-center gap-2 text-xs">
             <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
-            <span className="text-dark-300">{meta?.name || p.dataKey}</span>
+            <span className="text-dark-300">{meta?.name || symbolByKey[p.dataKey] || p.dataKey}</span>
             <span className="ml-auto tabular-nums text-gray-200">
               {indexed ? p.value?.toFixed(1) : fmtValue(p.value, meta?.unit)}
             </span>
@@ -128,8 +135,16 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
   // 兩個 y 軸的對齊方式是任意的，會憑空造出不存在的相關性。改成指數化到共同基準。
   const units = new Set(series.map(s => s.unit || 'price'))
   const indexed = units.size > 1
+
+  const { keyBySymbol, symbolByKey } = useMemo(() => {
+    const k = {}, r = {}
+    symbols.forEach((sym, i) => { k[sym] = safeKey(i); r[safeKey(i)] = sym })
+    return { keyBySymbol: k, symbolByKey: r }
+  }, [symbols])
+
   const rows = useMemo(
-    () => mergeSeries(series, indexed, hourly), [series, indexed, hourly]
+    () => mergeSeries(series, indexed, hourly, keyBySymbol),
+    [series, indexed, hourly, keyBySymbol]
   )
 
   const addCompare = (sym) => {
@@ -313,14 +328,14 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
               tickFormatter={(v) => (indexed ? v.toFixed(0) : v.toFixed(2))}
             />
             <Tooltip
-              content={<ChartTooltip metaBySymbol={metaBySymbol} indexed={indexed} />}
+              content={<ChartTooltip metaBySymbol={metaBySymbol} symbolByKey={symbolByKey} indexed={indexed} />}
               cursor={{ stroke: '#475569', strokeWidth: 1 }}
             />
             {symbols.map(sym => (
               <Line
                 key={sym}
                 type="monotone"
-                dataKey={sym}
+                dataKey={keyBySymbol[sym]}
                 stroke={colorOf(sym)}
                 strokeWidth={2}
                 dot={false}

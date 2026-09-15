@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import re
+
+import pandas as pd
 from datetime import datetime
 
 import httpx
@@ -294,7 +296,14 @@ async def get_history_for_item(item, period: str = "3mo", interval: str = "1d",
 
 
 def _history_batch_sync(symbols: list[str], period: str, interval: str) -> dict[str, list[dict]]:
-    """一次向 Yahoo 取多個代碼的歷史（yf.download 走批次，比逐一 Ticker.history 快得多）。"""
+    """一次向 Yahoo 取多個代碼的歷史（yf.download 走批次，比逐一 Ticker.history 快得多）。
+
+    **不要用代碼數量判斷欄位結構**：`group_by="ticker"` 即使只給一個代碼，
+    回傳的仍是 MultiIndex 欄位 `('^TNX', 'Close')`。早期版本寫成
+    `df[sym] if len(symbols) > 1 else df`，單一代碼時就會去取 `df["Close"]`
+    而 KeyError，再被裸 except 吞掉變成靜默回空——症狀是儀表板點任一張卡片
+    開出來的走勢圖都是空的（走勢縮圖因為一次抓 34 檔反而正常）。
+    """
     out: dict[str, list[dict]] = {sym: [] for sym in symbols}
     if not symbols:
         return out
@@ -309,16 +318,27 @@ def _history_batch_sync(symbols: list[str], period: str, interval: str) -> dict[
     if df is None or df.empty:
         return out
 
+    is_multi = isinstance(df.columns, pd.MultiIndex)
     for sym in symbols:
         try:
-            # 單一代碼時 yf.download 不會加 ticker 這層欄位索引
-            sub = df[sym] if len(symbols) > 1 else df
+            if is_multi:
+                if sym in df.columns.get_level_values(0):
+                    sub = df[sym]                              # ('^TNX', 'Close')
+                elif sym in df.columns.get_level_values(1):
+                    sub = df.xs(sym, axis=1, level=1)          # ('Close', '^TNX')
+                else:
+                    logger.warning(f"yfinance 回傳中找不到 {sym} 的欄位")
+                    continue
+            else:
+                sub = df
             closes = sub["Close"].dropna()
             out[sym] = [
                 {"time": idx.isoformat(), "close": round(float(val), 4)}
                 for idx, val in closes.items()
             ]
-        except Exception:
+        except Exception as e:
+            # 不要靜默吞掉——這正是上面那個 bug 拖了一輪才被發現的原因
+            logger.warning(f"解析 {sym} 的歷史資料失敗: {e}")
             out[sym] = []
     return out
 
