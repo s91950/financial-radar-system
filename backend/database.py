@@ -659,6 +659,48 @@ def _migrate_db():
             ))
             conn.commit()
 
+        # --- 市場指標擴充 v2：德國公債（比 ECB 快兩個交易日）---
+        # ECB 的歐元區 AAA 聚合實測落後 2 個交易日（週二只有上週五的資料），
+        # 德國央行的 Bund 殖利率是 T-1，且德債本來就是歐元區利率基準。
+        _seeded2 = conn.execute(text(
+            "SELECT value FROM system_config WHERE key='market_rates_seeded_v2'"
+        )).fetchone()
+        if not _seeded2:
+            _BBK = ("德國央行 (Bundesbank)",
+                    "https://www.bundesbank.de/en/statistics/money-and-capital-markets/interest-rates-and-yields")
+            for _sym, _name, _psym, _order in [
+                ("DE2Y", "德2Y公債", "2Y", 25),
+                ("DE10Y", "德10Y公債", "10Y", 26),
+                ("DE30Y", "德30Y公債", "30Y", 27),
+            ]:
+                exists = conn.execute(
+                    text("SELECT 1 FROM market_watchlist WHERE symbol=:s"), {"s": _sym}
+                ).fetchone()
+                if exists:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO market_watchlist
+                        (symbol, name, category, description, provider, provider_symbol,
+                         unit, source_name, source_url, sort_order)
+                    VALUES (:sym, :name, 'bond', :desc, 'bundesbank', :psym,
+                            'percent', :sname, :surl, :ord)
+                """), {"sym": _sym, "name": _name,
+                       "desc": f"德國 {_psym} 公債殖利率（歐元區基準）",
+                       "psym": _psym, "sname": _BBK[0], "surl": _BBK[1], "ord": _order})
+
+            # 美歐利差改用德10Y：ECB 聚合落後兩個交易日，會讓利差跟著失真
+            conn.execute(text(
+                "UPDATE market_watchlist SET formula='{^TNX} - {DE10Y}', "
+                "description='美德 10 年期公債利差（德債為歐元區基準）', "
+                "name='美德10Y利差' "
+                "WHERE symbol='US_EU_10Y'"
+            ))
+            conn.execute(text(
+                "INSERT INTO system_config (key, value) "
+                "VALUES ('market_rates_seeded_v2', 'true')"
+            ))
+            conn.commit()
+
         # 主題文章命中的關鍵字（顯示用）
         try:
             conn.execute(text("ALTER TABLE topic_articles ADD COLUMN matched_keyword TEXT"))

@@ -235,12 +235,21 @@ async def get_quotes_for_items(items: list) -> dict[str, dict]:
         price = eval_formula(item.formula or "", prices)
         prev = eval_formula(item.formula or "", prevs)
         change_pct = ((price - prev) / abs(prev) * 100) if (price is not None and prev) else 0
+        # 資料時點取「最舊的成分」：美德利差混了即時的美債與 T-1 的德債，
+        # 標成即時會讓人以為兩腿同一天。當期值仍用各腿最新可得值（與行情終端一致），
+        # 歷史序列則只取兩腿都有值的日期（見 get_histories_for_items）。
+        leg_times = [
+            out.get(sym, {}).get("last_updated")
+            for sym in formula_symbols(item.formula or "")
+        ]
+        leg_times = [t for t in leg_times if t]
+        data_time = min(leg_times) if leg_times else None
         out[item.symbol] = {
             "symbol": item.symbol,
             "price": round(price, 4) if price is not None else None,
             "change_percent": round(change_pct, 2),
             "previous_close": round(prev, 4) if prev is not None else None,
-            "last_updated": datetime.utcnow().isoformat() if price is not None else None,
+            "last_updated": data_time if price is not None else None,
         }
 
     return out

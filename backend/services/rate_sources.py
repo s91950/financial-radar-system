@@ -6,9 +6,19 @@
     這類國際代碼全部 404。
   - stooq 的多國殖利率 CSV 整站上了 JS proof-of-work 挑戰，不能用。
   - 以下三個官方來源免金鑰、日頻、可直接抓：
-      mof_jp : 日本財務省，1Y~40Y 全年期，歷史檔 + 當月檔兩支合併
-      ecb    : 歐洲央行 Data Portal，歐元區 AAA 公債殖利率曲線
-      boe    : 英國央行 IADB，單一 series code
+      mof_jp     : 日本財務省，1Y~40Y 全年期，歷史檔 + 當月檔兩支合併
+      bundesbank : 德國央行 BBSIS，德國公債（Bund）殖利率曲線
+      ecb        : 歐洲央行 Data Portal，歐元區 AAA 公債殖利率曲線
+      boe        : 英國央行 IADB，單一 series code
+
+新鮮度實測（2026-09-15 週二量測，值為最新資料日）：
+      mof_jp     09-14(一) → T-1   ✓
+      bundesbank 09-14(一) → T-1   ✓
+      ecb        09-11(五) → T-3（落後 2 個交易日）
+      boe        09-10(四) → T-5（落後 3 個交易日；IUDMNZC/IUDSNPY/IUDLNPY 三支都一樣，
+                                   是來源本身就慢，換 series code 沒用）
+德國公債是歐元區的利率基準，且比 ECB 的歐元區 AAA 聚合快兩個交易日，
+所以歐洲優先看 bundesbank；ECB 那組保留為歐元區整體參考。
 
 未接：台灣（TPEx 新站是 SPA，OpenAPI 沒有公債殖利率曲線）、韓國（BOK ECOS 需金鑰）。
 要新增來源只需寫一個 `_fetch_xxx()` 並在 `_PROVIDERS` 註冊，對外介面不變。
@@ -45,6 +55,13 @@ _ECB_URL = (
     "https://data-api.ecb.europa.eu/service/data/YC/"
     "B.U2.EUR.4F.G_N_A.SV_C_YM.SR_{tenor}?format=csvdata&lastNObservations={n}"
 )
+# tenor 代碼：R02XX=2年、R05XX=5年、R10XX=10年、R30XX=30年
+_BBK_URL = (
+    "https://api.statistiken.bundesbank.de/rest/data/BBSIS/"
+    "D.I.ZST.ZI.EUR.S1311.B.A604.R{tenor}XX.R.A.A._Z._Z.A?format=csv&lang=en"
+)
+_BBK_TENORS = {"2Y": "02", "5Y": "05", "10Y": "10", "30Y": "30"}
+
 _BOE_URL = (
     "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
     "?csv.x=yes&Datefrom={dfrom}&Dateto={dto}&SeriesCodes={code}"
@@ -54,6 +71,8 @@ _BOE_URL = (
 # 來源網頁（給前端「資料來源」連結用）
 SOURCE_PAGES = {
     "mof_jp": ("日本財務省", "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/"),
+    "bundesbank": ("德國央行 (Bundesbank)",
+                   "https://www.bundesbank.de/en/statistics/money-and-capital-markets/interest-rates-and-yields"),
     "ecb": ("歐洲央行 (ECB)", "https://data.ecb.europa.eu/data/datasets/YC"),
     "boe": ("英國央行 (BoE)", "https://www.bankofengland.co.uk/boeapps/database/"),
 }
@@ -154,6 +173,43 @@ async def _fetch_mof_jp(client: httpx.AsyncClient, tenor: str, days: int) -> lis
     return _series([(d, v) for d, v in merged.items() if d >= cutoff])
 
 
+# ---------------------------------------------------------------- 德國央行
+
+async def _fetch_bundesbank(client: httpx.AsyncClient, tenor: str, days: int) -> list[dict]:
+    """德國公債殖利率（Svensson 法擬合的利率期限結構）。
+
+    CSV 前幾行是標題與說明，資料列格式 `YYYY-MM-DD,值,旗標`；非交易日的值是 "."。
+    """
+    code = _BBK_TENORS.get(tenor)
+    if not code:
+        return []
+    cache_key = f"bbk:{code}"
+    text = _cache_get(cache_key)
+    if text is None:
+        text = await _get_text(client, _BBK_URL.format(tenor=code)) or ""
+        _cache_put(cache_key, text, _TTL_DAILY)
+    if not text:
+        return []
+
+    out: list[tuple[datetime, float]] = []
+    for line in text.split("\n"):
+        parts = line.split(",")
+        if len(parts) < 2:
+            continue
+        raw_date = parts[0].strip().strip('"')
+        raw_val = parts[1].strip().strip('"')
+        if len(raw_date) != 10 or raw_date[4] != "-":
+            continue
+        if not raw_val or raw_val == ".":
+            continue          # 非交易日
+        try:
+            out.append((datetime.strptime(raw_date, "%Y-%m-%d"), float(raw_val)))
+        except ValueError:
+            continue
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    return _series([(d, v) for d, v in out if d >= cutoff])
+
+
 # ---------------------------------------------------------------- ECB
 
 async def _fetch_ecb(client: httpx.AsyncClient, tenor: str, days: int) -> list[dict]:
@@ -206,6 +262,7 @@ async def _fetch_boe(client: httpx.AsyncClient, code: str, days: int) -> list[di
 
 _PROVIDERS = {
     "mof_jp": _fetch_mof_jp,
+    "bundesbank": _fetch_bundesbank,
     "ecb": _fetch_ecb,
     "boe": _fetch_boe,
 }
