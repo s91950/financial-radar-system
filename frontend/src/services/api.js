@@ -127,6 +127,7 @@ export const radarAPI = {
     }),
   getTWSEData: () => api.get('/radar/market/twse'),
   addWatchlistItem: (data) => api.post('/radar/market/watchlist', data),
+  previewDerived: (formula) => api.post('/radar/market/derived/preview', { formula }),
   updateWatchlistItem: (id, data) => api.put(`/radar/market/watchlist/${id}`, data),
   deleteWatchlistItem: (id) => api.delete(`/radar/market/watchlist/${id}`),
   // Signal conditions

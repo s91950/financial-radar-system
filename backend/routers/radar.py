@@ -35,6 +35,13 @@ class WatchlistCreateRequest(BaseModel):
     threshold_upper: float | None = None
     threshold_lower: float | None = None
     sort_order: int = 0
+    # 資料來源分派；'derived' 代表由 formula 從其他指標算出來（利差等）
+    provider: str = "yahoo"
+    provider_symbol: str | None = None
+    unit: str | None = None
+    formula: str | None = None
+    source_name: str | None = None
+    source_url: str | None = None
 
 
 class WatchlistUpdateRequest(BaseModel):
@@ -44,6 +51,12 @@ class WatchlistUpdateRequest(BaseModel):
     threshold_upper: float | None = None
     threshold_lower: float | None = None
     sort_order: int | None = None
+    formula: str | None = None
+    unit: str | None = None
+
+
+class DerivedPreviewRequest(BaseModel):
+    formula: str
 
 
 class ConditionCreateRequest(BaseModel):
@@ -185,6 +198,58 @@ async def analyze_alert(alert_id: int, db: Session = Depends(get_db)):
     alert.analysis = analysis
     db.commit()
     return {"analysis": analysis}
+
+
+async def _validate_formula(formula: str, db: Session) -> dict:
+    """檢核衍生指標算式並試算當前值。
+
+    回傳 {"ok": bool, "error"?: str, "value"?: float, "symbols": [...], "unit"?: str}。
+    擋三件事：沒引用任何指標、引用了不存在或本身也是衍生的指標（不支援互相引用，
+    避免相依環）、以及代換後算不出數字（語法錯誤／除以零）。
+    """
+    refs = market_data.formula_symbols(formula or "")
+    if not refs:
+        return {"ok": False, "error": "算式沒有引用任何指標，請用大括號包住代碼，例如 {^TNX} - {DE10Y}",
+                "symbols": []}
+
+    items = db.query(MarketWatchItem).filter(MarketWatchItem.symbol.in_(refs)).all()
+    found = {i.symbol: i for i in items}
+    missing = [r for r in refs if r not in found]
+    if missing:
+        return {"ok": False, "error": f"找不到指標：{', '.join(missing)}", "symbols": refs}
+
+    nested = [r for r in refs if (found[r].provider or "") == "derived"]
+    if nested:
+        return {"ok": False,
+                "error": f"不能引用其他衍生指標：{', '.join(nested)}（避免相依環）",
+                "symbols": refs}
+
+    quotes = await market_data.get_quotes_for_items(items)
+    prices = {sym: q.get("price") for sym, q in quotes.items()}
+    no_price = [r for r in refs if prices.get(r) is None]
+    if no_price:
+        return {"ok": False, "error": f"這些指標目前取不到報價：{', '.join(no_price)}", "symbols": refs}
+
+    value = market_data.eval_formula(formula, prices)
+    if value is None:
+        return {"ok": False, "error": "算式無法求值，請檢查語法（只允許 + - * / 與括號）",
+                "symbols": refs}
+
+    # 成分單位一致時沿用；混用就不猜，留給使用者自己指定
+    units = {(found[r].unit or "price") for r in refs}
+    return {
+        "ok": True,
+        "value": round(value, 4),
+        "symbols": refs,
+        "unit": units.pop() if len(units) == 1 else None,
+        "legs": [{"symbol": r, "name": found[r].name, "price": prices.get(r)} for r in refs],
+    }
+
+
+@router.post("/market/derived/preview", dependencies=_ADMIN)
+async def preview_derived(req: DerivedPreviewRequest, db: Session = Depends(get_db)):
+    """建立前試算：讓使用者在存檔之前就看到算出來的值對不對。"""
+    return await _validate_formula(req.formula, db)
 
 
 @router.get("/market")
@@ -341,23 +406,42 @@ async def get_twse_data():
 @router.post("/market/watchlist", dependencies=_ADMIN)
 async def add_watchlist_item(req: WatchlistCreateRequest, db: Session = Depends(get_db)):
     """Add a new item to the market watchlist."""
-    existing = db.query(MarketWatchItem).filter(MarketWatchItem.symbol == req.symbol).first()
+    symbol = (req.symbol or "").strip()
+    if not symbol:
+        return {"error": "請填寫指標代碼"}
+    existing = db.query(MarketWatchItem).filter(MarketWatchItem.symbol == symbol).first()
     if existing:
-        return {"error": "Symbol already in watchlist"}
+        return {"error": f"代碼 {symbol} 已存在於關注清單"}
+
+    unit = req.unit
+    if req.provider == "derived":
+        check = await _validate_formula(req.formula or "", db)
+        if not check["ok"]:
+            return {"error": check["error"]}
+        unit = unit or check.get("unit")
 
     item = MarketWatchItem(
-        symbol=req.symbol,
+        symbol=symbol,
         name=req.name,
         category=req.category,
         description=req.description,
         threshold_upper=req.threshold_upper,
         threshold_lower=req.threshold_lower,
         sort_order=req.sort_order,
+        provider=req.provider or "yahoo",
+        provider_symbol=req.provider_symbol,
+        unit=unit,
+        formula=req.formula,
+        source_name=req.source_name or ("系統計算" if req.provider == "derived" else None),
+        source_url=req.source_url,
     )
     db.add(item)
     db.commit()
     db.refresh(item)
-    return {"id": item.id, "symbol": item.symbol, "name": item.name, "category": item.category}
+    return {
+        "id": item.id, "symbol": item.symbol, "name": item.name,
+        "category": item.category, "provider": item.provider, "unit": item.unit,
+    }
 
 
 @router.put("/market/watchlist/{item_id}", dependencies=_ADMIN)
@@ -368,7 +452,13 @@ async def update_watchlist_item(
     item = db.query(MarketWatchItem).filter(MarketWatchItem.id == item_id).first()
     if not item:
         return {"error": "Item not found"}
-    for field in ["name", "category", "description", "threshold_upper", "threshold_lower", "sort_order"]:
+    # 改算式要先檢核，不然會存下一個永遠算不出值的指標
+    if req.formula is not None and (item.provider or "") == "derived":
+        check = await _validate_formula(req.formula, db)
+        if not check["ok"]:
+            return {"error": check["error"]}
+    for field in ["name", "category", "description", "threshold_upper",
+                  "threshold_lower", "sort_order", "formula", "unit"]:
         val = getattr(req, field)
         if val is not None:
             setattr(item, field, val)
@@ -378,10 +468,23 @@ async def update_watchlist_item(
 
 @router.delete("/market/watchlist/{item_id}", dependencies=_ADMIN)
 async def delete_watchlist_item(item_id: int, db: Session = Depends(get_db)):
-    """Remove an item from the watchlist (cascades to conditions)."""
+    """Remove an item from the watchlist (cascades to conditions).
+
+    會先擋掉「還被某個利差指標引用」的情況——直接刪掉成分會讓那個利差
+    從此算不出值，而且錯誤只會出現在後端日誌裡，使用者只看到一張空卡片。
+    """
     item = db.query(MarketWatchItem).filter(MarketWatchItem.id == item_id).first()
     if not item:
         return {"error": "Item not found"}
+
+    if (item.provider or "") != "derived":
+        used_by = [
+            d.name for d in db.query(MarketWatchItem).filter(MarketWatchItem.provider == "derived").all()
+            if item.symbol in market_data.formula_symbols(d.formula or "")
+        ]
+        if used_by:
+            return {"error": f"「{item.name}」還被這些利差指標引用：{'、'.join(used_by)}，請先刪除或修改它們"}
+
     db.delete(item)
     db.commit()
     return {"success": True}

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { radarAPI, newsAPI, getCurrentUser } from '../services/api'
+import { radarAPI, newsAPI, getCurrentUser, hasRole } from '../services/api'
 import CategoryTabs from '../components/Radar/CategoryTabs'
 import MarketIndicatorCard from '../components/Radar/MarketIndicatorCard'
 import MarketChartPanel from '../components/Radar/MarketChartPanel'
+import AddDerivedModal from '../components/Radar/AddDerivedModal'
 import SignalConditionModal from '../components/Radar/SignalConditionModal'
 
 const SENTIMENT_COLORS = {
@@ -19,6 +20,8 @@ export default function DashboardPage({ wsSubscribe }) {
   const [sparklines, setSparklines] = useState({})
   const [selectedSymbol, setSelectedSymbol] = useState(null)
   const [conditionItem, setConditionItem] = useState(null)
+  const [showAddDerived, setShowAddDerived] = useState(false)
+  const isAdmin = hasRole('admin')
   const [marketLoading, setMarketLoading] = useState(true)
 
   // Sentiment state
@@ -101,8 +104,21 @@ export default function DashboardPage({ wsSubscribe }) {
     <div className="space-y-6">
       {/* Market Indicators */}
       <section>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <h3 className="text-lg font-semibold">市場指標總覽</h3>
+          <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowAddDerived(true)}
+              className="btn-secondary text-sm flex items-center gap-1.5"
+              title="由既有指標相減，自訂一個利差指標"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              新增利差
+            </button>
+          )}
           <button onClick={loadMarketData} className="btn-secondary text-sm flex items-center gap-1.5">
             <svg className={`w-4 h-4 ${marketLoading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -110,6 +126,7 @@ export default function DashboardPage({ wsSubscribe }) {
             </svg>
             更新
           </button>
+          </div>
         </div>
 
         {categories.length > 0 && (
@@ -216,11 +233,21 @@ export default function DashboardPage({ wsSubscribe }) {
         )}
       </section>
 
+      {/* 新增利差指標 */}
+      {showAddDerived && (
+        <AddDerivedModal
+          allItems={allItems}
+          onClose={() => setShowAddDerived(false)}
+          onCreated={loadMarketData}
+        />
+      )}
+
       {/* Signal Condition Modal */}
       {conditionItem && (
         <SignalConditionModal
           item={conditionItem}
           onClose={() => setConditionItem(null)}
+          onDeleted={() => { setSelectedSymbol(null); loadMarketData() }}
         />
       )}
     </div>

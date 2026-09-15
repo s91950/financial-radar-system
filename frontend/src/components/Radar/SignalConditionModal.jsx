@@ -37,7 +37,7 @@ const SIGNALS = [
   { value: 'negative', label: '負面', color: 'text-red-400', dot: 'bg-red-400' },
 ]
 
-export default function SignalConditionModal({ item, onClose }) {
+export default function SignalConditionModal({ item, onClose, onDeleted }) {
   const [conditions, setConditions] = useState([])
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState(null)
@@ -92,6 +92,22 @@ export default function SignalConditionModal({ item, onClose }) {
       loadConditions()
     } catch (err) {
       toast.error('操作失敗')
+    }
+  }
+
+  async function handleDeleteItem() {
+    if (!confirm(`確定從關注清單刪除「${item.name}」？其信號條件會一併移除。`)) return
+    try {
+      const { data } = await radarAPI.deleteWatchlistItem(item.id)
+      if (data?.error) {
+        toast.error(data.error)   // 例如：還被某個利差指標引用
+        return
+      }
+      toast.success(`已刪除「${item.name}」`)
+      onDeleted?.()
+      onClose()
+    } catch {
+      toast.error('刪除失敗')
     }
   }
 
@@ -293,7 +309,14 @@ export default function SignalConditionModal({ item, onClose }) {
             />
           </div>
 
-          <div className="flex gap-2 justify-end">
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              onClick={handleDeleteItem}
+              className="text-xs text-dark-500 hover:text-red-400 transition-colors mr-auto"
+              title="從關注清單刪除這個指標"
+            >
+              刪除此指標
+            </button>
             {editingId && (
               <button onClick={cancelEdit} className="btn-secondary text-sm px-4 py-1.5">取消</button>
             )}
