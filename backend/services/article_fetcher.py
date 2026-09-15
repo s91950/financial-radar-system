@@ -30,6 +30,10 @@ _HEADERS = {
 _CONTENT_SKIP_LEN = 500
 # 主文擷取後最少字數，低於此值視為失敗（多半是攔截頁/登入頁）
 _MIN_BODY_LEN = 100
+# 判定「這段抽取結果真的是內文」所需的最短段落長度
+_MIN_PARAGRAPH_LEN = 40
+# 段落樣板字樣：只有這類長段落不算真內文
+_BOILERPLATE_MARKERS = ("copyright", "©", "cookie", "版權", "未經授權", "隱私權")
 
 
 def _extract_published_at(html: str, soup: BeautifulSoup) -> Optional[str]:
@@ -64,21 +68,37 @@ def _extract_published_at(html: str, soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
+def _has_real_paragraph(node) -> bool:
+    """節點內是否有「真的段落」——至少一個 >= 40 字且非版權/Cookie 樣板的 <p>。
+
+    用來擋掉「抓到的是站內快訊跑馬燈／相關文章清單，不是本文」的情況：
+    這類區塊由 <a>/<li> 短標題組成，不會有長段落。太報（taisounds）本文是
+    JS 渲染的，靜態 HTML 只有快訊側欄，抽出來有 2700 字卻全是別篇標題——
+    因為比 scraper 存的 og:description 長，就把正確摘要覆蓋掉了。
+    """
+    for p in node.find_all("p"):
+        t = p.get_text(" ", strip=True)
+        if len(t) >= _MIN_PARAGRAPH_LEN and not any(b in t.lower() for b in _BOILERPLATE_MARKERS):
+            return True
+    return False
+
+
 def _extract_main_text(soup: BeautifulSoup) -> Optional[str]:
-    """從 HTML 抓主文文字。優先 <article>/<main>，退而求其次找最大 <div>。"""
+    """從 HTML 抓主文文字。優先 <article>/<main>，退而求其次找最大 <div>。
+
+    回傳 None 代表「這頁沒有可用的本文」，呼叫端會保留 scraper 原本的內容
+    （通常是 og:description，短但正確），不做覆蓋。
+    """
     for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "iframe", "noscript"]):
         tag.decompose()
     candidate = soup.find("article") or soup.find("main")
-    if candidate:
-        text = candidate.get_text(separator=" ", strip=True)
-    else:
+    if candidate is None:
         divs = soup.find_all("div")
-        if divs:
-            best = max(divs, key=lambda d: len(d.get_text(strip=True)))
-            text = best.get_text(separator=" ", strip=True)
-        else:
-            text = soup.get_text(separator=" ", strip=True)
-    text = re.sub(r"\s+", " ", text).strip()
+        candidate = max(divs, key=lambda d: len(d.get_text(strip=True))) if divs else soup
+    # 長度不代表品質：沒有真段落就不要拿去蓋掉 scraper 給的摘要
+    if not _has_real_paragraph(candidate):
+        return None
+    text = re.sub(r"\s+", " ", candidate.get_text(separator=" ", strip=True)).strip()
     if not text or len(text) < _MIN_BODY_LEN:
         return None
     return text
