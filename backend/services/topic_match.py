@@ -48,15 +48,23 @@ def matched_keyword(keywords: list[str], text_lower: str, max_terms: int = 4) ->
     return ""
 
 
+# 只取內文前 N 字比對。理由：補全文（article_fetcher）抓的是整個 <article>/<main>
+# 區塊，裡面常夾著「相關文章」側欄——別篇報導的標題會被當成本文內容。實測
+# 一篇車禍社會新聞的內文尾段同時出現「…日銀應不會採取激進升息行動」與
+# 「台積電宣布…」，讓 ("升息" OR "降息") AND ("宣布") 這種布林組合誤命中。
+# 真正的導言段幾乎都在前 500 字內，側欄通常更後面。
+_MATCH_BODY_CHARS = 500
+
+
 def article_text(article) -> str:
-    """把文章（dict 或 ORM 物件）攤平成比對用的小寫文字。"""
+    """把文章（dict 或 ORM 物件）攤平成比對用的小寫文字（標題 + 內文前 500 字）。"""
     if isinstance(article, dict):
         title = article.get("title") or ""
         content = article.get("content") or ""
     else:
         title = getattr(article, "title", "") or ""
         content = getattr(article, "content", "") or ""
-    return f"{title} {content[:2000]}".lower()
+    return f"{title} {content[:_MATCH_BODY_CHARS]}".lower()
 
 
 def signal_text(item, cond=None, extra: str = "") -> str:
