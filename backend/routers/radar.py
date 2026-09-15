@@ -193,19 +193,17 @@ async def get_market_data(db: Session = Depends(get_db)):
     watchlist = db.query(MarketWatchItem).order_by(
         MarketWatchItem.category, MarketWatchItem.sort_order
     ).all()
-    symbols = [w.symbol for w in watchlist]
-
-    if not symbols:
+    if not watchlist:
         return {}
 
-    quotes = await market_data.get_market_quotes(symbols)
-    quotes_map = {q["symbol"]: q for q in quotes}
+    # provider 分派：Yahoo / 官方來源（日本 MOF、ECB、BoE）/ 衍生指標（利差）
+    quotes_map = await market_data.get_quotes_for_items(watchlist)
 
     # Update database and build grouped result
     grouped = defaultdict(list)
     for item in watchlist:
         quote = quotes_map.get(item.symbol, {})
-        if quote.get("price"):
+        if quote.get("price") is not None:
             item.current_value = quote["price"]
             item.change_percent = quote.get("change_percent", 0)
             item.last_updated = datetime.utcnow()
@@ -217,12 +215,22 @@ async def get_market_data(db: Session = Depends(get_db)):
             "name": item.name,
             "price": item.current_value,
             "change_percent": item.change_percent or 0,
+            # 殖利率類指標要用 bp 看日變化，前端需要前收價自行換算
+            "previous_close": quote.get("previous_close"),
+            # rolling 漲跌幅由 market_check 每小時算好寫入，這裡直接讀
+            "change_1w": item.change_1w,
+            "change_1m": item.change_1m,
             "signal_status": item.signal_status,
             "description": item.description,
             "category": cat,
             "threshold_upper": item.threshold_upper,
             "threshold_lower": item.threshold_lower,
             "sort_order": item.sort_order,
+            "provider": item.provider or "yahoo",
+            "unit": item.unit or "price",
+            "formula": item.formula,
+            "source_name": item.source_name,
+            "source_url": item.source_url,
             "last_updated": (item.last_updated.isoformat() + "Z") if item.last_updated else None,
         })
     db.commit()
@@ -252,12 +260,53 @@ async def get_market_categories(db: Session = Depends(get_db)):
 @router.get("/market/history/{symbol}")
 async def get_market_history(
     symbol: str,
-    period: str = Query("5d", pattern="^(1d|5d|1mo|3mo|6mo|1y)$"),
+    period: str = Query("5d", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y)$"),
     interval: str = Query("1h", pattern="^(5m|15m|30m|1h|1d)$"),
+    db: Session = Depends(get_db),
 ):
-    """Get historical market data for a specific symbol."""
-    data = await market_data.get_market_history(symbol, period, interval)
-    return data
+    """Get historical market data for a specific symbol（依 provider 分派）。"""
+    item = db.query(MarketWatchItem).filter(MarketWatchItem.symbol == symbol).first()
+    if item is None:
+        # 不在關注清單裡的代碼：當成 Yahoo 處理（維持舊行為）
+        return await market_data.get_market_history(symbol, period, interval)
+    all_items = db.query(MarketWatchItem).all() if (item.provider == "derived") else None
+    return await market_data.get_history_for_item(item, period, interval, all_items)
+
+
+@router.get("/market/history-multi")
+async def get_market_history_multi(
+    symbols: str = Query(..., description="逗號分隔的指標代碼，最多 6 個"),
+    period: str = Query("3mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y)$"),
+    interval: str = Query("1d", pattern="^(5m|15m|30m|1h|1d)$"),
+    db: Session = Depends(get_db),
+):
+    """多指標疊圖用：一次取回數個指標的序列。
+
+    不同指標的交易日不完全一致（例如日本國定假日、歐美時差），所以回傳
+    `series` 各自獨立的點陣列，由前端依日期對齊繪製；另附 `unit` 讓前端
+    決定要不要分左右軸（殖利率 % 與匯率數值刻度差很多）。
+    """
+    wanted = [x.strip() for x in symbols.split(",") if x.strip()][:6]
+    if not wanted:
+        return {"series": []}
+
+    all_items = db.query(MarketWatchItem).all()
+    by_symbol = {i.symbol: i for i in all_items}
+
+    out = []
+    for sym in wanted:
+        item = by_symbol.get(sym)
+        if item is None:
+            continue
+        points = await market_data.get_history_for_item(item, period, interval, all_items)
+        out.append({
+            "symbol": sym,
+            "name": item.name,
+            "unit": item.unit or "price",
+            "category": item.category,
+            "points": points,
+        })
+    return {"series": out, "period": period, "interval": interval}
 
 
 @router.get("/market/twse")

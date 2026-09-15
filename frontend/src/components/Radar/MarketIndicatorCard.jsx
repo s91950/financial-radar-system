@@ -6,9 +6,33 @@ const SIGNAL_COLORS = {
   negative: { dot: 'bg-red-400', ring: 'ring-red-400/20', glow: 'shadow-red-500/20' },
 }
 
+// 殖利率與利差（unit='percent'）本身就是百分點，變化一律以 bp 表示——
+// 對這類指標顯示「-0.28%」會被誤讀成跌了 0.28 個百分點，實際只有約 1.4bp。
+// 其餘指標（匯率、指數、原物料）沿用百分比。
+function isRate(item) {
+  return (item?.unit || '') === 'percent'
+}
+
+function formatChange(value, rate) {
+  if (value === null || value === undefined || Number.isNaN(value)) return null
+  const sign = value >= 0 ? '+' : ''
+  return rate ? `${sign}${value.toFixed(1)}bp` : `${sign}${value.toFixed(2)}%`
+}
+
+// 日變化：殖利率用 (今值 − 前收) × 100 換成 bp，其餘直接用後端給的 change_percent
+function dailyChange(item) {
+  if (isRate(item) && item.price != null && item.previous_close != null) {
+    return (item.price - item.previous_close) * 100
+  }
+  return item.change_percent ?? 0
+}
+
 export default function MarketIndicatorCard({ item, sparkData, isSelected, onClick, onSettingsClick }) {
   const signal = SIGNAL_COLORS[item.signal_status] || null
-  const isUp = (item.change_percent || 0) >= 0
+  const rate = isRate(item)
+  const day = dailyChange(item)
+  const isUp = day >= 0
+  const decimals = rate ? 3 : 2
 
   return (
     <div
@@ -29,7 +53,7 @@ export default function MarketIndicatorCard({ item, sparkData, isSelected, onCli
         </svg>
       </button>
 
-      {/* Header: signal dot + name + symbol */}
+      {/* Header: signal dot + name */}
       <div className="flex items-center gap-2 mb-2">
         {signal && (
           <span className={`w-2.5 h-2.5 rounded-full ${signal.dot} ring-4 ${signal.ring} flex-shrink-0`} />
@@ -37,15 +61,37 @@ export default function MarketIndicatorCard({ item, sparkData, isSelected, onCli
         <span className="text-sm text-dark-300 truncate">{item.name}</span>
       </div>
 
-      {/* Price + change */}
+      {/* Price + daily change */}
       <div className="flex items-baseline gap-2 mb-1">
         <span className="text-xl font-bold tabular-nums">
-          {item.price != null ? item.price.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '---'}
+          {item.price != null
+            ? item.price.toLocaleString(undefined, { maximumFractionDigits: decimals })
+            : '---'}
         </span>
         <span className={`text-sm font-medium ${isUp ? 'text-green-400' : 'text-red-400'}`}>
-          {isUp ? '+' : ''}{(item.change_percent || 0).toFixed(2)}%
+          {formatChange(day, rate)}
         </span>
       </div>
+
+      {/* Rolling 週 / 月 變化 */}
+      {(item.change_1w != null || item.change_1m != null) && (
+        <div className="flex items-center gap-3 text-[11px] text-dark-500 tabular-nums">
+          {item.change_1w != null && (
+            <span>
+              週 <span className={item.change_1w >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {formatChange(item.change_1w, rate)}
+              </span>
+            </span>
+          )}
+          {item.change_1m != null && (
+            <span>
+              月 <span className={item.change_1m >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {formatChange(item.change_1m, rate)}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Sparkline */}
       {sparkData && sparkData.length > 1 && (
@@ -72,8 +118,15 @@ export default function MarketIndicatorCard({ item, sparkData, isSelected, onCli
         </div>
       )}
 
-      {/* Symbol label */}
-      <div className="text-xs text-dark-500 mt-1">{item.symbol}</div>
+      {/* Symbol + 來源 */}
+      <div className="flex items-center justify-between gap-2 text-xs text-dark-500 mt-1">
+        <span className="truncate">{item.symbol}</span>
+        {item.source_name && (
+          <span className="shrink-0 text-[10px] text-dark-600 truncate max-w-[45%]" title={item.source_name}>
+            {item.source_name}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

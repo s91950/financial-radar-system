@@ -1196,13 +1196,16 @@ async def market_check():
         if not watchlist:
             return
 
-        symbols = [w.symbol for w in watchlist]
-        quotes = await market_data.get_market_quotes(symbols)
-        quotes_map = {q["symbol"]: q for q in quotes}
+        # provider 分派：Yahoo / 官方來源（日本 MOF、ECB、BoE）/ 衍生指標（利差）
+        quotes_map = await market_data.get_quotes_for_items(watchlist)
+
+        # 一次批次抓 3 個月日線，rolling 漲跌幅與區間變化條件共用同一份資料，
+        # 避免每個指標各抓一次（40 檔逐一抓 yfinance 要幾十秒）。
+        histories = await market_data.get_histories_for_items(watchlist, period="3mo", interval="1d")
 
         for item in watchlist:
             quote = quotes_map.get(item.symbol)
-            if not quote or not quote.get("price"):
+            if not quote or quote.get("price") is None:
                 continue
 
             price = quote["price"]
@@ -1213,6 +1216,12 @@ async def market_check():
             item.change_percent = change_pct
             item.last_updated = datetime.utcnow()
 
+            # rolling 單週 / 單月漲跌幅（殖利率類以 bp 表示，其餘用 %）
+            hist = histories.get(item.symbol) or []
+            _unit = "bp" if (item.unit or "") == "percent" else "pct"
+            item.change_1w = _change_amount(price, _baseline_close(hist, 7), _unit)
+            item.change_1m = _change_amount(price, _baseline_close(hist, 30), _unit)
+
             # Evaluate signal conditions (ordered by priority)
             conditions = (
                 db.query(SignalCondition)
@@ -1221,9 +1230,9 @@ async def market_check():
                 .all()
             )
 
-            # 區間變化條件（change_gt / change_lt / change_abs_gt）需要歷史基準點，
-            # 只對「真的有這類條件」的指標抓歷史，避免每輪對 17 檔都打 yfinance。
-            changes = await _compute_changes(item.symbol, price, conditions)
+            # 區間變化條件（change_gt / change_lt / change_abs_gt）的基準點，
+            # 直接用上面批次抓好的歷史算，不再另外打網路。
+            changes = _changes_from_history(hist, price, conditions)
 
             new_signal = None
             triggered_cond = None
@@ -1383,23 +1392,18 @@ def _change_amount(price: float, baseline: float | None, unit: str) -> float | N
     return delta
 
 
-async def _compute_changes(symbol: str, price: float, conditions: list) -> dict:
-    """算出某指標所有 (window, unit) 組合的變化量；沒有區間條件就不打網路。"""
+def _changes_from_history(hist: list[dict], price: float, conditions: list) -> dict:
+    """由既有的日線序列算出各 (window, unit) 組合的變化量。
+
+    歷史資料由 market_check 一次批次抓好傳進來，這裡純計算不打網路。
+    """
     wanted = {
         (c.change_window or "1d", c.change_unit or "price")
         for c in conditions
         if c.operator in _CHANGE_OPERATORS
     }
-    if not wanted:
+    if not wanted or not hist:
         return {}
-
-    from backend.services import market_data
-    try:
-        hist = await market_data.get_market_history(symbol, period="3mo", interval="1d")
-    except Exception as e:
-        logger.warning(f"取得 {symbol} 歷史資料失敗，區間條件本輪跳過: {e}")
-        return {}
-
     out: dict = {}
     for window, unit in wanted:
         baseline = _baseline_close(hist, _WINDOW_DAYS.get(window, 1))

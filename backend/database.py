@@ -89,6 +89,17 @@ class MarketWatchItem(Base):
     description = Column(String)
     signal_status = Column(String)  # 'positive' | 'neutral' | 'negative'
     sort_order = Column(Integer, default=0)
+    # --- 資料來源分派（Yahoo 沒有非美國公債殖利率，需直接接官方來源）---
+    # 'yahoo'(預設) | 'mof_jp'(日本財務省) | 'ecb' | 'boe' | 'derived'(利差等衍生指標)
+    provider = Column(String, default="yahoo")
+    provider_symbol = Column(String, nullable=True)   # 來源端代碼，如 '10Y' / 'IUDMNZC'
+    source_name = Column(String, nullable=True)       # 顯示用來源名稱
+    source_url = Column(String, nullable=True)        # 來源網頁（圖表右上角連結 icon）
+    unit = Column(String, nullable=True)              # 'percent'(殖利率,變化以 bp 表示) | 'price' | 'index'
+    formula = Column(String, nullable=True)           # provider='derived' 時的算式，如 '^TNX - 2YY=F'
+    # --- rolling 漲跌幅（market_check 每小時算好寫入，儀表板直接讀）---
+    change_1w = Column(Float, nullable=True)
+    change_1m = Column(Float, nullable=True)
 
     conditions = relationship("SignalCondition", back_populates="watchlist_item", cascade="all, delete-orphan")
 
@@ -528,6 +539,125 @@ def _migrate_db():
             "WHERE source_url IS NOT NULL AND source_url != ''"
         ))
         conn.commit()
+
+        # 市場指標：資料來源分派 + rolling 漲跌幅
+        for _col in (
+            "provider TEXT DEFAULT 'yahoo'",
+            "provider_symbol TEXT",
+            "source_name TEXT",
+            "source_url TEXT",
+            "unit TEXT",
+            "formula TEXT",
+            "change_1w REAL",
+            "change_1m REAL",
+        ):
+            try:
+                conn.execute(text(f"ALTER TABLE market_watchlist ADD COLUMN {_col}"))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+        # 既有列補上 provider 預設值（ADD COLUMN 的 DEFAULT 只作用於之後的 INSERT）
+        conn.execute(text(
+            "UPDATE market_watchlist SET provider='yahoo' WHERE provider IS NULL OR provider=''"
+        ))
+        conn.commit()
+
+        # --- 市場指標擴充 v1：各國利率 + 匯率 + 利差（2026-09-15）---
+        # 只跑一次（用 SystemConfig 旗標守門）。不用「symbol 不存在就插入」是因為
+        # 使用者刪掉某個指標後，下次重啟又會被補回來——monitor_sources 踩過同樣的坑。
+        _seeded = conn.execute(text(
+            "SELECT value FROM system_config WHERE key='market_rates_seeded_v1'"
+        )).fetchone()
+        if not _seeded:
+            _YH = "Yahoo Finance"
+            _yh_url = lambda sym: f"https://finance.yahoo.com/quote/{sym}"
+            _MOF = ("日本財務省", "https://www.mof.go.jp/english/policy/jgbs/reference/interest_rate/")
+            _ECB = ("歐洲央行 (ECB)", "https://data.ecb.europa.eu/data/datasets/YC")
+            _BOE = ("英國央行 (BoE)", "https://www.bankofengland.co.uk/boeapps/database/")
+
+            # (symbol, name, category, description, provider, provider_symbol,
+            #  unit, formula, source_name, source_url, sort_order)
+            _new_items = [
+                # ── 美國公債（Yahoo 有，補齊 3M 與 2Y）──
+                ("^IRX", "美3M國庫券", "bond", "美國 13 週國庫券殖利率", "yahoo", None,
+                 "percent", None, _YH, _yh_url("%5EIRX"), 10),
+                ("2YY=F", "美2Y殖利率", "bond", "CBOT 2 年期公債殖利率期貨", "yahoo", None,
+                 "percent", None, _YH, _yh_url("2YY%3DF"), 11),
+                # ── 日本公債（財務省 CSV，1Y~40Y 全年期可選）──
+                ("JP2Y", "日2Y公債", "bond", "日本 2 年期公債殖利率", "mof_jp", "2Y",
+                 "percent", None, _MOF[0], _MOF[1], 20),
+                ("JP10Y", "日10Y公債", "bond", "日本 10 年期公債殖利率", "mof_jp", "10Y",
+                 "percent", None, _MOF[0], _MOF[1], 21),
+                ("JP30Y", "日30Y公債", "bond", "日本 30 年期公債殖利率", "mof_jp", "30Y",
+                 "percent", None, _MOF[0], _MOF[1], 22),
+                # ── 歐元區公債（ECB AAA 殖利率曲線）──
+                ("EU2Y", "歐2Y公債", "bond", "歐元區 AAA 2 年期公債殖利率", "ecb", "2Y",
+                 "percent", None, _ECB[0], _ECB[1], 30),
+                ("EU10Y", "歐10Y公債", "bond", "歐元區 AAA 10 年期公債殖利率", "ecb", "10Y",
+                 "percent", None, _ECB[0], _ECB[1], 31),
+                ("EU30Y", "歐30Y公債", "bond", "歐元區 AAA 30 年期公債殖利率", "ecb", "30Y",
+                 "percent", None, _ECB[0], _ECB[1], 32),
+                # ── 英國公債 ──
+                ("UK10Y", "英10Y公債", "bond", "英國 10 年期名目公債殖利率", "boe", "IUDMNZC",
+                 "percent", None, _BOE[0], _BOE[1], 40),
+                # ── 利差（衍生指標；算式語法用 {代碼} 包住，因為代碼本身含 ^ = - . ）──
+                ("US10Y_2Y", "美10Y-2Y利差", "bond", "美債殖利率曲線斜率（負值＝倒掛）",
+                 "derived", None, "percent", "{^TNX} - {2YY=F}", "系統計算", None, 50),
+                ("US_JP_10Y", "美日10Y利差", "bond", "美日 10 年期公債利差（日圓套利參考）",
+                 "derived", None, "percent", "{^TNX} - {JP10Y}", "系統計算", None, 51),
+                ("US_EU_10Y", "美歐10Y利差", "bond", "美歐 10 年期公債利差",
+                 "derived", None, "percent", "{^TNX} - {EU10Y}", "系統計算", None, 52),
+                # ── 匯率補齊 ──
+                ("KRW=X", "美元/韓元", "currency", "美元兌韓元匯率", "yahoo", None,
+                 "price", None, _YH, _yh_url("KRW%3DX"), 10),
+                ("CNY=X", "美元/人民幣", "currency", "美元兌離岸人民幣匯率", "yahoo", None,
+                 "price", None, _YH, _yh_url("CNY%3DX"), 11),
+                ("GBPUSD=X", "英鎊/美元", "currency", "英鎊兌美元匯率", "yahoo", None,
+                 "price", None, _YH, _yh_url("GBPUSD%3DX"), 12),
+                ("CHF=X", "美元/瑞郎", "currency", "美元兌瑞士法郎匯率", "yahoo", None,
+                 "price", None, _YH, _yh_url("CHF%3DX"), 13),
+                ("EURJPY=X", "歐元/日圓", "currency", "歐元兌日圓匯率", "yahoo", None,
+                 "price", None, _YH, _yh_url("EURJPY%3DX"), 14),
+            ]
+            for (_sym, _name, _cat, _desc, _prov, _psym,
+                 _unit, _formula, _sname, _surl, _order) in _new_items:
+                exists = conn.execute(
+                    text("SELECT 1 FROM market_watchlist WHERE symbol=:s"), {"s": _sym}
+                ).fetchone()
+                if exists:
+                    continue
+                conn.execute(text("""
+                    INSERT INTO market_watchlist
+                        (symbol, name, category, description, provider, provider_symbol,
+                         unit, formula, source_name, source_url, sort_order)
+                    VALUES (:sym, :name, :cat, :desc, :prov, :psym,
+                            :unit, :formula, :sname, :surl, :ord)
+                """), {"sym": _sym, "name": _name, "cat": _cat, "desc": _desc,
+                       "prov": _prov, "psym": _psym, "unit": _unit, "formula": _formula,
+                       "sname": _sname, "surl": _surl, "ord": _order})
+
+            # 既有指標補上 unit / 來源（殖利率類變化要以 bp 顯示，靠 unit 判斷）
+            conn.execute(text(
+                "UPDATE market_watchlist SET unit='percent' "
+                "WHERE unit IS NULL AND category='bond'"
+            ))
+            conn.execute(text(
+                "UPDATE market_watchlist SET unit='price' "
+                "WHERE unit IS NULL AND category IN ('currency','commodity','crypto')"
+            ))
+            conn.execute(text(
+                "UPDATE market_watchlist SET unit='index' "
+                "WHERE unit IS NULL AND category IN ('equity','volatility')"
+            ))
+            conn.execute(text(
+                "UPDATE market_watchlist SET source_name=:n "
+                "WHERE source_name IS NULL AND (provider IS NULL OR provider='yahoo')"
+            ), {"n": "Yahoo Finance"})
+            conn.execute(text(
+                "INSERT INTO system_config (key, value) "
+                "VALUES ('market_rates_seeded_v1', 'true')"
+            ))
+            conn.commit()
 
         # 主題文章命中的關鍵字（顯示用）
         try:

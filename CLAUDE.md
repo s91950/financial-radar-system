@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
+**2026-09-15 — 市場儀表板第一階段：多國利率資料層 ＋ 利差 ＋ rolling 漲跌幅**（backend + 指標卡）：
+- **根本限制**：Yahoo/yfinance **只有美國**公債殖利率（`^IRX`/`^FVX`/`^TNX`/`^TYX`，另 `2YY=F` 是 CBOT 2 年期殖利率期貨可當 2Y）。`^JGB10` / `^GDBR10` / `^GB10Y` 這類國際代碼實測全部 404；stooq 的多國殖利率 CSV 整站上了 JS proof-of-work 挑戰也不能用。因此非美國利率一律直接接官方來源。
+- **新增 [services/rate_sources.py](backend/services/rate_sources.py)**：免金鑰、日頻的三個官方來源 —— `mof_jp`（日本財務省，**1Y~40Y 全年期**；歷史檔 `historical/jgbcme_all.csv` 只到上月底，**必須再併當月檔 `jgbcme.csv`** 才有最近幾天）、`ecb`（歐洲央行 Data Portal，`lastNObservations` 可一次要 400 筆）、`boe`（英國央行 IADB，日期區間 + series code，10Y 名目＝`IUDMNZC`）。含 TTL 記憶體快取（歷史檔 12h、當月/日資料 1h），失敗一律回空 list 不讓單一來源拖垮整個看板。**未接**：台灣（TPEx 新站是 SPA，OpenAPI 225 個端點沒有公債殖利率曲線，已知官方檔案代碼是 BDdys100 但下載端點待確認）、韓國（BOK ECOS 需免費金鑰）。
+- **`MarketWatchItem` 新增欄位**：`provider`（`yahoo` / `mof_jp` / `ecb` / `boe` / `derived`）、`provider_symbol`（來源端代碼，如 `10Y` / `IUDMNZC`）、`source_name` / `source_url`（顯示與連結）、`unit`（`percent` / `price` / `index`）、`formula`（衍生指標算式）、`change_1w` / `change_1m`（rolling）。
+- **provider 分派層**（[market_data.py](backend/services/market_data.py)）：`get_quotes_for_items()` / `get_history_for_item()` / `get_histories_for_items()` —— 呼叫端不必知道某指標的資料從哪來。Yahoo 端批次化（報價用 `yf.Tickers`、歷史用 `yf.download`），`get_market_quotes` 與 `get_market_history` 都改走 `asyncio.to_thread`（yfinance 是同步阻塞的，40 檔逐一抓會卡住排程 event loop）。
+- **利差（衍生指標）**：`provider='derived'` + `formula`。**算式語法是 `{代碼}` 大括號包住**，例 `{^TNX} - {2YY=F}` —— 不能用裸符號，因為 `^TNX` / `2YY=F` / `DX-Y.NYB` 本身就含 `^ = - .` 這些運算子字元。代換後用正則 `^[0-9+\-*/(). ]+$` 驗證才 `eval`（無 builtins），擋掉任何函式呼叫。衍生指標**不支援互相引用**（避免相依環）。已建：美10Y-2Y、美日10Y、美歐10Y 利差。
+- **rolling 單週/單月漲跌幅**：`market_check` 每小時一次批次抓 3 個月日線，**rolling 顯示與區間變化條件共用同一份資料**（原 `_compute_changes` 會自己打網路，改成純計算的 `_changes_from_history`）。殖利率類（`unit='percent'`）以 **bp** 計、其餘用 %。
+- **指標卡顯示修正**：殖利率的日變化原本顯示 `change_percent`（殖利率**數值本身**的百分比變化），做利率看板會被誤讀 —— 4.96→4.95 實際是 1bp，卻顯示 -0.28%。改為 `unit='percent'` 時用 `(今值 − 前收) × 100` 顯示 bp，`/market` 回應因此多回 `previous_close`。
+- **新指標**：美國補 3M/2Y、日本 2Y/10Y/30Y、歐元區 2Y/10Y/30Y、英國 10Y、三檔利差、匯率補韓元/人民幣/英鎊/瑞郎/歐日，共 34 檔。seed 走 `_migrate_db()` 但**用 `SystemConfig['market_rates_seeded_v1']` 旗標守門只跑一次** —— 若用「symbol 不存在就插入」，使用者刪掉的指標下次重啟會被補回來（`monitor_sources` 踩過同樣的坑）。
+- **新端點** `GET /api/radar/market/history-multi?symbols=a,b,c`（多指標疊圖用，最多 6 檔，各自回傳獨立點陣列由前端對齊，另附 `unit` 供前端決定左右軸）。**待做（第二階段）**：圖表 UI —— 來源連結 icon、日期範圍選擇、多指標疊圖。
+
 **2026-09-15 — 主題追蹤改為純分類層 ＋ 市場數據警示併入主題**（backend + frontend，跨 DB schema）：
 - **主題不再自己抓新聞**。舊架構每個主題在雷達掃描時跑三段（Pass A 比對已收文章 / Pass A2 比對未過濾 RSS 池 / Pass B 為該主題**另打一輪 Google News**），且 `Topic.keywords` 會併進 `_global_topics` 擴大抓取網。新架構只留一段：文章由「全域關鍵字 + 來源關鍵字」抓進來、走完**去重 → 補全文 → 排除關鍵字 → 財經篩選**全部關卡後，才在 [jobs.py](backend/scheduler/jobs.py) 的 Step 3b 用主題關鍵字歸類。**副作用**：只命中主題關鍵字、沒命中全域/來源關鍵字的文章不再被抓進來——要影響抓取請把詞加進「系統設定 → 雷達關鍵字」（主題編輯彈窗有提示文字）。
 - **比對範圍是「標題 + 內文前 500 字」**（`topic_match._MATCH_BODY_CHARS`）。**踩坑**：補全文抓的是整個 `<article>`/`<main>` 區塊，裡面常夾「相關文章」側欄——別篇報導的標題會被當成本文內容。上線當天實測一篇車禍社會新聞的內文尾段同時出現「日銀…激進升息行動」與「台積電宣布…」，讓 `("升息" OR "降息") AND ("宣布")` 這種布林組合誤命中；回溯比對一次撈 7 天把誤判集中放大（14 篇裡約 10 篇是這樣來的）。舊 Pass A 其實有同樣問題（且完全不截斷），只是一次只比對當輪新文章所以沒被看見。
