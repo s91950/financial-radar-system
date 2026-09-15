@@ -19,6 +19,18 @@ function formatChange(value, rate) {
   return rate ? `${sign}${value.toFixed(1)}bp` : `${sign}${value.toFixed(2)}%`
 }
 
+// 官方來源（ECB / BoE / 日本財務省）有公布落後，常落後 2-4 個工作天。
+// 若不標出資料日期，看板上會顯得跟即時報價一樣新，容易誤判。
+function staleLabel(item) {
+  if (!item.data_time) return null
+  const d = new Date(item.data_time)
+  if (Number.isNaN(d.getTime())) return null
+  const today = new Date()
+  const days = Math.floor((today - d) / 86400000)
+  if (days < 1) return null
+  return `資料日 ${d.toLocaleDateString('zh-TW', { month: '2-digit', day: '2-digit' })}`
+}
+
 // 日變化：殖利率用 (今值 − 前收) × 100 換成 bp，其餘直接用後端給的 change_percent
 function dailyChange(item) {
   if (isRate(item) && item.price != null && item.previous_close != null) {
@@ -32,6 +44,7 @@ export default function MarketIndicatorCard({ item, sparkData, isSelected, onCli
   const rate = isRate(item)
   const day = dailyChange(item)
   const isUp = day >= 0
+  const stale = staleLabel(item)
   const decimals = rate ? 3 : 2
 
   return (
@@ -118,14 +131,18 @@ export default function MarketIndicatorCard({ item, sparkData, isSelected, onCli
         </div>
       )}
 
-      {/* Symbol + 來源 */}
+      {/* Symbol + 資料日期 / 來源 */}
       <div className="flex items-center justify-between gap-2 text-xs text-dark-500 mt-1">
         <span className="truncate">{item.symbol}</span>
-        {item.source_name && (
+        {stale ? (
+          <span className="shrink-0 text-[10px] text-yellow-500/70" title={`此來源有公布落後：${item.source_name || ''}`}>
+            {stale}
+          </span>
+        ) : item.source_name ? (
           <span className="shrink-0 text-[10px] text-dark-600 truncate max-w-[45%]" title={item.source_name}>
             {item.source_name}
           </span>
-        )}
+        ) : null}
       </div>
     </div>
   )

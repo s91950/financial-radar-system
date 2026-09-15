@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { radarAPI, newsAPI, getCurrentUser } from '../services/api'
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import CategoryTabs from '../components/Radar/CategoryTabs'
 import MarketIndicatorCard from '../components/Radar/MarketIndicatorCard'
+import MarketChartPanel from '../components/Radar/MarketChartPanel'
 import SignalConditionModal from '../components/Radar/SignalConditionModal'
 
 const SENTIMENT_COLORS = {
@@ -18,7 +18,6 @@ export default function DashboardPage({ wsSubscribe }) {
   const [activeCategory, setActiveCategory] = useState('bond')
   const [sparklines, setSparklines] = useState({})
   const [selectedSymbol, setSelectedSymbol] = useState(null)
-  const [chartData, setChartData] = useState([])
   const [conditionItem, setConditionItem] = useState(null)
   const [marketLoading, setMarketLoading] = useState(true)
 
@@ -41,34 +40,22 @@ export default function DashboardPage({ wsSubscribe }) {
     setMarketLoading(false)
   }, [])
 
+  // 走勢縮圖一次要回全部指標：後端會批次抓（Yahoo 一次 yf.download、
+  // 官方來源共用快取），比每檔各打一次快得多——指標擴充到 34 檔後差很多。
   const loadSparklines = useCallback(async (grouped) => {
-    const allItems = Object.values(grouped).flat()
-    const results = {}
-    for (let i = 0; i < allItems.length; i += 5) {
-      const batch = allItems.slice(i, i + 5)
-      const promises = batch.map(async (item) => {
-        try {
-          const { data } = await radarAPI.getMarketHistory(item.symbol, '5d', '1d')
-          results[item.symbol] = data.map(d => ({ close: d.close }))
-        } catch {
-          results[item.symbol] = []
-        }
-      })
-      await Promise.all(promises)
-    }
-    setSparklines(results)
-  }, [])
-
-  const loadChart = useCallback(async (symbol) => {
-    setSelectedSymbol(symbol)
+    const items = Object.values(grouped).flat()
+    if (items.length === 0) return
     try {
-      const { data } = await radarAPI.getMarketHistory(symbol, '5d', '1h')
-      setChartData(data.map(d => ({
-        time: new Date(d.time).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-        price: d.close,
-      })))
+      const { data } = await radarAPI.getMarketHistoryMulti(
+        items.map(i => i.symbol), '1mo', '1d'
+      )
+      const results = {}
+      for (const s of data.series || []) {
+        results[s.symbol] = (s.points || []).map(d => ({ close: d.close }))
+      }
+      setSparklines(results)
     } catch (err) {
-      console.error('Failed to load chart:', err)
+      console.error('Failed to load sparklines:', err)
     }
   }, [])
 
@@ -109,7 +96,6 @@ export default function DashboardPage({ wsSubscribe }) {
     : marketData[activeCategory] || []
 
   const allItems = Object.values(marketData).flat()
-  const chartItemName = allItems.find(m => m.symbol === selectedSymbol)?.name
 
   return (
     <div className="space-y-6">
@@ -154,7 +140,7 @@ export default function DashboardPage({ wsSubscribe }) {
                 item={item}
                 sparkData={sparklines[item.symbol]}
                 isSelected={selectedSymbol === item.symbol}
-                onClick={() => loadChart(item.symbol)}
+                onClick={() => setSelectedSymbol(item.symbol)}
                 onSettingsClick={(item) => setConditionItem(item)}
               />
             ))
@@ -163,34 +149,12 @@ export default function DashboardPage({ wsSubscribe }) {
       </section>
 
       {/* Chart */}
-      {selectedSymbol && chartData.length > 0 && (
-        <section className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold">{chartItemName} 走勢圖</h3>
-            <button onClick={() => { setSelectedSymbol(null); setChartData([]) }}
-              className="text-dark-400 hover:text-white">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          <ResponsiveContainer width="100%" height={250}>
-            <AreaChart data={chartData}>
-              <defs>
-                <linearGradient id="colorPriceDash" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="time" tick={{ fontSize: 11, fill: '#64748b' }} interval="preserveStartEnd" />
-              <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#64748b' }} />
-              <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#f1f5f9' }}
-              />
-              <Area type="monotone" dataKey="price" stroke="#3b82f6" fill="url(#colorPriceDash)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </section>
+      {selectedSymbol && (
+        <MarketChartPanel
+          primarySymbol={selectedSymbol}
+          allItems={allItems}
+          onClose={() => setSelectedSymbol(null)}
+        />
       )}
 
       {/* News Sentiment & Heat */}

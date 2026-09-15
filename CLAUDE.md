@@ -15,7 +15,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **rolling 單週/單月漲跌幅**：`market_check` 每小時一次批次抓 3 個月日線，**rolling 顯示與區間變化條件共用同一份資料**（原 `_compute_changes` 會自己打網路，改成純計算的 `_changes_from_history`）。殖利率類（`unit='percent'`）以 **bp** 計、其餘用 %。
 - **指標卡顯示修正**：殖利率的日變化原本顯示 `change_percent`（殖利率**數值本身**的百分比變化），做利率看板會被誤讀 —— 4.96→4.95 實際是 1bp，卻顯示 -0.28%。改為 `unit='percent'` 時用 `(今值 − 前收) × 100` 顯示 bp，`/market` 回應因此多回 `previous_close`。
 - **新指標**：美國補 3M/2Y、日本 2Y/10Y/30Y、歐元區 2Y/10Y/30Y、英國 10Y、三檔利差、匯率補韓元/人民幣/英鎊/瑞郎/歐日，共 34 檔。seed 走 `_migrate_db()` 但**用 `SystemConfig['market_rates_seeded_v1']` 旗標守門只跑一次** —— 若用「symbol 不存在就插入」，使用者刪掉的指標下次重啟會被補回來（`monitor_sources` 踩過同樣的坑）。
-- **新端點** `GET /api/radar/market/history-multi?symbols=a,b,c`（多指標疊圖用，最多 6 檔，各自回傳獨立點陣列由前端對齊，另附 `unit` 供前端決定左右軸）。**待做（第二階段）**：圖表 UI —— 來源連結 icon、日期範圍選擇、多指標疊圖。
+- **第二階段（圖表 UI）**：新元件 [MarketChartPanel.jsx](frontend/src/components/Radar/MarketChartPanel.jsx) 取代 DashboardPage 內嵌的舊走勢圖，提供日期範圍（5天/1月/3月/6月/1年/2年）、「+ 比較」多指標疊圖（上限 5 條）、右上角資料來源連結 icon。
+  - **絕不開雙軸**（dataviz 規範的頭號禁忌：兩個 y 軸的對齊方式是任意的，會憑空造出不存在的相關性）。所選指標**單位不同時自動指數化為起點 = 100**，並在圖上標明。
+  - **色票綁指標、不綁名次**：`slots` state 記 `symbol → 色票編號`，移除其中一條線時其餘線不換色（避免「我記得台債是藍色」變成別的顏色）。五階深色類別色 `#3987e5 / #d95926 / #199e70 / #c98500 / #d55181` 已用 dataviz validator 對本專案表面色 `#1e293b`（`dark-800`）驗過：明度帶、彩度下限、色盲可辨識度、一般視覺可辨識度、對比度**全數通過**。第 6 階綠 `#008300` 對比度只有 2.96:1 未達 3:1，因此上限設 5 條。
+  - **5 天檢視只在全部是 Yahoo 指標時可用** —— 官方來源（MOF/ECB/BoE）只有日資料，混進 1 小時間隔的圖會是空的；含官方來源時該按鈕自動 disable。
+  - `GET /api/radar/market/history-multi` 改走**批次抓取**（`get_histories_for_items`）、上限放寬到 40，儀表板的**走勢縮圖也改走這支**（原本 34 檔各打一次 history 要十幾秒）。衍生指標會自動把算式引用到的成分一起抓進來算。
+- **資料新鮮度標示**：官方來源有公布落後（實測 ECB 落後 4 天、BoE 5 天、日本 1 天，Yahoo 則是即時），原本 `/market` 對所有指標都把 `last_updated` 設成抓取當下時間，看板上全部顯示「剛剛更新」會誤判。改為另回 `data_time`（資料本身的時點），指標卡在資料非當日時顯示黃色「資料日 MM/DD」。
 
 **2026-09-15 — 主題追蹤改為純分類層 ＋ 市場數據警示併入主題**（backend + frontend，跨 DB schema）：
 - **主題不再自己抓新聞**。舊架構每個主題在雷達掃描時跑三段（Pass A 比對已收文章 / Pass A2 比對未過濾 RSS 池 / Pass B 為該主題**另打一輪 Google News**），且 `Topic.keywords` 會併進 `_global_topics` 擴大抓取網。新架構只留一段：文章由「全域關鍵字 + 來源關鍵字」抓進來、走完**去重 → 補全文 → 排除關鍵字 → 財經篩選**全部關卡後，才在 [jobs.py](backend/scheduler/jobs.py) 的 Step 3b 用主題關鍵字歸類。**副作用**：只命中主題關鍵字、沒命中全域/來源關鍵字的文章不再被抓進來——要影響抓取請把詞加進「系統設定 → 雷達關鍵字」（主題編輯彈窗有提示文字）。

@@ -206,7 +206,7 @@ async def get_market_data(db: Session = Depends(get_db)):
         if quote.get("price") is not None:
             item.current_value = quote["price"]
             item.change_percent = quote.get("change_percent", 0)
-            item.last_updated = datetime.utcnow()
+            item.last_updated = datetime.utcnow()   # 我們最後一次刷新的時間
 
         cat = item.category or "equity"
         grouped[cat].append({
@@ -232,6 +232,9 @@ async def get_market_data(db: Session = Depends(get_db)):
             "source_name": item.source_name,
             "source_url": item.source_url,
             "last_updated": (item.last_updated.isoformat() + "Z") if item.last_updated else None,
+            # 資料本身的時點。Yahoo 是即時報價，但官方來源有公布落後
+            # （ECB / BoE 常落後 2-4 個工作天），全部標成「剛剛更新」會誤導。
+            "data_time": quote.get("last_updated"),
         })
     db.commit()
     return dict(grouped)
@@ -275,38 +278,57 @@ async def get_market_history(
 
 @router.get("/market/history-multi")
 async def get_market_history_multi(
-    symbols: str = Query(..., description="逗號分隔的指標代碼，最多 6 個"),
+    symbols: str = Query(..., description="逗號分隔的指標代碼（上限 40）"),
     period: str = Query("3mo", pattern="^(1d|5d|1mo|3mo|6mo|1y|2y|5y)$"),
     interval: str = Query("1d", pattern="^(5m|15m|30m|1h|1d)$"),
     db: Session = Depends(get_db),
 ):
-    """多指標疊圖用：一次取回數個指標的序列。
+    """一次取回多個指標的序列——多指標疊圖與儀表板的走勢縮圖都走這支。
 
-    不同指標的交易日不完全一致（例如日本國定假日、歐美時差），所以回傳
-    `series` 各自獨立的點陣列，由前端依日期對齊繪製；另附 `unit` 讓前端
-    決定要不要分左右軸（殖利率 % 與匯率數值刻度差很多）。
+    走批次抓取（Yahoo 端一次 `yf.download`、官方來源共用 TTL 快取），
+    不是逐一呼叫——34 檔指標各打一次會拖到十幾秒。
+
+    不同指標的交易日不完全一致（日本國定假日、歐美時差、官方來源的公布落後），
+    所以 `series` 各自回傳獨立的點陣列，由前端依日期對齊繪製；另附 `unit`，
+    單位不同時前端會改用指數化比較（不開雙軸——兩個 y 軸的對齊是任意的，
+    會憑空造出不存在的相關性）。
     """
-    wanted = [x.strip() for x in symbols.split(",") if x.strip()][:6]
+    wanted = [x.strip() for x in symbols.split(",") if x.strip()][:40]
     if not wanted:
         return {"series": []}
 
     all_items = db.query(MarketWatchItem).all()
     by_symbol = {i.symbol: i for i in all_items}
+    items = [by_symbol[s] for s in wanted if s in by_symbol]
+    if not items:
+        return {"series": []}
 
-    out = []
-    for sym in wanted:
-        item = by_symbol.get(sym)
-        if item is None:
-            continue
-        points = await market_data.get_history_for_item(item, period, interval, all_items)
-        out.append({
-            "symbol": sym,
-            "name": item.name,
-            "unit": item.unit or "price",
-            "category": item.category,
-            "points": points,
-        })
-    return {"series": out, "period": period, "interval": interval}
+    # 衍生指標要算，得把它引用到的成分也一起抓進來
+    needed = list(items)
+    have = {i.symbol for i in needed}
+    for it in items:
+        if (it.provider or "") == "derived":
+            for leg in market_data.formula_symbols(it.formula or ""):
+                if leg not in have and leg in by_symbol:
+                    needed.append(by_symbol[leg])
+                    have.add(leg)
+
+    histories = await market_data.get_histories_for_items(needed, period, interval)
+    return {
+        "series": [
+            {
+                "symbol": it.symbol,
+                "name": it.name,
+                "unit": it.unit or "price",
+                "category": it.category,
+                "provider": it.provider or "yahoo",
+                "points": histories.get(it.symbol) or [],
+            }
+            for it in items
+        ],
+        "period": period,
+        "interval": interval,
+    }
 
 
 @router.get("/market/twse")

@@ -121,6 +121,10 @@ export const radarAPI = {
   getMarketCategories: () => api.get('/radar/market/categories'),
   getMarketHistory: (symbol, period = '5d', interval = '1h') =>
     api.get(`/radar/market/history/${encodeURIComponent(symbol)}`, { params: { period, interval } }),
+  getMarketHistoryMulti: (symbols, period = '3mo', interval = '1d') =>
+    api.get('/radar/market/history-multi', {
+      params: { symbols: Array.isArray(symbols) ? symbols.join(',') : symbols, period, interval },
+    }),
   getTWSEData: () => api.get('/radar/market/twse'),
   addWatchlistItem: (data) => api.post('/radar/market/watchlist', data),
   updateWatchlistItem: (id, data) => api.put(`/radar/market/watchlist/${id}`, data),
