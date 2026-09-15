@@ -218,7 +218,6 @@ export const topicsAPI = {
   updateTopic: (id, data) => api.put(`/topics/${id}`, data),
   deleteTopic: (id) => api.delete(`/topics/${id}`),
   getArticles: (id, params) => api.get(`/topics/${id}/articles`, { params }),
-  searchAndImport: (id, data) => api.post(`/topics/${id}/search`, data),
   deleteArticle: (topicId, articleId) => api.delete(`/topics/${topicId}/articles/${articleId}`),
   deleteSignal: (topicId, signalId) => api.delete(`/topics/${topicId}/signals/${signalId}`),
   rematch: (id, data) => api.post(`/topics/${id}/rematch`, data),

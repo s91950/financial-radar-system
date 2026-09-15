@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'react-hot-toast'
-import { topicsAPI, resolveUrl, settingsAPI, copyToClipboard } from '../services/api'
+import { topicsAPI, resolveUrl, copyToClipboard } from '../services/api'
 
 // --- Severity helpers ---
 // 三級顯示：critical→「高」（紅）、high→「中」（橘）、low→「低」（綠）；資料值不變，舊 medium 併入「中」樣式
@@ -16,6 +16,32 @@ function SeverityBadge({ severity }) {
   return (
     <span className={`shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded border font-medium whitespace-nowrap ${SEV_STYLES[severity] || SEV_STYLES.low}`}>
       {SEV_LABELS[severity] || severity}
+    </span>
+  )
+}
+
+// 命中關鍵字顯示格式（與 RadarPage extractMatchedKw 同規則）：
+// 後端已萃取的新格式按分隔符切前 4 個 term；舊資料若殘留原始布林字串則抽詞。
+function extractMatchedKw(kw) {
+  if (!kw) return null
+  const isRawTopic = kw.includes(' OR ') || kw.startsWith('(') || kw.includes('"')
+  if (!isRawTopic) {
+    const parts = kw.split(/\s*[/、,，;；]\s*/).map(t => t.trim()).filter(Boolean)
+    const joined = [...new Set(parts)].slice(0, 4).join(' / ')
+    return joined.length <= 40 ? joined : joined.slice(0, 38) + '…'
+  }
+  const quoted = [...kw.matchAll(/"([^"]+)"/g)].map(m => m[1])
+  const bare = kw.replace(/"[^"]*"/g, '').split(/[\s()]+/)
+    .filter(t => t && !['OR', 'AND', 'NOT'].includes(t) && t.length > 1)
+  return [...new Set([...quoted, ...bare])].slice(0, 4).join(' / ') || null
+}
+
+function MatchedKwBadge({ value }) {
+  const kw = extractMatchedKw(value)
+  if (!kw) return null
+  return (
+    <span className="shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/20 whitespace-nowrap cursor-default">
+      {kw}
     </span>
   )
 }
@@ -54,16 +80,13 @@ function SignalRow({ signal, onDelete }) {
               {' '}{formatChange(signal.change_value, signal.change_unit)}
             </span>
           )}
-          {signal.matched_keyword && (
-            <span className="px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/25">
-              {signal.matched_keyword}
-            </span>
-          )}
           {signal.triggered_at && (
             <span>{new Date(signal.triggered_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
           )}
         </div>
       </div>
+
+      <MatchedKwBadge value={signal.matched_keyword} />
 
       <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
@@ -142,18 +165,10 @@ function GroupEditor({ draft, newTerms, setNewTerms, addTerm, removeTerm, addGro
   )
 }
 
-function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {}, onAddToSeverity }) {
+function GroupedKeywordCard({ groups, onSave, onRemove, onSplit }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(() => groups.map(g => [...g]))
   const [newTerms, setNewTerms] = useState(() => groups.map(() => ''))
-  const [activePickerTerm, setActivePickerTerm] = useState(null)
-
-  useEffect(() => {
-    if (!activePickerTerm) return
-    const handler = () => setActivePickerTerm(null)
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
-  }, [activePickerTerm])
 
   const startEdit = () => { setDraft(groups.map(g => [...g])); setNewTerms(groups.map(() => '')); setEditing(true) }
   const cancel = () => setEditing(false)
@@ -190,43 +205,14 @@ function GroupedKeywordCard({ groups, onSave, onRemove, onSplit, severityKws = {
           </div>
         ) : (
           <div key={item.key} className="flex-1 flex flex-wrap gap-1 p-2.5 min-w-0">
-            {item.terms.map((t, ti) => {
-              const isCrit = severityKws.critical?.includes(t)
-              const isHigh = severityKws.high?.includes(t)
-              const pickerOpen = activePickerTerm === t
-              return (
-                <div key={ti} className="relative">
-                  {pickerOpen && (
-                    <div
-                      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex items-center gap-1"
-                      onClick={e => e.stopPropagation()}
-                    >
-                      <span className="text-[9px] text-dark-500 pr-1 border-r border-dark-600 mr-0.5 whitespace-nowrap">風險標記</span>
-                      <button
-                        onClick={() => onAddToSeverity?.('critical', t)}
-                        className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                          isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
-                        }`}
-                      >高</button>
-                      <button
-                        onClick={() => onAddToSeverity?.('high', t)}
-                        className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                          isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
-                        }`}
-                      >中</button>
-                    </div>
-                  )}
-                  <span
-                    onClick={e => { e.stopPropagation(); setActivePickerTerm(pickerOpen ? null : t) }}
-                    className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-primary-600/20 text-primary-400 border border-primary-500/30 whitespace-nowrap cursor-pointer select-none hover:bg-primary-600/30 transition-colors"
-                  >
-                    {isCrit && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
-                    {!isCrit && isHigh && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
-                    {t}
-                  </span>
-                </div>
-              )
-            })}
+            {item.terms.map((t, ti) => (
+              <span
+                key={ti}
+                className="text-xs px-2 py-0.5 rounded bg-primary-600/20 text-primary-400 border border-primary-500/30 whitespace-nowrap select-none"
+              >
+                {t}
+              </span>
+            ))}
           </div>
         ))}
         <div className="flex flex-col items-end justify-between px-2 py-1.5 shrink-0 border-l border-dark-600 min-w-[40px]">
@@ -485,16 +471,10 @@ export default function SearchPage() {
   const [topicData, setTopicData] = useState(null)   // { topic, articles, stats }
   const [loadingTopics, setLoadingTopics] = useState(true)
   const [loadingArticles, setLoadingArticles] = useState(false)
-  const [searching, setSearching] = useState(false)
-  const [hoursBack, setHoursBack] = useState(24)
-  const [useCustomHours, setUseCustomHours] = useState(false)
-  const [customHoursInput, setCustomHoursInput] = useState('48')
   const [showModal, setShowModal] = useState(false)
   const [editTopic, setEditTopic] = useState(null)
   const [copiedUrl, setCopiedUrl] = useState(null)
   const [selectedUrls, setSelectedUrls] = useState(new Set())
-  const [severityKws, setSeverityKws] = useState({ critical: [], high: [] })
-  const [activePicker, setActivePicker] = useState(null)
 
   const [rematching, setRematching] = useState(false)
 
@@ -524,39 +504,6 @@ export default function SearchPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadingTopics, topics])
-
-  useEffect(() => {
-    settingsAPI.getSeverityKeywords().then(({ data }) => {
-      setSeverityKws({ critical: data.critical || [], high: data.high || [] })
-    }).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    if (!activePicker) return
-    const handler = () => setActivePicker(null)
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
-  }, [activePicker])
-
-  const handleAddToSeverity = async (level, keyword) => {
-    const updated = {
-      critical: severityKws.critical.includes(keyword) && level === 'critical'
-        ? severityKws.critical.filter(k => k !== keyword)
-        : level === 'critical' ? [...severityKws.critical, keyword] : severityKws.critical,
-      high: severityKws.high.includes(keyword) && level === 'high'
-        ? severityKws.high.filter(k => k !== keyword)
-        : level === 'high' ? [...severityKws.high, keyword] : severityKws.high,
-    }
-    setSeverityKws(updated)
-    try {
-      await settingsAPI.updateSeverityKeywords({ critical: updated.critical, high: updated.high })
-      const label = level === 'critical' ? '高' : '中'
-      const isAdd = level === 'critical' ? updated.critical.includes(keyword) : updated.high.includes(keyword)
-      toast.success(isAdd ? `"${keyword}" 已標記為${label}風險` : `已移除 "${keyword}" 的${label}標記`)
-    } catch {
-      toast.error('儲存失敗')
-    }
-  }
 
   const loadArticles = useCallback(async (id) => {
     if (!id) return
@@ -614,22 +561,6 @@ export default function SearchPage() {
     e.stopPropagation()
     setEditTopic(topic)
     setShowModal(true)
-  }
-
-  const handleSearch = async () => {
-    if (!selectedId) return
-    setSearching(true)
-    try {
-      const { data } = await topicsAPI.searchAndImport(selectedId, { hours_back: hoursBack })
-      toast.success(`已匯入 ${data.imported} 篇新文章`)
-      if (data.imported > 0) {
-        await loadArticles(selectedId)
-        await loadTopics()
-      }
-    } catch {
-      toast.error('搜尋失敗')
-    }
-    setSearching(false)
   }
 
   const handleRematch = async () => {
@@ -864,165 +795,10 @@ export default function SearchPage() {
                       {selectedTopic.is_active ? '追蹤中' : '已停用'}
                     </span>
                   </div>
-                  {(() => {
-                    const kws = selectedTopic.keywords || []
-                    const simple = kws.filter(k => !k.includes('('))
-                    const grouped = kws.filter(k => k.includes('('))
-                    if (kws.length === 0) return <span className="text-xs text-dark-600 mt-1 block">尚未設定關鍵字</span>
-                    return (
-                      <div className="mt-2 space-y-1.5">
-                        {simple.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {simple.map(kw => {
-                              const isCrit = severityKws.critical.includes(kw)
-                              const isHigh = severityKws.high.includes(kw)
-                              const pickerOpen = activePicker === kw
-                              return (
-                                <div key={kw} className="relative">
-                                  {pickerOpen && (
-                                    <div
-                                      className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex items-center gap-1"
-                                      onClick={e => e.stopPropagation()}
-                                    >
-                                      <span className="text-[9px] text-dark-500 pr-1 border-r border-dark-600 mr-0.5 whitespace-nowrap">風險標記</span>
-                                      <button
-                                        onClick={() => handleAddToSeverity('critical', kw)}
-                                        className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                          isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
-                                        }`}
-                                      >高</button>
-                                      <button
-                                        onClick={() => handleAddToSeverity('high', kw)}
-                                        className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                          isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
-                                        }`}
-                                      >中</button>
-                                    </div>
-                                  )}
-                                  <span
-                                    onClick={e => { e.stopPropagation(); setActivePicker(pickerOpen ? null : kw) }}
-                                    className="flex items-center gap-1 text-xs px-2.5 py-0.5 rounded-full bg-dark-700 text-dark-300 border border-dark-600 cursor-pointer select-none hover:bg-dark-600 transition-colors"
-                                  >
-                                    {isCrit && <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />}
-                                    {!isCrit && isHigh && <span className="w-1.5 h-1.5 rounded-full bg-orange-400 shrink-0" />}
-                                    {kw}
-                                  </span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                        {grouped.length > 0 && (
-                          <div className="flex flex-col gap-1">
-                            {grouped.map(kw => {
-                              const groups = parseGroupedKeyword(kw)
-                              if (!groups) return null
-                              const combos = computeCombinations(groups)
-                              const items = groups.flatMap((terms, gi) =>
-                                gi === 0
-                                  ? [{ t: 'g', key: `g-${gi}`, terms }]
-                                  : [{ t: 'a', key: `a-${gi}` }, { t: 'g', key: `g-${gi}`, terms }]
-                              )
-                              return (
-                                <div key={kw} className="flex items-stretch bg-dark-800 border border-dark-600 rounded-lg">
-                                  {items.map(item => item.t === 'a' ? (
-                                    <div key={item.key} className="flex items-center px-1.5 border-x border-dark-600 shrink-0">
-                                      <span className="text-[10px] font-bold text-dark-500 select-none">AND</span>
-                                    </div>
-                                  ) : (
-                                    <div key={item.key} className="flex-1 flex flex-wrap gap-1 p-1.5 min-w-0">
-                                      {item.terms.map((t, ti) => {
-                                        const isCrit = severityKws.critical.includes(t)
-                                        const isHigh = severityKws.high.includes(t)
-                                        const pickerOpen = activePicker === t
-                                        return (
-                                          <div key={ti} className="relative">
-                                            {pickerOpen && (
-                                              <div
-                                                className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-dark-800 border border-dark-600 rounded-lg shadow-xl p-1.5 flex items-center gap-1"
-                                                onClick={e => e.stopPropagation()}
-                                              >
-                                                <span className="text-[9px] text-dark-500 pr-1 border-r border-dark-600 mr-0.5 whitespace-nowrap">風險標記</span>
-                                                <button
-                                                  onClick={() => handleAddToSeverity('critical', t)}
-                                                  className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                                    isCrit ? 'bg-red-500/30 text-red-300 border-red-400/50' : 'bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/25'
-                                                  }`}
-                                                >高</button>
-                                                <button
-                                                  onClick={() => handleAddToSeverity('high', t)}
-                                                  className={`text-[10px] px-1.5 py-0.5 rounded border font-medium transition-colors ${
-                                                    isHigh ? 'bg-orange-500/30 text-orange-300 border-orange-400/50' : 'bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/25'
-                                                  }`}
-                                                >中</button>
-                                              </div>
-                                            )}
-                                            <span
-                                              onClick={e => { e.stopPropagation(); setActivePicker(pickerOpen ? null : t) }}
-                                              className="flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-primary-600/20 text-primary-400 border border-primary-500/30 whitespace-nowrap cursor-pointer select-none hover:bg-primary-600/30 transition-colors"
-                                            >
-                                              {isCrit && <span className="w-1 h-1 rounded-full bg-red-400 shrink-0" />}
-                                              {!isCrit && isHigh && <span className="w-1 h-1 rounded-full bg-orange-400 shrink-0" />}
-                                              {t}
-                                            </span>
-                                          </div>
-                                        )
-                                      })}
-                                    </div>
-                                  ))}
-                                  <div className="flex items-center px-1.5 border-l border-dark-600 shrink-0">
-                                    <span className="text-[10px] text-dark-500 whitespace-nowrap">{combos} 組</span>
-                                  </div>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })()}
                 </div>
 
-                {/* Manual search controls */}
+                {/* Actions */}
                 <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                  <select
-                    value={useCustomHours ? 'custom' : hoursBack}
-                    onChange={(e) => {
-                      if (e.target.value === 'custom') {
-                        setUseCustomHours(true)
-                      } else {
-                        setUseCustomHours(false)
-                        setHoursBack(Number(e.target.value))
-                      }
-                    }}
-                    className="input text-sm py-1.5 w-32"
-                  >
-                    <option value={3}>近 3 小時</option>
-                    <option value={6}>近 6 小時</option>
-                    <option value={12}>近 12 小時</option>
-                    <option value={24}>近 24 小時</option>
-                    <option value={48}>近 48 小時</option>
-                    <option value={72}>近 3 天</option>
-                    <option value={168}>近 7 天</option>
-                    <option value="custom">自訂...</option>
-                  </select>
-                  {useCustomHours && (
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={customHoursInput}
-                        onChange={(e) => {
-                          setCustomHoursInput(e.target.value)
-                          const v = parseInt(e.target.value)
-                          if (v > 0) setHoursBack(v)
-                        }}
-                        placeholder="小時"
-                        min="1"
-                        className="input text-sm py-1.5 w-16 text-center"
-                      />
-                      <span className="text-xs text-dark-400 whitespace-nowrap">小時</span>
-                    </div>
-                  )}
                   <button
                     onClick={handleRematch}
                     disabled={rematching || !(selectedTopic.keywords?.length || selectedTopic.bound_symbols?.length)}
@@ -1041,27 +817,6 @@ export default function SearchPage() {
                             d="M16.023 9.348h4.992V4.356m-4.992 4.992l3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865v4.992m0 0h4.99m-4.99 0l3.181 3.182a8.25 8.25 0 0013.803-3.7" />
                         </svg>
                         回溯比對
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={handleSearch}
-                    disabled={searching || !selectedTopic.keywords?.length}
-                    className="btn-primary text-sm py-1.5 px-4 flex items-center gap-1.5 whitespace-nowrap"
-                    title={!selectedTopic.keywords?.length ? '請先設定關鍵字' : ''}
-                  >
-                    {searching ? (
-                      <>
-                        <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
-                        搜尋中...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                            d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                        </svg>
-                        搜尋並匯入
                       </>
                     )}
                   </button>
@@ -1333,6 +1088,9 @@ export default function SearchPage() {
                           )}
                         </div>
                       </div>
+
+                      {/* 命中關鍵字 */}
+                      <MatchedKwBadge value={article.matched_keyword} />
 
                       {/* Action buttons */}
                       <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
