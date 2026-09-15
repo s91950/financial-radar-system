@@ -477,10 +477,10 @@ export default function SearchPage() {
   const [selectedUrls, setSelectedUrls] = useState(new Set())
 
   const [rematching, setRematching] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Filter & sort
   const [filterSeverity, setFilterSeverity] = useState('all')
-  const [filterSource, setFilterSource] = useState('all')
   const [filterKeyword, setFilterKeyword] = useState('')
   const [sortOrder, setSortOrder] = useState('desc')
   const [contentType, setContentType] = useState('all')  // 'all' | 'news' | 'market'
@@ -521,7 +521,6 @@ export default function SearchPage() {
     setSelectedId(id)
     setSelectedUrls(new Set())
     setFilterSeverity('all')
-    setFilterSource('all')
     setFilterKeyword('')
     setSortOrder('desc')
     setContentType('all')
@@ -629,9 +628,6 @@ export default function SearchPage() {
       a.severity === filterSeverity || (filterSeverity === 'high' && a.severity === 'medium')
     )
   }
-  if (filterSource !== 'all') {
-    displayArticles = displayArticles.filter(a => a.add_source === filterSource)
-  }
   if (filterKeyword) {
     const kw = filterKeyword.toLowerCase()
     displayArticles = displayArticles.filter(a =>
@@ -675,6 +671,41 @@ export default function SearchPage() {
     }
   }
 
+  // 批次移除選取的文章。後端只有單筆 DELETE，分批 5 筆並行送出，
+  // 避免一次對 e2-micro 上的 SQLite 開幾十個並行交易。
+  const handleDeleteSelected = async () => {
+    const targets = displayArticles.filter(a => a.source_url && selectedUrls.has(a.source_url))
+    if (targets.length === 0) return
+    if (!confirm(`確定從此主題移除選取的 ${targets.length} 篇？`)) return
+    setDeleting(true)
+    const removed = new Set()
+    try {
+      for (let i = 0; i < targets.length; i += 5) {
+        const batch = targets.slice(i, i + 5)
+        await Promise.all(batch.map(async (a) => {
+          try {
+            await topicsAPI.deleteArticle(selectedId, a.id)
+            removed.add(a.id)
+          } catch { /* 個別失敗不中斷整批 */ }
+        }))
+      }
+      setTopicData(prev => ({
+        ...prev,
+        articles: prev.articles.filter(a => !removed.has(a.id)),
+        stats: { ...prev.stats, total: Math.max(0, (prev.stats?.total || 0) - removed.size) },
+      }))
+      setSelectedUrls(new Set())
+      if (removed.size === targets.length) {
+        toast.success(`已移除 ${removed.size} 篇`)
+      } else {
+        toast.error(`已移除 ${removed.size} 篇，${targets.length - removed.size} 篇失敗`)
+      }
+      loadTopics()
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const handleCopySelected = async () => {
     const urls = [...selectedUrls]
     const toastId = toast.loading(`解析 ${urls.length} 個連結...`)
@@ -686,10 +717,10 @@ export default function SearchPage() {
 
   const selectedTopic = topics.find(t => t.id === selectedId)
 
-  const hasFilter = filterSeverity !== 'all' || filterSource !== 'all' || filterKeyword
+  const hasFilter = filterSeverity !== 'all' || filterKeyword
     || sortOrder !== 'desc' || contentType !== 'all'
   const resetFilters = () => {
-    setFilterSeverity('all'); setFilterSource('all'); setFilterKeyword('')
+    setFilterSeverity('all'); setFilterKeyword('')
     setSortOrder('desc'); setContentType('all')
   }
   const totalItems = (topicData?.articles?.length || 0) + (topicData?.signals?.length || 0)
@@ -828,15 +859,11 @@ export default function SearchPage() {
             {topicData?.stats && (
               <div className="flex flex-wrap items-center gap-3 px-1 text-xs text-dark-400">
                 <span>共 <span className="text-gray-300 font-medium">{topicData.stats.total}</span> 篇</span>
+                <span className="text-dark-700">|</span>
+                <span>市場警示：<span className="text-amber-400 font-medium">{topicData.stats.signals || 0}</span></span>
                 {shownItems !== totalItems && (
                   <span className="text-primary-400">（篩選後 {shownItems} 項）</span>
                 )}
-                <span className="text-dark-700">|</span>
-                <span>雷達自動匯入：<span className="text-green-400 font-medium">{topicData.stats.radar}</span></span>
-                <span className="text-dark-700">|</span>
-                <span>手動搜尋：<span className="text-blue-400 font-medium">{topicData.stats.manual}</span></span>
-                <span className="text-dark-700">|</span>
-                <span>市場警示：<span className="text-amber-400 font-medium">{topicData.stats.signals || 0}</span></span>
 
                 <div className="flex-1" />
 
@@ -869,6 +896,21 @@ export default function SearchPage() {
                         d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
                     複製連結
+                  </button>
+                )}
+
+                {/* Delete selected */}
+                {selectedUrls.size > 0 && (
+                  <button
+                    onClick={handleDeleteSelected}
+                    disabled={deleting}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border bg-red-600/15 text-red-400 border-red-500/30 hover:bg-red-600/25 transition-colors disabled:opacity-50"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                    </svg>
+                    {deleting ? '刪除中...' : '刪除'}
                   </button>
                 )}
               </div>
@@ -922,30 +964,7 @@ export default function SearchPage() {
                   ))}
                 </div>
 
-                {contentType !== 'market' && <span className="text-dark-700">|</span>}
-
-                {/* Source filter（只作用於新聞） */}
-                <div className={`items-center gap-1 ${contentType === 'market' ? 'hidden' : 'flex'}`}>
-                  {[
-                    { v: 'all',    label: '全部來源' },
-                    { v: 'radar',  label: '雷達', cls: 'text-green-400' },
-                    { v: 'manual', label: '手動', cls: 'text-blue-400' },
-                  ].map(({ v, label, cls }) => (
-                    <button
-                      key={v}
-                      onClick={() => setFilterSource(v)}
-                      className={`text-xs px-2.5 py-0.5 rounded-full border transition-colors ${
-                        filterSource === v
-                          ? 'bg-primary-600/30 text-primary-400 border-primary-500/50'
-                          : `bg-dark-800 border-dark-600 ${cls || 'text-dark-400'} hover:border-dark-500`
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="flex-1" />
+                <span className="text-dark-700">|</span>
 
                 {/* Keyword search */}
                 <input
