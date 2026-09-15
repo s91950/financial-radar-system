@@ -25,6 +25,19 @@ const CAT_LABELS = {
   commodity: '原物料', crypto: '加密貨幣', volatility: '波動率',
 }
 
+// 跨類別比較的三種讀法。一律不開雙軸——兩個 y 軸的對齊方式是任意的，
+// 會憑空造出不存在的相關性。
+const SCALE_MODES = [
+  { v: 'raw', label: '原始值', hint: '各指標的實際數值，只有單位相同時可用' },
+  { v: 'index', label: '指數化', hint: '各自除以起始值 ×100，看相對漲跌幅' },
+  { v: 'z', label: '標準化', hint: '換算成標準差倍數，看不同尺度指標是否同向' },
+]
+
+const VIEW_MODES = [
+  { v: 'overlay', label: '疊圖', hint: '全部畫在同一張圖上比較' },
+  { v: 'facet', label: '分面', hint: '每個指標各自一張小圖、保留原始單位，時間軸對齊' },
+]
+
 function fmtValue(v, unit) {
   if (v === null || v === undefined) return '—'
   return unit === 'percent' ? `${v.toFixed(3)}%` : v.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -35,42 +48,70 @@ function fmtValue(v, unit) {
 // 因此列資料一律改用安全鍵 s0/s1/…，顯示時再映射回指標代碼。
 const safeKey = (index) => `s${index}`
 
-/** 把多條序列依時間合併成 recharts 需要的列陣列。
- *  indexed=true 時各序列除以自己的起始值 ×100，讓不同量級能放在同一個軸上比較。 */
-function mergeSeries(series, indexed, hourly, keyBySymbol) {
+/** 依縮放模式把一條序列的值換算好。回傳 (close) => 換算後的值。 */
+function makeScaler(points, mode) {
+  const vals = points.map(p => p.close).filter(v => v !== null && v !== undefined)
+  if (mode === 'index') {
+    const base = vals.find(v => v)
+    return (v) => (base ? (v / base) * 100 : null)
+  }
+  if (mode === 'z') {
+    if (vals.length < 2) return () => 0
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length
+    const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length)
+    return (v) => (sd ? (v - mean) / sd : 0)
+  }
+  return (v) => v
+}
+
+/** 把多條序列依時間合併成 recharts 需要的列陣列（疊圖用）。 */
+function mergeSeries(series, mode, hourly, keyBySymbol) {
   const rows = new Map()
   for (const s of series) {
     const k = keyBySymbol[s.symbol]
     if (!k) continue
     const pts = (s.points || []).filter(p => p.close !== null && p.close !== undefined)
-    const base = indexed ? pts.find(p => p.close)?.close : null
+    const scale = makeScaler(pts, mode)
     for (const p of pts) {
       const key = hourly ? p.time : p.time.slice(0, 10)
       if (!rows.has(key)) rows.set(key, { time: key })
-      const val = indexed && base ? (p.close / base) * 100 : p.close
-      rows.get(key)[k] = Number(val.toFixed(4))
+      const val = scale(p.close)
+      if (val !== null && val !== undefined) rows.get(key)[k] = Number(val.toFixed(4))
     }
   }
   return [...rows.values()].sort((a, b) => a.time.localeCompare(b.time))
 }
 
-function ChartTooltip({ active, payload, label, metaBySymbol, symbolByKey, indexed }) {
+function ChartTooltip({ active, payload, label, metaBySymbol, symbolByKey, mode }) {
   if (!active || !payload?.length) return null
   return (
     <div className="bg-dark-800 border border-dark-600 rounded-lg px-3 py-2 shadow-xl">
       <div className="text-xs text-dark-400 mb-1">{label}</div>
       {payload.map(p => {
-        const meta = metaBySymbol[symbolByKey[p.dataKey]]
+        const sym = symbolByKey[p.dataKey] || p.dataKey
+        const meta = metaBySymbol[sym]
+        let shown
+        if (mode === 'index') shown = p.value?.toFixed(1)
+        else if (mode === 'z') shown = `${p.value >= 0 ? '+' : ''}${p.value?.toFixed(2)}σ`
+        else shown = fmtValue(p.value, meta?.unit)
         return (
           <div key={p.dataKey} className="flex items-center gap-2 text-xs">
             <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
-            <span className="text-dark-300">{meta?.name || symbolByKey[p.dataKey] || p.dataKey}</span>
-            <span className="ml-auto tabular-nums text-gray-200">
-              {indexed ? p.value?.toFixed(1) : fmtValue(p.value, meta?.unit)}
-            </span>
+            <span className="text-dark-300">{meta?.name || sym}</span>
+            <span className="ml-auto tabular-nums text-gray-200">{shown}</span>
           </div>
         )
       })}
+    </div>
+  )
+}
+
+function FacetTooltip({ active, payload, label, unit }) {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="bg-dark-800 border border-dark-600 rounded-lg px-2.5 py-1.5 shadow-xl text-xs">
+      <span className="text-dark-400 mr-2">{label}</span>
+      <span className="tabular-nums text-gray-200">{fmtValue(payload[0].value, unit)}</span>
     </div>
   )
 }
@@ -79,6 +120,9 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
   const [compare, setCompare] = useState([])       // 額外比較的指標代碼
   const [slots, setSlots] = useState({})           // symbol -> 色票編號（移除其他線時不換色）
   const [period, setPeriod] = useState('3mo')
+  const [viewMode, setViewMode] = useState('overlay')
+  const [scaleMode, setScaleMode] = useState('raw')
+  const [userPickedScale, setUserPickedScale] = useState(false)
   const [series, setSeries] = useState([])
   const [loading, setLoading] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -95,6 +139,8 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
   useEffect(() => {
     setCompare([])
     setSlots({ [primarySymbol]: 0 })
+    setScaleMode('raw')
+    setUserPickedScale(false)
   }, [primarySymbol])
 
   useEffect(() => {
@@ -106,7 +152,7 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
     return () => document.removeEventListener('mousedown', onDoc)
   }, [pickerOpen])
 
-  // 官方來源（日本 MOF / ECB / BoE）只有日資料，混到 5 天 / 1 小時的圖會是空的
+  // 官方來源（日本 MOF / 德國央行 / ECB / BoE）只有日資料，混到 5 天 / 1 小時的圖會是空的
   const allYahoo = symbols.every(s => (itemBySymbol[s]?.provider || 'yahoo') === 'yahoo')
   const hourly = period === '5d' && allYahoo
   const interval = hourly ? '1h' : '1d'
@@ -131,10 +177,16 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
     return out
   }, [series])
 
-  // 單位不同（例：殖利率 % 對匯率數值）不能共用一個刻度，也不可以開雙軸——
-  // 兩個 y 軸的對齊方式是任意的，會憑空造出不存在的相關性。改成指數化到共同基準。
+  // 單位不同（例：殖利率 % 對匯率數值）不能共用一個刻度。原始值模式在這種情況
+  // 不可用，預設自動切到指數化；但使用者手動選過就尊重他的選擇。
   const units = new Set(series.map(s => s.unit || 'price'))
-  const indexed = units.size > 1
+  const mixedUnits = units.size > 1
+  const effectiveScale = (mixedUnits && scaleMode === 'raw') ? 'index' : scaleMode
+
+  useEffect(() => {
+    if (mixedUnits && scaleMode === 'raw' && !userPickedScale) setScaleMode('index')
+    if (!mixedUnits && !userPickedScale) setScaleMode('raw')
+  }, [mixedUnits])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const { keyBySymbol, symbolByKey } = useMemo(() => {
     const k = {}, r = {}
@@ -143,8 +195,8 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
   }, [symbols])
 
   const rows = useMemo(
-    () => mergeSeries(series, indexed, hourly, keyBySymbol),
-    [series, indexed, hourly, keyBySymbol]
+    () => mergeSeries(series, effectiveScale, hourly, keyBySymbol),
+    [series, effectiveScale, hourly, keyBySymbol]
   )
 
   const addCompare = (sym) => {
@@ -168,6 +220,7 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
 
   const primary = itemBySymbol[primarySymbol]
   const colorOf = (sym) => SERIES_COLORS[(slots[sym] ?? 0) % SERIES_COLORS.length]
+  const fmtTime = (t) => (hourly ? t.slice(5, 16).replace('T', ' ') : t.slice(5))
 
   const grouped = useMemo(() => {
     const g = {}
@@ -177,6 +230,10 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
     }
     return g
   }, [allItems, primarySymbol])
+
+  const hasData = viewMode === 'facet'
+    ? series.some(s => (s.points || []).length > 0)
+    : rows.length > 0
 
   return (
     <section className="card">
@@ -218,7 +275,7 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
             <button
               onClick={() => setPickerOpen(o => !o)}
               disabled={symbols.length >= MAX_SERIES}
-              title={symbols.length >= MAX_SERIES ? `最多同時比較 ${MAX_SERIES} 項` : '加入其他指標比較'}
+              title={symbols.length >= MAX_SERIES ? `最多同時比較 ${MAX_SERIES} 項` : '加入其他指標比較（可跨類別）'}
               className="text-xs px-2 py-1 rounded border border-dark-600 text-dark-300 hover:text-primary-400 hover:border-primary-500/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               + 比較
@@ -272,8 +329,58 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
         </div>
       </div>
 
-      {/* 圖例（兩條以上一定顯示，讓身分不是只靠顏色傳達）*/}
+      {/* 比較模式控制（兩項以上才有意義）*/}
       {symbols.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <div className="flex items-center gap-0.5">
+            {VIEW_MODES.map(m => (
+              <button
+                key={m.v}
+                onClick={() => setViewMode(m.v)}
+                title={m.hint}
+                className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                  viewMode === m.v
+                    ? 'bg-primary-600/30 text-primary-400'
+                    : 'text-dark-400 hover:text-gray-200 hover:bg-dark-700'
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          {viewMode === 'overlay' && (
+            <>
+              <span className="text-dark-700">|</span>
+              <div className="flex items-center gap-0.5">
+                {SCALE_MODES.map(m => {
+                  const disabled = m.v === 'raw' && mixedUnits
+                  return (
+                    <button
+                      key={m.v}
+                      onClick={() => { if (!disabled) { setScaleMode(m.v); setUserPickedScale(true) } }}
+                      disabled={disabled}
+                      title={disabled ? '所選指標單位不同，無法共用同一刻度；改用指數化或標準化，或切到「分面」看原始單位' : m.hint}
+                      className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                        effectiveScale === m.v
+                          ? 'bg-primary-600/30 text-primary-400'
+                          : disabled
+                            ? 'text-dark-700 cursor-not-allowed'
+                            : 'text-dark-400 hover:text-gray-200 hover:bg-dark-700'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 圖例（兩條以上一定顯示，讓身分不是只靠顏色傳達）*/}
+      {symbols.length > 1 && viewMode === 'overlay' && (
         <div className="flex flex-wrap items-center gap-3 mb-2">
           {symbols.map(sym => {
             const meta = metaBySymbol[sym] || itemBySymbol[sym] || {}
@@ -294,18 +401,86 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
         </div>
       )}
 
-      {indexed && (
+      {viewMode === 'overlay' && symbols.length > 1 && effectiveScale !== 'raw' && (
         <p className="text-[11px] text-dark-500 mb-2">
-          所選指標單位不同（殖利率與價格無法共用同一刻度），已<span className="text-dark-300">指數化為起點 = 100</span> 比較相對走勢。
+          {effectiveScale === 'index'
+            ? <>已<span className="text-dark-300">指數化為起點 = 100</span>，看的是相對漲跌幅。殖利率的相對變化與 bp 不同（4.00→4.50 是 +12.5%、也就是 +50bp），要看實際數值請切「分面」。</>
+            : <>已<span className="text-dark-300">標準化為標準差倍數（σ）</span>，看的是不同尺度的指標是否同向，不是絕對水準。</>}
         </p>
       )}
 
-      {loading && rows.length === 0 ? (
+      {loading && !hasData ? (
         <div className="h-[250px] flex items-center justify-center">
           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-500" />
         </div>
-      ) : rows.length === 0 ? (
+      ) : !hasData ? (
         <div className="h-[250px] flex items-center justify-center text-sm text-dark-500">此區間無資料</div>
+      ) : viewMode === 'facet' ? (
+        /* 分面（小倍數）：各自保留原始單位與刻度，時間軸靠 syncId 對齊，
+           滑鼠移到任一張圖，其餘圖的游標會跟著同步。 */
+        <div className="space-y-1">
+          {symbols.map((sym, i) => {
+            const meta = metaBySymbol[sym] || itemBySymbol[sym] || {}
+            const pts = (meta.points || []).filter(p => p.close !== null && p.close !== undefined)
+            const data = pts.map(p => ({ time: hourly ? p.time : p.time.slice(0, 10), v: p.close }))
+            const last = data.length ? data[data.length - 1].v : null
+            const isLast = i === symbols.length - 1
+            return (
+              <div key={sym}>
+                <div className="flex items-center gap-1.5 text-xs px-1">
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorOf(sym) }} />
+                  <span className="text-dark-300 truncate">{meta.name || sym}</span>
+                  <span className="ml-auto tabular-nums text-dark-400">{fmtValue(last, meta.unit)}</span>
+                  {sym !== primarySymbol && (
+                    <button
+                      onClick={() => removeCompare(sym)}
+                      className="text-dark-600 hover:text-red-400 leading-none"
+                      title="移除此指標"
+                    >×</button>
+                  )}
+                </div>
+                <ResponsiveContainer width="100%" height={isLast ? 104 : 86}>
+                  <LineChart data={data} syncId="mkt-facets" margin={{ top: 2, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid stroke="#334155" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="time"
+                      hide={!isLast}
+                      tick={{ fontSize: 11, fill: '#64748b' }}
+                      tickLine={false}
+                      axisLine={{ stroke: '#334155' }}
+                      interval="preserveStartEnd"
+                      minTickGap={40}
+                      tickFormatter={fmtTime}
+                    />
+                    <YAxis
+                      domain={['auto', 'auto']}
+                      tick={{ fontSize: 10, fill: '#64748b' }}
+                      tickLine={false}
+                      axisLine={false}
+                      width={52}
+                      tickCount={3}
+                      tickFormatter={(v) => (meta.unit === 'percent' ? v.toFixed(2) : v.toFixed(v >= 100 ? 0 : 2))}
+                    />
+                    <Tooltip
+                      content={<FacetTooltip unit={meta.unit} />}
+                      cursor={{ stroke: '#475569', strokeWidth: 1 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="v"
+                      stroke={colorOf(sym)}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                      connectNulls
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )
+          })}
+        </div>
       ) : (
         <ResponsiveContainer width="100%" height={250}>
           <LineChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
@@ -317,7 +492,7 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
               axisLine={{ stroke: '#334155' }}
               interval="preserveStartEnd"
               minTickGap={40}
-              tickFormatter={(t) => (hourly ? t.slice(5, 16).replace('T', ' ') : t.slice(5))}
+              tickFormatter={fmtTime}
             />
             <YAxis
               domain={['auto', 'auto']}
@@ -325,10 +500,14 @@ export default function MarketChartPanel({ primarySymbol, allItems, onClose }) {
               tickLine={false}
               axisLine={false}
               width={52}
-              tickFormatter={(v) => (indexed ? v.toFixed(0) : v.toFixed(2))}
+              tickFormatter={(v) => (
+                effectiveScale === 'index' ? v.toFixed(0)
+                  : effectiveScale === 'z' ? `${v.toFixed(1)}σ`
+                    : v.toFixed(2)
+              )}
             />
             <Tooltip
-              content={<ChartTooltip metaBySymbol={metaBySymbol} symbolByKey={symbolByKey} indexed={indexed} />}
+              content={<ChartTooltip metaBySymbol={metaBySymbol} symbolByKey={symbolByKey} mode={effectiveScale} />}
               cursor={{ stroke: '#475569', strokeWidth: 1 }}
             />
             {symbols.map(sym => (
