@@ -48,13 +48,17 @@ class WatchlistUpdateRequest(BaseModel):
 
 class ConditionCreateRequest(BaseModel):
     name: str
-    operator: str  # 'gt' | 'lt' | 'gte' | 'lte' | 'between'
+    # 數值型：'gt' | 'lt' | 'gte' | 'lte' | 'between'（比當下價格）
+    # 區間型：'change_gt' | 'change_lt' | 'change_abs_gt'（比 change_window 內的變化量）
+    operator: str
     value: float
     value2: float | None = None
     signal: str  # 'positive' | 'neutral' | 'negative'
     message: str = ""
     is_active: bool = True
     priority: int = 0
+    change_window: str | None = None  # '1d' | '1w' | '1mo'
+    change_unit: str | None = None    # 'price' | 'pct' | 'bp'
 
 
 class ConditionUpdateRequest(BaseModel):
@@ -66,6 +70,8 @@ class ConditionUpdateRequest(BaseModel):
     message: str | None = None
     is_active: bool | None = None
     priority: int | None = None
+    change_window: str | None = None
+    change_unit: str | None = None
 
 
 @router.get("/alerts")
@@ -341,6 +347,8 @@ async def create_condition(
         value2=req.value2,
         signal=req.signal,
         message=req.message,
+        change_window=req.change_window,
+        change_unit=req.change_unit,
         is_active=req.is_active,
         priority=req.priority,
     )
@@ -358,7 +366,8 @@ async def update_condition(
     cond = db.query(SignalCondition).filter(SignalCondition.id == cond_id).first()
     if not cond:
         return {"error": "Condition not found"}
-    for field in ["name", "operator", "value", "value2", "signal", "message", "is_active", "priority"]:
+    for field in ["name", "operator", "value", "value2", "signal", "message",
+                  "is_active", "priority", "change_window", "change_unit"]:
         val = getattr(req, field)
         if val is not None:
             setattr(cond, field, val)
@@ -389,6 +398,8 @@ def _condition_to_dict(cond: SignalCondition) -> dict:
         "message": cond.message,
         "is_active": cond.is_active,
         "priority": cond.priority,
+        "change_window": cond.change_window,
+        "change_unit": cond.change_unit,
     }
 
 

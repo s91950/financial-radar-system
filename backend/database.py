@@ -106,6 +106,11 @@ class SignalCondition(Base):
     message = Column(String)
     is_active = Column(Boolean, default=True)
     priority = Column(Integer, default=0)  # higher priority evaluated first
+    # 區間變化條件（operator = 'change_gt' | 'change_lt' | 'change_abs_gt' 時才用）
+    # change_window: '1d' | '1w' | '1mo' — 與現在值比較的回溯區間
+    # change_unit:   'price'(絕對值) | 'pct'(百分比) | 'bp'(基點，殖利率專用)
+    change_window = Column(String, nullable=True)
+    change_unit = Column(String, nullable=True)
 
     watchlist_item = relationship("MarketWatchItem", back_populates="conditions")
 
@@ -145,8 +150,12 @@ class Topic(Base):
     keywords = Column(Text)  # JSON array of strings
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # 手動綁定的市場指標代碼（JSON array of symbol，例：["^TNX", "^VIX"]）
+    # 該指標觸發的任何警示都會歸入此主題，補關鍵字自動比對的漏
+    bound_symbols = Column(Text)
 
     articles = relationship("TopicArticle", back_populates="topic", cascade="all, delete-orphan")
+    signals = relationship("TopicSignal", back_populates="topic", cascade="all, delete-orphan")
 
 
 class TopicArticle(Base):
@@ -161,8 +170,35 @@ class TopicArticle(Base):
     published_at = Column(DateTime)
     added_at = Column(DateTime, default=datetime.utcnow)
     add_source = Column(String, default="radar")  # 'radar' | 'manual'
+    matched_keyword = Column(String, nullable=True)  # 命中的主題關鍵字（顯示用）
 
     topic = relationship("Topic", back_populates="articles")
+
+
+class TopicSignal(Base):
+    """市場數據警示歸入主題的紀錄（與 TopicArticle 並列，一個是新聞、一個是數據）。"""
+
+    __tablename__ = "topic_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic_id = Column(Integer, ForeignKey("topics.id"), nullable=False)
+    alert_id = Column(Integer, nullable=True)      # 對應的 alerts.id（可能已被刪）
+    symbol = Column(String)                        # '^TNX'
+    name = Column(String)                          # '美10Y殖利率'
+    title = Column(String)                         # '美10Y殖利率 — 單週上升超過 30bp'
+    message = Column(Text)                         # 詳細數值敘述
+    value = Column(Float)                          # 觸發當下數值
+    change_value = Column(Float, nullable=True)    # 區間變化量（無區間條件時為 None）
+    change_unit = Column(String, nullable=True)    # 'price' | 'pct' | 'bp'
+    change_window = Column(String, nullable=True)  # '1d' | '1w' | '1mo'
+    severity = Column(String)                      # 'critical' | 'high' | 'low'
+    signal = Column(String)                        # 'positive' | 'neutral' | 'negative'
+    matched_keyword = Column(String, nullable=True)  # 命中的主題關鍵字，綁定來的為 None
+    triggered_at = Column(DateTime, default=datetime.utcnow)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    add_source = Column(String, default="keyword")  # 'keyword'(自動比對) | 'bound'(手動綁定)
+
+    topic = relationship("Topic", back_populates="signals")
 
 
 class ResearchReport(Base):
@@ -490,6 +526,46 @@ def _migrate_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_topic_articles_topic_url "
             "ON topic_articles(topic_id, source_url) "
             "WHERE source_url IS NOT NULL AND source_url != ''"
+        ))
+        conn.commit()
+
+        # 主題文章命中的關鍵字（顯示用）
+        try:
+            conn.execute(text("ALTER TABLE topic_articles ADD COLUMN matched_keyword TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # 主題手動綁定的市場指標（JSON array of symbol）
+        try:
+            conn.execute(text("ALTER TABLE topics ADD COLUMN bound_symbols TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # 市場信號條件：區間變化型條件所需欄位
+        for _col in ("change_window TEXT", "change_unit TEXT"):
+            try:
+                conn.execute(text(f"ALTER TABLE signal_conditions ADD COLUMN {_col}"))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
+        # 主題市場警示表（Base.metadata.create_all 也會建，這裡保險起見寫明）
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS topic_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic_id INTEGER REFERENCES topics(id) ON DELETE CASCADE,
+            alert_id INTEGER, symbol TEXT, name TEXT, title TEXT, message TEXT,
+            value REAL, change_value REAL, change_unit TEXT, change_window TEXT,
+            severity TEXT, signal TEXT, matched_keyword TEXT,
+            triggered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            add_source TEXT DEFAULT 'keyword')"""))
+        conn.commit()
+        # 同一主題 + 同一 alert 只留一筆
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_topic_signals_topic_alert "
+            "ON topic_signals(topic_id, alert_id) WHERE alert_id IS NOT NULL"
         ))
         conn.commit()
 

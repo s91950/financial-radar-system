@@ -7,7 +7,16 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.database import Topic, TopicArticle, get_db
+from backend.database import (
+    Alert,
+    Article,
+    MarketWatchItem,
+    Topic,
+    TopicArticle,
+    TopicSignal,
+    get_db,
+)
+from backend.services import topic_match
 
 router = APIRouter()
 
@@ -26,28 +35,71 @@ def _assess_article_severity(title: str, content: str, crit_kws: list, high_kws:
 class TopicCreate(BaseModel):
     name: str
     keywords: list[str] = []
+    bound_symbols: list[str] = []   # 手動綁定的市場指標代碼
 
 
 class TopicUpdate(BaseModel):
     name: str | None = None
     keywords: list[str] | None = None
     is_active: bool | None = None
+    bound_symbols: list[str] | None = None
 
 
 class SearchImportRequest(BaseModel):
     hours_back: int = 24  # 1 | 3 | 6 | 12 | 24 | 48 | 72 | 168
 
 
+class RematchRequest(BaseModel):
+    """回溯比對：拿既有資料重跑此主題的關鍵字比對。"""
+    days: int = 7             # 回溯天數（新聞看 fetched_at、市場警示看 created_at）
+    include_signals: bool = True
+
+
 # --- Helpers ---
 
-def _topic_to_dict(topic: Topic, article_count: int | None = None) -> dict:
+def _json_list(value) -> list:
+    try:
+        return json.loads(value) if value else []
+    except Exception:
+        return []
+
+
+def _topic_to_dict(
+    topic: Topic,
+    article_count: int | None = None,
+    signal_count: int | None = None,
+) -> dict:
     return {
         "id": topic.id,
         "name": topic.name,
-        "keywords": json.loads(topic.keywords) if topic.keywords else [],
+        "keywords": _json_list(topic.keywords),
+        "bound_symbols": _json_list(topic.bound_symbols),
         "is_active": topic.is_active,
         "created_at": (topic.created_at.isoformat() + "Z") if topic.created_at else None,
         "article_count": article_count if article_count is not None else len(topic.articles),
+        "signal_count": signal_count if signal_count is not None else len(topic.signals),
+    }
+
+
+def _signal_to_dict(sig: TopicSignal) -> dict:
+    return {
+        "id": sig.id,
+        "topic_id": sig.topic_id,
+        "alert_id": sig.alert_id,
+        "symbol": sig.symbol,
+        "name": sig.name,
+        "title": sig.title,
+        "message": sig.message,
+        "value": sig.value,
+        "change_value": sig.change_value,
+        "change_unit": sig.change_unit,
+        "change_window": sig.change_window,
+        "severity": sig.severity,
+        "signal": sig.signal,
+        "matched_keyword": sig.matched_keyword,
+        "add_source": sig.add_source,
+        "triggered_at": (sig.triggered_at.isoformat() + "Z") if sig.triggered_at else None,
+        "added_at": (sig.added_at.isoformat() + "Z") if sig.added_at else None,
     }
 
 
@@ -62,6 +114,7 @@ def _article_to_dict(a: TopicArticle, crit_kws: list, high_kws: list) -> dict:
         "published_at": (a.published_at.isoformat() + "Z") if a.published_at else None,
         "added_at": (a.added_at.isoformat() + "Z") if a.added_at else None,
         "add_source": a.add_source,
+        "matched_keyword": a.matched_keyword,
         "severity": _assess_article_severity(a.title or "", a.content or "", crit_kws, high_kws),
     }
 
@@ -75,7 +128,8 @@ async def get_topics(db: Session = Depends(get_db)):
     result = []
     for t in topics:
         count = db.query(TopicArticle).filter(TopicArticle.topic_id == t.id).count()
-        result.append(_topic_to_dict(t, count))
+        sig_count = db.query(TopicSignal).filter(TopicSignal.topic_id == t.id).count()
+        result.append(_topic_to_dict(t, count, sig_count))
     return result
 
 
@@ -85,12 +139,13 @@ async def create_topic(req: TopicCreate, db: Session = Depends(get_db)):
     topic = Topic(
         name=req.name,
         keywords=json.dumps(req.keywords, ensure_ascii=False),
+        bound_symbols=json.dumps(req.bound_symbols, ensure_ascii=False),
         is_active=True,
     )
     db.add(topic)
     db.commit()
     db.refresh(topic)
-    return _topic_to_dict(topic, 0)
+    return _topic_to_dict(topic, 0, 0)
 
 
 @router.put("/{topic_id}")
@@ -105,9 +160,12 @@ async def update_topic(topic_id: int, req: TopicUpdate, db: Session = Depends(ge
         topic.keywords = json.dumps(req.keywords, ensure_ascii=False)
     if req.is_active is not None:
         topic.is_active = req.is_active
+    if req.bound_symbols is not None:
+        topic.bound_symbols = json.dumps(req.bound_symbols, ensure_ascii=False)
     db.commit()
     count = db.query(TopicArticle).filter(TopicArticle.topic_id == topic_id).count()
-    return _topic_to_dict(topic, count)
+    sig_count = db.query(TopicSignal).filter(TopicSignal.topic_id == topic_id).count()
+    return _topic_to_dict(topic, count, sig_count)
 
 
 @router.delete("/{topic_id}")
@@ -147,14 +205,166 @@ async def get_topic_articles(
         TopicArticle.topic_id == topic_id, TopicArticle.add_source == "manual"
     ).count()
 
+    # 市場數據警示（與新聞並列的第二種內容）
+    signals = (
+        db.query(TopicSignal)
+        .filter(TopicSignal.topic_id == topic_id)
+        .order_by(TopicSignal.triggered_at.desc())
+        .limit(limit)
+        .all()
+    )
+    signal_count = db.query(TopicSignal).filter(TopicSignal.topic_id == topic_id).count()
+
     from backend.routers.settings import get_severity_keywords
     crit_kws, high_kws = get_severity_keywords(db)
 
     return {
-        "topic": _topic_to_dict(topic, radar_count + manual_count),
+        "topic": _topic_to_dict(topic, radar_count + manual_count, signal_count),
         "articles": [_article_to_dict(a, crit_kws, high_kws) for a in articles],
-        "stats": {"radar": radar_count, "manual": manual_count, "total": radar_count + manual_count},
+        "signals": [_signal_to_dict(sg) for sg in signals],
+        "stats": {
+            "radar": radar_count,
+            "manual": manual_count,
+            "total": radar_count + manual_count,
+            "signals": signal_count,
+        },
     }
+
+
+@router.get("/market-symbols")
+async def list_market_symbols(db: Session = Depends(get_db)):
+    """可供主題綁定的市場指標清單（給主題編輯頁的勾選 UI）。"""
+    items = db.query(MarketWatchItem).order_by(
+        MarketWatchItem.category, MarketWatchItem.sort_order
+    ).all()
+    return [
+        {
+            "symbol": i.symbol,
+            "name": i.name,
+            "category": i.category,
+            "description": i.description,
+        }
+        for i in items
+    ]
+
+
+@router.delete("/{topic_id}/signals/{signal_id}")
+async def delete_topic_signal(topic_id: int, signal_id: int, db: Session = Depends(get_db)):
+    """從主題移除一則市場警示（不影響原始 Alert）。"""
+    sig = db.query(TopicSignal).filter(
+        TopicSignal.id == signal_id, TopicSignal.topic_id == topic_id
+    ).first()
+    if not sig:
+        return {"error": "Signal not found"}
+    db.delete(sig)
+    db.commit()
+    return {"success": True}
+
+
+@router.post("/{topic_id}/rematch")
+async def rematch_topic(topic_id: int, req: RematchRequest, db: Session = Depends(get_db)):
+    """回溯比對：拿既有的新聞與市場警示重跑此主題的關鍵字比對。
+
+    新建主題 / 改完關鍵字後用來補齊歷史資料——平時的自動歸類只作用於
+    每次掃描新收到的文章，不會回頭看既有資料。
+    """
+    topic = db.query(Topic).filter(Topic.id == topic_id).first()
+    if not topic:
+        return {"error": "Topic not found"}
+
+    keywords = _json_list(topic.keywords)
+    bound = _json_list(topic.bound_symbols)
+    if not keywords and not bound:
+        return {"error": "此主題尚未設定關鍵字或綁定指標", "articles": 0, "signals": 0}
+
+    days = max(1, min(req.days, 90))
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # --- 新聞 ---
+    imported = 0
+    if keywords:
+        existing_urls = {
+            row[0] for row in
+            db.query(TopicArticle.source_url).filter(TopicArticle.topic_id == topic_id).all()
+            if row[0]
+        }
+        candidates = (
+            db.query(Article)
+            .filter(Article.fetched_at >= cutoff)
+            .order_by(Article.fetched_at.desc())
+            .limit(5000)
+            .all()
+        )
+        for art in candidates:
+            url = art.source_url or ""
+            if not url or url in existing_urls:
+                continue
+            text = topic_match.article_text(art)
+            if not topic_match.topic_matches(keywords, text):
+                continue
+            existing_urls.add(url)
+            db.add(TopicArticle(
+                topic_id=topic_id,
+                title=art.title or "",
+                content=art.content or "",
+                source=art.source or "",
+                source_url=url,
+                published_at=art.published_at,
+                add_source="radar",
+                matched_keyword=topic_match.matched_keyword(keywords, text) or None,
+            ))
+            imported += 1
+
+    # --- 市場警示 ---
+    sig_imported = 0
+    if req.include_signals:
+        existing_alert_ids = {
+            row[0] for row in
+            db.query(TopicSignal.alert_id).filter(TopicSignal.topic_id == topic_id).all()
+            if row[0]
+        }
+        watch_by_name = {w.name: w for w in db.query(MarketWatchItem).all()}
+        alerts = (
+            db.query(Alert)
+            .filter(Alert.type == "market", Alert.created_at >= cutoff)
+            .order_by(Alert.created_at.desc())
+            .limit(1000)
+            .all()
+        )
+        for al in alerts:
+            if al.id in existing_alert_ids:
+                continue
+            text = f"{al.title or ''} {al.content or ''}".lower()
+            # 找出這則警示對應的指標（標題格式："📊 {name} — {message}"）
+            item = next((w for n, w in watch_by_name.items() if n and n in (al.title or "")), None)
+            add_source = None
+            matched_kw = ""
+            if item is not None and item.symbol in bound:
+                add_source = "bound"
+            elif keywords and topic_match.topic_matches(keywords, text):
+                add_source = "keyword"
+                matched_kw = topic_match.matched_keyword(keywords, text)
+            if not add_source:
+                continue
+            existing_alert_ids.add(al.id)
+            db.add(TopicSignal(
+                topic_id=topic_id,
+                alert_id=al.id,
+                symbol=item.symbol if item is not None else "",
+                name=item.name if item is not None else (al.source or "Market"),
+                title=al.title or "",
+                message=al.content or "",
+                value=item.current_value if item is not None else None,
+                severity=al.severity,
+                signal=item.signal_status if item is not None else None,
+                matched_keyword=matched_kw or None,
+                triggered_at=al.created_at,
+                add_source=add_source,
+            ))
+            sig_imported += 1
+
+    db.commit()
+    return {"articles": imported, "signals": sig_imported, "days": days}
 
 
 @router.delete("/{topic_id}/articles/{article_id}")
@@ -289,7 +499,6 @@ async def search_and_import(topic_id: int, req: SearchImportRequest, db: Session
     if not keywords:
         return {"error": "此主題尚未設定關鍵字", "imported": 0}
 
-    groups = _parse_keyword_groups(keywords)
     articles, query_desc = await _multi_query_search(keywords, hours_back=req.hours_back)
 
     imported = 0
@@ -299,8 +508,9 @@ async def search_and_import(topic_id: int, req: SearchImportRequest, db: Session
         if not url or url in seen_urls:
             continue
         seen_urls.add(url)
-        text = f"{a.get('title', '')} {a.get('content', '')}".lower()
-        if not _match_keyword_groups(text, groups):
+        # 與雷達自動歸類用同一套比對（條目間 OR、條目內 AND 群組 + NOT + 英文詞邊界）
+        text = topic_match.article_text(a)
+        if not topic_match.topic_matches(keywords, text):
             continue
         if db.query(TopicArticle).filter_by(topic_id=topic_id, source_url=url).first():
             continue
@@ -312,6 +522,7 @@ async def search_and_import(topic_id: int, req: SearchImportRequest, db: Session
             source_url=url,
             published_at=_parse_dt(a.get("published_at")),
             add_source="manual",
+            matched_keyword=topic_match.matched_keyword(keywords, text) or None,
         ))
         imported += 1
 
@@ -339,12 +550,6 @@ def _parse_keyword_groups(keywords: list[str]) -> list[list[str]]:
                 groups.append(terms)
         return groups or [keywords]
     return [keywords]
-
-
-def _match_keyword_groups(text: str, groups: list[list[str]]) -> bool:
-    """Return True if text satisfies ALL groups (AND), each group via ANY term (OR)."""
-    tl = text.lower()
-    return all(any(term.lower() in tl for term in group) for group in groups)
 
 
 def _build_topic_gn_query(keywords: list[str]) -> str:

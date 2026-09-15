@@ -6,6 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 完整 commit 史用 `git log --oneline` 看，這邊只記跨多檔、影響架構的轉折：
 
+**2026-09-15 — 主題追蹤改為純分類層 ＋ 市場數據警示併入主題**（backend + frontend，跨 DB schema）：
+- **主題不再自己抓新聞**。舊架構每個主題在雷達掃描時跑三段（Pass A 比對已收文章 / Pass A2 比對未過濾 RSS 池 / Pass B 為該主題**另打一輪 Google News**），且 `Topic.keywords` 會併進 `_global_topics` 擴大抓取網。新架構只留一段：文章由「全域關鍵字 + 來源關鍵字」抓進來、走完**去重 → 補全文 → 排除關鍵字 → 財經篩選**全部關卡後，才在 [jobs.py](backend/scheduler/jobs.py) 的 Step 3b 用主題關鍵字歸類。**副作用**：只命中主題關鍵字、沒命中全域/來源關鍵字的文章不再被抓進來——要影響抓取請把詞加進「系統設定 → 雷達關鍵字」（主題編輯彈窗有提示文字）。
+- **比對邏輯統一到 [services/topic_match.py](backend/services/topic_match.py)**：掃描歸類 / 手動 GN 搜尋 / 回溯比對三邊共用。語意是**條目之間 OR、條目內部 AND 群組**，並沿用 `rss_feed` 的 `_term_in_text` / `_strip_not_terms`，因此主題關鍵字現在也支援 `NOT` 排除與英文詞邊界（"Coup" 不再命中 "Couple"）。舊的 `_parse_keyword_groups(" ".join(keywords))` 會把整個 list 併成一條，混用單詞與布林組合時會漏詞，已不再用於主題比對（GN query 組裝仍沿用）。
+- **市場數據警示歸入主題**：新表 `TopicSignal`（與 `TopicArticle` 並列）。`market_check` 觸發警示時呼叫 `_attach_signal_to_topics()`，兩條歸屬路徑：(1) **關鍵字自動比對** — 拿「指標名稱 + 代碼 + 說明 + 條件名稱 + 觸發訊息」比對主題關鍵字（主題有「殖利率」就收得到「美10Y殖利率」的警示）；(2) **手動綁定** — `Topic.bound_symbols`（JSON array of symbol），勾選的指標不論關鍵字是否命中都收。
+- **`SignalCondition` 新增「區間變化」條件型態**（舊的只能拿當下價格比固定值，做不到「單週上升 30bp」）：新 operator `change_gt` / `change_lt` / `change_abs_gt` + 新欄位 `change_window`（`1d`/`1w`/`1mo`）、`change_unit`（`price`/`pct`/`bp`）。`_compute_changes()` 只對**真的有區間條件**的指標抓 3 個月日線（`_baseline_close` 取不晚於目標時點的最後一根），沒有就完全不打網路。**bp 換算**：`^TNX` 的 4.25 代表 4.25%，1bp = 0.01，所以 `bp 變化 = (現值 − 基準) × 100`。UI 在 [SignalConditionModal.jsx](frontend/src/components/Radar/SignalConditionModal.jsx) 的 operator 下拉分成「數值門檻 / 區間變化」兩個 optgroup。
+- **`market_data.get_market_history()` 改走 `asyncio.to_thread`**：yfinance 是同步阻塞的，`market_check` 新增的歷史抓取若直接跑會卡住 event loop，觸發 APScheduler misfire（CLAUDE.md 既有踩坑）。同時抽出 `get_history_sync()`。
+- **前端 [SearchPage.jsx](frontend/src/pages/SearchPage.jsx)**：新增「全部 / 新聞 / 市場警示」內容類型 pills（來源 pills 只作用於新聞）、市場警示以 `SignalRow` 獨立區塊呈現（顯示變化量 `單週 +32.0bp` 與命中詞）、主題編輯彈窗加「綁定市場指標」勾選區與「關鍵字只用來分類」提示、header 加「回溯比對」按鈕（`POST /api/topics/{id}/rematch`，拿既有 `Article` 與 market `Alert` 重跑比對，預設回溯 7 天）、側欄主題列顯示警示數。`TopicArticle` 也新增 `matched_keyword` 欄位供顯示。
+- **保留**：主題手動「搜尋並匯入」按鈕（`POST /topics/{id}/search`）仍在，只是自動掃描不再為主題單獨打 GN。**未做**：`cross_above` / `cross_below`（註解有寫但仍未實作）。
+
 **2026-07-08 — 風險等級全系統改為三級顯示「高 / 中 / 低」＋雷達選取模式**（前端四頁 + backend 通知文字 + scripts，**資料值不變**）：
 - **命名轉換（僅顯示層）**：`critical`→顯示「高」（沿用紅色）、`high`→「中」（沿用橘色）、`low`→「低」（綠）；「緊急」一詞全面退場。DB / API / `Alert.content` 的 `{critical}` 前綴 / GAS Sheet 嚴重度欄的英文值**全部不動**，未來看到 UI「高」要對應到程式裡的 `critical`、UI「中」對應 `high`。
 - 改動位置：[RadarPage.jsx](frontend/src/pages/RadarPage.jsx)（pills 拿掉 medium、`SEVERITY_LABELS`、新增 `sevMatch()` 讓舊 medium 資料併入「中」篩選）、[NewsDBPage.jsx](frontend/src/pages/NewsDBPage.jsx)（`SEVERITY_CFG` + 兩組 pills）、[SearchPage.jsx](frontend/src/pages/SearchPage.jsx)（`SEV_LABELS` + 風險標記 picker + pills）、[SettingsPage.jsx](frontend/src/pages/SettingsPage.jsx)（布林規則、最低風險等級、GN 僅高風險、嚴重度關鍵字區、LINE 推播門檻）、[notification.py](backend/services/notification.py) `_SEV_LABEL`、[line_webhook.py](backend/routers/line_webhook.py)「通知」回覆改稱「高風險新聞」、`gas_digest.gs` / `perplexity_digest.py` 標籤（GAS 需手動重新部署才生效）。舊 medium 資料一律併入「中」（橘色）顯示與篩選。
@@ -286,7 +295,7 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 ### Modules (10 pages)
 
 1. **即時雷達 (Radar)** `/` — Auto-scans RSS + Google News every 5min, creates alerts with position exposure computed server-side. Cards are a flat list of clickable article-title links (direct to source, no card expansion) — see 2026-07-07 changelog entry above for why `exposure_summary` and the alert-analyze endpoint currently have no display surface in this page.
-2. **主題追蹤 (Topics)** `/search` — User-defined topics with boolean keywords. Radar auto-imports matching articles AND merges them into radar alerts.
+2. **主題追蹤 (Topics)** `/search` — 純**分類層**：主題自己不抓新聞，而是把雷達以「全域關鍵字 + 來源關鍵字」抓進來的文章，用主題關鍵字歸類（詳見上方 2026-09-15 changelog）。除新聞外也收**市場數據警示**（`TopicSignal`）——`market_check` 觸發時依「關鍵字自動比對」或 `Topic.bound_symbols` 手動綁定歸入。仍保留手動「搜尋並匯入」（GN 補抓）與「回溯比對」（拿既有資料重跑比對）。
 3. **新聞資料庫 (News DB)** `/news` — Fetch returns a **preview** (not auto-saved). User selects which articles to save to SQLite + Google Sheets. Includes sentiment/heat dashboard. Source and keyword filter dropdowns; source list cross-references `MonitorSource` names, ungrouped sources show as "其他". Articles display `matched_keyword` tags inline.
 4. **研究報告 (Research)** `/reports` — Daily auto-fetch from IMF, BIS, Fed, ECB, BOJ, BOE, NBER. Dual-mode: RSS for working feeds, **RePEc/IDEAS HTML scraping** for institutions with broken RSS (IMF, ECB, NBER). Same preview → select → save flow.
 5. **市場儀表板 (Dashboard)** `/dashboard` — Market indicators, sentiment charts, heat map.
@@ -356,14 +365,10 @@ Frontend (:5173) → Vite proxy → FastAPI Backend (:8000)
 
 Four article sources are collected into `new_articles` **before** any saving or early-return:
 
-1. **RSS sources** — all active `MonitorSource` where `type in ("rss", "social")`, filtered by source keywords OR global `_global_topics` (union, not exclusive). `_global_topics = radar_topics + radar_topics_us + 所有 active Topic.keywords` — **Topic.keywords 必須併入**，否則 GN 啟用時 Pass A2 不跑，只命中主題追蹤關鍵字、不命中雷達關鍵字、來源 keywords 也沒命中的文章會被丟掉（fetch 預覽看得到、雷達卻沒存的最大破口）。`fetch_multiple_feeds(return_raw=True)` 也返回未過濾的 raw pool 給 Pass A2 用。
+1. **RSS sources** — all active `MonitorSource` where `type in ("rss", "social")`, filtered by source keywords OR global `_global_topics` (union, not exclusive). `_global_topics = radar_topics + radar_topics_us` — **`Topic.keywords` 自 2026-09-15 起不再併入**（主題改為純分類層，不參與抓取）；若某個主題的詞需要影響抓取，請把它加進「系統設定 → 雷達關鍵字」。`fetch_multiple_feeds(return_raw=True)` 仍返回未過濾的 raw pool，但只用於寫入「篩選前資料」表。
 2. **MOPS** — active `MonitorSource` where `type="mops"`, fetches 公開資訊觀測站 material disclosures via `services/mops_scraper.py`
 3. **General Google News** — each topic in `SystemConfig["radar_topics"]` (TW) + `SystemConfig["radar_topics_us"]` (US), `max_results=20`, `hours_back` from `SystemConfig["radar_hours_back"]` (default 24h). Skipped if `_skip_gn=True`. If `gn_critical_only=true`, each GN article is pre-assessed — non-critical articles are discarded before being added to `new_articles` (RSS articles are never filtered this way).
-4. **Topic keyword searches** — every active `Topic` processes articles in two sub-passes:
-   - **Pass A2** (new, RSS-only mode only): when `_skip_gn=True`, the raw unfiltered RSS pool is cross-matched against the topic's boolean keywords. Catches articles that passed RSS fetch but didn't match the radar topic filter.
-   - **Pass B** (skipped when `_skip_gn=True`): dedicated Google News search for this topic using `_multi_search_topic()`. If `gn_critical_only=true`, non-critical GN results are dropped (but still saved to `TopicArticle`).
-
-   Results from both passes are merged into `new_articles`, so topic-tracked articles **do** generate radar alerts.
+（**主題追蹤不再是第 4 個收集來源**。舊的 Pass A2 / Pass B 已於 2026-09-15 移除——主題不再擴大抓取網、也不再為自己打 Google News。主題歸類改為 **Step 3b 分類層**，在所有篩選跑完之後才執行，見下方說明。）
 
 **RSS priority mode**: if `radar_rss_min_articles > 0` and RSS has collected ≥ that many articles (and not a forced scan), Google News steps are skipped entirely. Controlled by `SystemConfig["radar_rss_min_articles"]` (default `"0"`, disabled). `radar_rss_only=true` also skips Google News unconditionally. Both cases set `_skip_gn = True`.
 
@@ -382,7 +387,9 @@ After collection, articles pass through **three dedup layers** before saving:
 
 **Full-body enrichment** (between dedup and exclusion filter, [jobs.py:687](backend/scheduler/jobs.py#L687)): `await enrich_articles_with_full_body(new_articles)` from `services/article_fetcher.py`. Replaces RSS-summary `content` with extracted main text, salvages `published_at` from HTML metadata. Adds 1-5s/scan but makes `radar_exclusion_keywords`, severity assessment, and DB-stored `Article.content` see real body text rather than just title + first sentence.
 
-**RawArticle recording** — `_record_raw_articles(db, articles, source_type)` is called immediately after each fetch step (RSS raw pool / MOPS / each website source / each GN topic batch / Topic Pass B), inserting all fetched articles into `raw_articles` via `INSERT OR IGNORE` (URL unique). After all filtering, `_mark_raw_articles_passed(db, urls)` marks the survivors as `filter_status='passed'`. The 篩選前資料 page uses this to show what was filtered out. Don't store full body in `RawArticle` — only RSS summary or first 500 chars (saves 90% disk space).
+**Step 3b — 主題分類層** ([jobs.py](backend/scheduler/jobs.py))：在財經篩選之後、寫入 `Article` 之前，對最終的 `new_articles` 逐一比對每個 active `Topic` 的關鍵字（走 [services/topic_match.py](backend/services/topic_match.py)），命中就排入 `topic_articles_to_save`，並把命中詞寫進 `TopicArticle.matched_keyword`。放在這個位置的理由：主題看到的是**補全文之後的完整內文**，且與雷達實際收錄的文章集合完全一致（不會出現「主題有、雷達沒有」的分歧）。
+
+**RawArticle recording** — `_record_raw_articles(db, articles, source_type)` is called immediately after each fetch step (RSS raw pool / MOPS / each website source / each GN topic batch), inserting all fetched articles into `raw_articles` via `INSERT OR IGNORE` (URL unique). After all filtering, `_mark_raw_articles_passed(db, urls)` marks the survivors as `filter_status='passed'`. The 篩選前資料 page uses this to show what was filtered out. Don't store full body in `RawArticle` — only RSS summary or first 500 chars (saves 90% disk space).
 
 If nothing new, scan exits. Otherwise: save to `Article` DB + `TopicArticle`, then create one Alert.
 
@@ -508,7 +515,7 @@ Detection priority: `is_id = user_text.strip().upper() == "ID"` → `is_yt = not
 
 ### Database (SQLite)
 
-Seventeen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `ResearchReport`, `SystemConfig`, `YoutubeChannel`, `YoutubeVideo`, `Feedback`, `NlmReport`, `RawArticle`, `User`, `ServiceApiKey`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
+Eighteen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`, `SignalCondition`, `MonitorSource`, `NotificationSetting`, `Topic`, `TopicArticle`, `TopicSignal`, `ResearchReport`, `SystemConfig`, `YoutubeChannel`, `YoutubeVideo`, `Feedback`, `NlmReport`, `RawArticle`, `User`, `ServiceApiKey`. The DB file lives at `data/financial_radar.db`. To re-seed defaults, delete the DB file and restart.
 
 **`User`**: `username` (unique)、`password_hash` (bcrypt 12-round)、`role` (`regular` / `admin` / `owner`)、`is_active`、`must_change_password`、`last_login_at`。
 
@@ -532,7 +539,13 @@ Seventeen models in `backend/database.py`: `Article`, `Alert`, `MarketWatchItem`
 
 `MonitorSource.last_attempt_at` / `last_success_at` / `last_error` — health tracking columns (DATETIME, DATETIME, VARCHAR(500), all nullable). Written by `services/source_health.py::mark_attempt()` from inside each scraper's HTTP try/except. See "Source Health Monitoring" section above.
 
-`TopicArticle.add_source`: `"radar"` (added by scheduler) or `"manual"` (added by user search).
+`TopicArticle.add_source`: `"radar"` (added by scheduler / rematch) or `"manual"` (added by user search). `TopicArticle.matched_keyword` 存命中的主題關鍵字（顯示用）。
+
+`Topic.bound_symbols` — JSON array of market symbols（例 `["^TNX", "^VIX"]`）。綁定的指標一旦觸發警示，**不論主題關鍵字是否命中**都會收進該主題，補關鍵字自動比對的漏。在主題編輯彈窗勾選。
+
+`TopicSignal` — 市場數據警示歸入主題的紀錄，與 `TopicArticle` 並列（一個是新聞、一個是數據）。欄位含 `alert_id`（對應 `alerts.id`）、`symbol` / `name`、`value`、`change_value` / `change_unit` / `change_window`、`severity`、`matched_keyword`、`add_source`（`keyword` 自動比對 / `bound` 手動綁定）。`(topic_id, alert_id)` 有部分唯一索引防重複。
+
+`SignalCondition.change_window` / `change_unit` — 區間變化條件專用。`operator` 為 `change_gt` / `change_lt` / `change_abs_gt` 時才讀：`change_window` = `1d`/`1w`/`1mo` 回溯區間，`change_unit` = `price`(絕對值) / `pct`(%) / `bp`(基點)。`bp` 專給殖利率類指標（`^TNX` 的 4.25 代表 4.25%，1bp = 0.01，故 bp 變化 = 價差 × 100）。**注意**：`cross_above` / `cross_below` 在 `SignalCondition.operator` 註解中有列出但**仍未實作**，`_evaluate_condition()` 會回 `False`。
 
 `Article` has six extra columns added via `_migrate_db()`: `composite_score`, `finance_relevance`, `novelty_score`, `decay_factor`, `intensity_score` (all `REAL`, nullable, computed by `_compute_article_scores()` in `jobs.py` at save time) + `matched_keyword VARCHAR` (nullable, set from preview data when user saves selected articles via `POST /api/news/save-selected`).
 
@@ -575,10 +588,10 @@ Copy `.env.example` to `.env`. Key variables:
 
 | Prefix | Router | Purpose |
 |--------|--------|---------|
-| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions. NLM: `POST/GET /notebooklm-report`, `POST/GET /notebooklm-yt-report`. Gemini: `GET /gemini-report`, `GET /gemini-yt-report`, `GET /gemini-reports?report_type=`, `GET /gemini-reports/{id}`, `POST /gemini-analyze` (manual trigger). **Extension** (Chrome ext 手動推入): `POST/GET /extension-report?kind=news\|yt`, `GET /extension-reports?kind=news\|yt`, `GET /extension-reports/{id}` — `kind` 篩選依 `source_title` 前綴 `[news]` / `[yt]`（推送時 `notebook_kind` 帶入，舊資料無前綴歸 news）。Completely isolated from hourly: writes `NlmReport(report_type="extension_manual")` + `SystemConfig["extension_*"]` keys, never touches `nlm_latest_report` / `nlm_yt_latest_report`, so LINE「分析」指令一直拿到 hourly 的最新版. **`DELETE /reports/{id}`** — 通用刪除（NLM / Gemini / Extension 任一份 `NlmReport`），刪掉的若是該 type 目前最新的，會把對應的 `SystemConfig.*_latest_report` 系列重新指向同 type 下一筆最新；沒有下一筆就清空。All reports stored in `NlmReport` table + `SystemConfig`. |
+| `/api/radar` | `routers/radar.py` | Alerts CRUD, market data, watchlist, signal conditions（`POST/PUT` 接受 `change_window` / `change_unit`，`_condition_to_dict` 也會回傳）. NLM: `POST/GET /notebooklm-report`, `POST/GET /notebooklm-yt-report`. Gemini: `GET /gemini-report`, `GET /gemini-yt-report`, `GET /gemini-reports?report_type=`, `GET /gemini-reports/{id}`, `POST /gemini-analyze` (manual trigger). **Extension** (Chrome ext 手動推入): `POST/GET /extension-report?kind=news\|yt`, `GET /extension-reports?kind=news\|yt`, `GET /extension-reports/{id}` — `kind` 篩選依 `source_title` 前綴 `[news]` / `[yt]`（推送時 `notebook_kind` 帶入，舊資料無前綴歸 news）。Completely isolated from hourly: writes `NlmReport(report_type="extension_manual")` + `SystemConfig["extension_*"]` keys, never touches `nlm_latest_report` / `nlm_yt_latest_report`, so LINE「分析」指令一直拿到 hourly 的最新版. **`DELETE /reports/{id}`** — 通用刪除（NLM / Gemini / Extension 任一份 `NlmReport`），刪掉的若是該 type 目前最新的，會把對應的 `SystemConfig.*_latest_report` 系列重新指向同 type 下一筆最新；沒有下一筆就清空。All reports stored in `NlmReport` table + `SystemConfig`. |
 | `/api/search` | `routers/search.py` | Topic search, AI analysis, positions |
 | `/api/news` | `routers/news_db.py` | Article CRUD, fetch preview, save-selected, sentiment. **Router 不掛 dep**，個別 endpoint 自帶 auth：GET 全開（guest 可讀）、`PUT /articles/{id}` / `POST /save-selected` / `DELETE` 為 admin。`POST /fetch` 支援 `source_type`: `"sources_only"`（RSS + social + website + MOPS — admin only，會觸發大量爬蟲）或 `"gn_only"`（Google News — guest 也可用，函式內依 `source_type` 動態判斷而非 router-level dep）。When no query, uses radar_topics + active Topic keywords. **Search 容錯邏輯**：`_normalize_query_text()` 對 query 與被比對文字做 NFKC（全形→半形）+ 移除空白 + lower，讓「美股收紅！」與「美股收紅!」視為相同；`_split_query_terms()` 切 ASCII↔CJK 邊界後對 ≥6 字 CJK 段補 4-gram、≥12 字補 6-gram，讓貼整段標題能由部分文字命中。OR 比對：任一 term 為 substring 即過。Boolean topics dispatched via `_gn_fetch_topic()` → `_multi_search_topic`. `GET /sources` returns configured source names + `__other__` with counts; `GET /keywords` returns unique `matched_keyword` values with counts. `GET /articles` accepts `source` and `keyword` query params for filtering. `fetched_after` query param 帶 tz 時 endpoint 內會先轉成 naive UTC 再比對（否則 SQLite 字串比較會把跨日邊界的文章誤排除）。|
-| `/api/topics` | `routers/topics.py` | Topic CRUD, per-topic articles, Google News search+import |
+| `/api/topics` | `routers/topics.py` | Topic CRUD（含 `bound_symbols`）、per-topic articles **+ signals**（`GET /{id}/articles` 同時回 `articles` / `signals` / `stats`）、`DELETE /{id}/signals/{sid}`、`POST /{id}/rematch`（回溯比對既有 `Article` 與 market `Alert`，body `{days, include_signals}`，days 上限 90）、`GET /market-symbols`（可綁定的指標清單，給主題編輯頁勾選）、`POST /{id}/search`（手動 GN 搜尋匯入，保留）。**路由順序**：`GET /market-symbols` 與 `/{topic_id}/articles` 路徑段數不同，不衝突。 |
 | `/api/research` | `routers/research.py` | Research institutions, reports CRUD, fetch preview, save-selected |
 | `/api/youtube` | `routers/youtube.py` | YouTube channel CRUD, video fetch, mark-as-seen. **Router 不掛 dep**：GET（channels / videos / new-count）全開、`PUT /videos/{id}/seen` 與 `/mark-all-seen` 為 regular（登入即可），`POST /channels` / `PUT/DELETE /channels/{id}` / `POST /channels/{id}/check` / `/check-all` 為 admin |
 | `/api/line/webhook` | `routers/line_webhook.py` | LINE Bot webhook receiver (POST only, signature-verified) |

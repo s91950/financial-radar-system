@@ -562,17 +562,11 @@ async def _radar_scan_inner(force: bool = False):
         _all_tw_topics = json.loads(_tw_cfg.value) if _tw_cfg else ["金融", "股市", "經濟"]
         _us_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_topics_us").first()
         _all_us_topics = json.loads(_us_cfg.value) if _us_cfg else []
-        # 主題追蹤關鍵字：併入 global fallback，讓 RSS/website/MOPS 在
-        # 「source keywords 沒命中、radar_topics 也沒命中、但有命中主題追蹤」時不會被丟掉
-        from backend.database import Topic as TopicModel
-        _topic_kws_for_global: list[str] = []
-        for _t in db.query(TopicModel).filter(TopicModel.is_active == True).all():
-            try:
-                _topic_kws_for_global.extend(json.loads(_t.keywords) if _t.keywords else [])
-            except Exception:
-                pass
-        # Combined topic list passed to RSS filter as global fallback (boolean semantics preserved)
-        _global_topics = _all_tw_topics + _all_us_topics + _topic_kws_for_global
+        # 抓取層只看「全域關鍵字 + 來源關鍵字」——主題追蹤關鍵字**不參與抓取**。
+        # 主題是純分類層：文章先被全域/來源關鍵字收進來，再於 Step 3b 用主題關鍵字歸類。
+        # （2026-09-15 前 Topic.keywords 會併進這裡擴大抓取網，已依新架構移除；
+        #   若某主題的詞需要影響抓取，請把該詞加進「全域關鍵字」設定。）
+        _global_topics = _all_tw_topics + _all_us_topics
         # RSS-only mode: skip all Google News fetching
         _rss_only_cfg = db.query(SystemConfig).filter(SystemConfig.key == "radar_rss_only").first()
         _rss_only = (_rss_only_cfg.value == "true") if _rss_only_cfg else False
@@ -658,7 +652,7 @@ async def _radar_scan_inner(force: bool = False):
         seen_titles = set()
         seen_content_fps: list = []   # 內容相似度 fingerprint 清單（跨步驟共享）
 
-        _raw_rss_articles: list[dict] = []  # unfiltered RSS pool for topic cross-matching
+        _raw_rss_articles: list[dict] = []  # 未過濾的 RSS 池，寫入「篩選前資料」表用
         if feeds:
             rss_results, _raw_rss_articles = await rss_feed.fetch_multiple_feeds(
                 feeds, hours_back=gn_hours_back, global_topics=_global_topics, return_raw=True
@@ -886,123 +880,6 @@ async def _radar_scan_inner(force: bool = False):
                                     continue
                             new_articles.append(article_data)
 
-        # 3b. Topic-specific searches — results feed BOTH radar alerts and TopicArticle.
-        # Two passes per topic:
-        #   Pass A: cross-match articles already collected in Steps 1+2 (RSS / general GN).
-        #           These articles are new to the DB, so if they match a topic keyword they
-        #           belong in TopicArticle even though they weren't found by a topic GN search.
-        #   Pass B: dedicated Google News search using topic keywords (hours_back=3 to avoid
-        #           the gap that hours_back=1 caused — articles 1-3h old were never picked up).
-        from backend.database import Topic as TopicModel, TopicArticle
-        active_topics = db.query(TopicModel).filter(TopicModel.is_active == True).all()
-        topic_articles_to_save: list[tuple] = []  # (topic_id, article_dict) deferred until after commit
-        # 記憶體內去重：防止同一次掃描的 Pass A / Pass B 重複加入相同文章
-        _queued_topic_urls: dict[int, set] = {}  # topic_id -> set of source_urls already queued
-
-        # Snapshot of articles from Steps 1+2 before Step 3b adds more
-        rss_gn_articles = list(new_articles)
-
-        for topic in active_topics:
-            kws = json.loads(topic.keywords) if topic.keywords else []
-            if not kws:
-                continue
-            groups = _parse_keyword_groups(kws)
-            queued_urls = _queued_topic_urls.setdefault(topic.id, set())
-
-            # Pass A: cross-match RSS / general-GN articles against this topic's keywords
-            for a in rss_gn_articles:
-                url = a.get("source_url", "")
-                if not url or url in queued_urls:
-                    continue
-                text = f"{a.get('title', '')} {a.get('content', '')}".lower()
-                if not _match_keyword_groups(text, groups):
-                    continue
-                if not db.query(TopicArticle).filter_by(topic_id=topic.id, source_url=url).first():
-                    queued_urls.add(url)
-                    topic_articles_to_save.append((topic.id, a))
-                    logger.debug(f"Topic '{topic.name}' ← RSS/GN: {a.get('title','')[:60]}")
-
-            # Pass A2: RSS-only 模式下，對未過濾的 raw RSS 文章做主題比對
-            # 補上「符合主題關鍵字但未符合雷達關鍵字」的文章，帶進雷達 + 主題頁
-            if _skip_gn and _raw_rss_articles:
-                for a in _raw_rss_articles:
-                    url = a.get("source_url", "")
-                    title = a.get("title", "").strip()
-                    if not url or not title or url in seen_urls or title in seen_titles:
-                        continue
-                    text = f"{title} {a.get('content', '')}".lower()
-                    if not _match_keyword_groups(text, groups):
-                        continue
-                    # New article matching topic keywords — add to radar + topic
-                    if force or (not db.query(Article).filter(Article.source_url == url).first() and
-                                 not db.query(Article).filter(Article.title == title).first()):
-                        fp = _article_fingerprint(title, a.get("content", ""))
-                        if _is_content_duplicate(fp, seen_content_fps):
-                            continue
-                        seen_urls.add(url)
-                        seen_titles.add(title)
-                        seen_content_fps.append(fp)
-                        a_copy = dict(a)
-                        a_copy['matched_keyword'] = _extract_matched_terms(kws, title, a.get("content", ""))
-                        a_copy['from_rss'] = True
-                        new_articles.append(a_copy)
-                        if url not in queued_urls and not db.query(TopicArticle).filter_by(topic_id=topic.id, source_url=url).first():
-                            queued_urls.add(url)
-                            topic_articles_to_save.append((topic.id, a_copy))
-                        logger.debug(f"Topic '{topic.name}' ← raw RSS (A2): {title[:60]}")
-
-            # Pass B: dedicated Google News search for this topic
-            # Skipped when RSS-only mode is enabled, or RSS priority threshold met
-            if _skip_gn:
-                continue
-            # force 掃描用 2h（顯示近期），自動掃描用 3h（避免 1h 間隔遺漏文章）
-            try:
-                topic_results = await _multi_search_topic(kws, hours_back=2 if force else 6)
-            except Exception as e:
-                logger.warning(f"Topic '{topic.name}' Google News search error: {e}")
-                continue
-
-            # 寫入篩選前資料表（Pass B 主題 GN 搜尋結果）
-            if topic_results:
-                _record_raw_articles(db, topic_results, "gn")
-
-            for a in topic_results:
-                text = f"{a.get('title', '')} {a.get('content', '')}".lower()
-                if not _match_keyword_groups(text, groups):
-                    continue
-                url = a.get("source_url", "")
-                title = a.get("title", "").strip()
-                if not url or url in queued_urls:
-                    continue
-
-                # Queue for TopicArticle (deduped per topic, in-memory + DB check)
-                if not db.query(TopicArticle).filter_by(topic_id=topic.id, source_url=url).first():
-                    queued_urls.add(url)
-                    topic_articles_to_save.append((topic.id, a))
-
-                # Also merge into new_articles for radar alert
-                if url not in seen_urls and title not in seen_titles:
-                    if force or (not db.query(Article).filter(Article.source_url == url).first() and \
-                       not db.query(Article).filter(Article.title == title).first()):
-                        fp = _article_fingerprint(title, a.get("content", ""))
-                        if not _is_content_duplicate(fp, seen_content_fps):
-                            seen_urls.add(url)
-                            seen_titles.add(title)
-                            seen_content_fps.append(fp)
-                            a_copy = dict(a)
-                            a_copy['matched_keyword'] = _extract_matched_terms(kws, title, a.get("content", ""))
-                            a_copy['origin'] = 'gn'
-                            # GN 僅緊急模式：預先評估嚴重度，非緊急文章不進雷達（仍存入主題頁）
-                            if _gn_critical_only:
-                                _pre_sev = _article_severity(a_copy)
-                                if _pre_sev != "critical":
-                                    seen_urls.discard(url)
-                                    seen_titles.discard(title)
-                                    seen_content_fps.pop()
-                                    continue
-                            new_articles.append(a_copy)
-                            logger.debug(f"Topic '{topic.name}' → radar: {title[:60]}")
-
         # 補抓全文：對通過初篩的少量候選文章（含 fetch_all 來源）並行抓 HTML，
         # 用真正的全文取代 RSS summary，讓後續排除/嚴重度判斷能看到完整內文。
         # 已被 scraper 寫好全文的文章（content >= 500 字）會自動跳過。
@@ -1069,6 +946,42 @@ async def _radar_scan_inner(force: bool = False):
                         _a.get("title", ""), _a.get("content", "")
                     )
 
+        # 3b. 主題分類層：把已經抓進來的文章用主題關鍵字歸入各主題。
+        # 新架構（2026-09-15）：主題**不再自己抓新聞**——不打專屬 Google News、
+        # 也不擴大 RSS 抓取網。比對對象是通過「全域/來源關鍵字 → 去重 → 補全文 →
+        # 排除關鍵字 → 財經篩選」全部關卡後的最終 new_articles，
+        # 所以主題看到的是完整內文，且與雷達收到的文章集合一致。
+        from backend.database import Topic as TopicModel, TopicArticle
+        from backend.services import topic_match
+
+        active_topics = db.query(TopicModel).filter(TopicModel.is_active == True).all()
+        topic_articles_to_save: list[tuple] = []  # (topic_id, article_dict) 延後到 commit 後寫入
+        for _topic in active_topics:
+            try:
+                _kws = json.loads(_topic.keywords) if _topic.keywords else []
+            except Exception:
+                _kws = []
+            if not _kws:
+                continue
+            _queued: set[str] = set()
+            _hits = 0
+            for _a in new_articles:
+                _url = _a.get("source_url", "")
+                if not _url or _url in _queued:
+                    continue
+                _text = topic_match.article_text(_a)
+                if not topic_match.topic_matches(_kws, _text):
+                    continue
+                if db.query(TopicArticle).filter_by(topic_id=_topic.id, source_url=_url).first():
+                    continue
+                _queued.add(_url)
+                _a_copy = dict(_a)
+                _a_copy["topic_matched_keyword"] = topic_match.matched_keyword(_kws, _text)
+                topic_articles_to_save.append((_topic.id, _a_copy))
+                _hits += 1
+            if _hits:
+                _flog(f"[TOPIC] 主題「{_topic.name}」新增 {_hits} 篇")
+
         # 把通過所有篩選的 URL 在 raw_articles 標記為 passed（讓「篩選前資料」頁可以區分）
         _passed_urls = [a.get("source_url", "") for a in new_articles if a.get("source_url")]
         if _passed_urls:
@@ -1110,6 +1023,7 @@ async def _radar_scan_inner(force: bool = False):
                         source_url=a.get("source_url", ""),
                         published_at=_parse_datetime(a.get("published_at")),
                         add_source="radar",
+                        matched_keyword=a.get("topic_matched_keyword") or None,
                     ))
             except IntegrityError:
                 pass  # 已存在，略過
@@ -1307,11 +1221,15 @@ async def market_check():
                 .all()
             )
 
+            # 區間變化條件（change_gt / change_lt / change_abs_gt）需要歷史基準點，
+            # 只對「真的有這類條件」的指標抓歷史，避免每輪對 17 檔都打 yfinance。
+            changes = await _compute_changes(item.symbol, price, conditions)
+
             new_signal = None
             triggered_cond = None
 
             for cond in conditions:
-                if _evaluate_condition(cond, price):
+                if _evaluate_condition(cond, price, changes):
                     new_signal = cond.signal
                     triggered_cond = cond
                     break  # first match by priority wins
@@ -1333,16 +1251,43 @@ async def market_check():
                 trigger_msg = triggered_cond.message if triggered_cond else f"{item.name} 觸發閾值警報"
                 severity = _signal_to_severity(new_signal, change_pct)
 
+                # 區間變化條件：把「單週 +32bp」這種敘述寫進警示內容，
+                # 主題關鍵字比對與前端顯示都吃這段文字
+                _chg_val = _chg_unit = _chg_window = None
+                _chg_desc = ""
+                if triggered_cond is not None and triggered_cond.operator in _CHANGE_OPERATORS:
+                    _chg_window = triggered_cond.change_window or "1d"
+                    _chg_unit = triggered_cond.change_unit or "price"
+                    _chg_val = (changes or {}).get((_chg_window, _chg_unit))
+                    if _chg_val is not None:
+                        _chg_desc = (
+                            f"，{_WINDOW_LABELS.get(_chg_window, _chg_window)}變化 "
+                            f"{_fmt_change(_chg_val, _chg_unit)}"
+                        )
+
                 # AI analysis is on-demand only (user triggers via UI)
                 alert = Alert(
                     type="market",
                     title=f"📊 {item.name} — {trigger_msg}",
-                    content=f"{item.name} ({item.symbol}) 當前值: {price} ({change_pct:+.2f}%)",
+                    content=f"{item.name} ({item.symbol}) 當前值: {price} ({change_pct:+.2f}%){_chg_desc}",
                     analysis=None,
                     severity=severity,
                     source="Market Monitor",
                 )
                 db.add(alert)
+                db.flush()  # 取得 alert.id 供 TopicSignal 關聯
+
+                # 歸入主題追蹤（關鍵字自動比對 + 手動綁定的指標）
+                try:
+                    _n = _attach_signal_to_topics(
+                        db, item, triggered_cond, alert, price,
+                        change_value=_chg_val, change_unit=_chg_unit,
+                        change_window=_chg_window, severity=severity, signal=new_signal,
+                    )
+                    if _n:
+                        logger.info(f"Market alert {item.symbol} → {_n} 個主題")
+                except Exception as _te:
+                    logger.warning(f"TopicSignal 歸類失敗（不影響警示）: {_te}")
 
                 if _ws_manager:
                     await _ws_manager.broadcast({
@@ -1374,8 +1319,158 @@ async def market_check():
         db.close()
 
 
-def _evaluate_condition(cond: SignalCondition, price: float) -> bool:
-    """Evaluate a single signal condition against the current price."""
+# 區間變化型 operator（需要歷史基準點）
+_CHANGE_OPERATORS = ("change_gt", "change_lt", "change_abs_gt")
+# window → 回溯天數 / 顯示標籤
+_WINDOW_DAYS = {"1d": 1, "1w": 7, "1mo": 30}
+_WINDOW_LABELS = {"1d": "單日", "1w": "單週", "1mo": "單月"}
+_UNIT_LABELS = {"price": "", "pct": "%", "bp": "bp"}
+
+
+def _fmt_change(value: float, unit: str) -> str:
+    """把變化量格式化成人看的字串：+32.0bp / -1.85% / +0.31"""
+    suffix = _UNIT_LABELS.get(unit or "price", "")
+    digits = 1 if (unit or "price") == "bp" else 2
+    return f"{value:+.{digits}f}{suffix}"
+
+
+def _parse_bar_time(value) -> datetime | None:
+    """yfinance 的 index isoformat 可能帶時區，統一轉成 naive UTC。"""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _baseline_close(hist: list[dict], days: int) -> float | None:
+    """從日線歷史取出 days 天前的收盤價（取不晚於目標時點的最後一根）。"""
+    if not hist:
+        return None
+    target = datetime.utcnow() - timedelta(days=days)
+    baseline = None
+    for bar in hist:
+        t = _parse_bar_time(bar.get("time"))
+        if t is None:
+            continue
+        if t <= target:
+            baseline = bar.get("close")
+        else:
+            break
+    # 歷史不足 days 天（新標的／資料稀疏）：退回最早一根，聊勝於無
+    if baseline is None:
+        baseline = hist[0].get("close")
+    return baseline
+
+
+def _change_amount(price: float, baseline: float | None, unit: str) -> float | None:
+    """依單位換算變化量。
+
+    bp（基點）專給殖利率類指標：^TNX 的 4.25 代表 4.25%，所以 1bp = 0.01，
+    變化量 bp = (現在 - 基準) × 100。
+    """
+    if price is None or baseline is None:
+        return None
+    delta = price - baseline
+    if unit == "pct":
+        return (delta / baseline * 100) if baseline else None
+    if unit == "bp":
+        return delta * 100
+    return delta
+
+
+async def _compute_changes(symbol: str, price: float, conditions: list) -> dict:
+    """算出某指標所有 (window, unit) 組合的變化量；沒有區間條件就不打網路。"""
+    wanted = {
+        (c.change_window or "1d", c.change_unit or "price")
+        for c in conditions
+        if c.operator in _CHANGE_OPERATORS
+    }
+    if not wanted:
+        return {}
+
+    from backend.services import market_data
+    try:
+        hist = await market_data.get_market_history(symbol, period="3mo", interval="1d")
+    except Exception as e:
+        logger.warning(f"取得 {symbol} 歷史資料失敗，區間條件本輪跳過: {e}")
+        return {}
+
+    out: dict = {}
+    for window, unit in wanted:
+        baseline = _baseline_close(hist, _WINDOW_DAYS.get(window, 1))
+        out[(window, unit)] = _change_amount(price, baseline, unit)
+    return out
+
+
+def _attach_signal_to_topics(
+    db, item, cond, alert, price: float,
+    change_value=None, change_unit=None, change_window=None,
+    severity: str = "low", signal: str = "neutral",
+) -> int:
+    """把一則市場警示歸入符合的主題（關鍵字自動比對 + 手動綁定），回傳歸入的主題數。"""
+    from backend.database import Topic as TopicModel, TopicSignal
+    from backend.services import topic_match
+
+    match_text = topic_match.signal_text(
+        item, cond, extra=f"{alert.title or ''} {alert.content or ''}"
+    )
+    attached = 0
+    for topic in db.query(TopicModel).filter(TopicModel.is_active == True).all():
+        try:
+            kws = json.loads(topic.keywords) if topic.keywords else []
+        except Exception:
+            kws = []
+        try:
+            bound = json.loads(topic.bound_symbols) if topic.bound_symbols else []
+        except Exception:
+            bound = []
+
+        add_source = None
+        matched_kw = ""
+        if item.symbol in bound:
+            add_source = "bound"          # 手動綁定優先，不需關鍵字命中
+        elif kws and topic_match.topic_matches(kws, match_text):
+            add_source = "keyword"
+            matched_kw = topic_match.matched_keyword(kws, match_text)
+        if not add_source:
+            continue
+
+        try:
+            with db.begin_nested():
+                db.add(TopicSignal(
+                    topic_id=topic.id,
+                    alert_id=alert.id,
+                    symbol=item.symbol,
+                    name=item.name,
+                    title=alert.title or "",
+                    message=alert.content or "",
+                    value=price,
+                    change_value=change_value,
+                    change_unit=change_unit,
+                    change_window=change_window,
+                    severity=severity,
+                    signal=signal,
+                    matched_keyword=matched_kw or None,
+                    triggered_at=datetime.utcnow(),
+                    add_source=add_source,
+                ))
+            attached += 1
+        except IntegrityError:
+            pass  # 同主題同警示已存在
+    return attached
+
+
+def _evaluate_condition(cond: SignalCondition, price: float, changes: dict | None = None) -> bool:
+    """Evaluate a single signal condition against the current price.
+
+    數值型（gt/lt/gte/lte/between）比當下價格；
+    區間型（change_*）比 *changes* 內預先算好的 (window, unit) 變化量。
+    """
     op = cond.operator
     v = cond.value
     v2 = cond.value2
@@ -1390,6 +1485,17 @@ def _evaluate_condition(cond: SignalCondition, price: float) -> bool:
         return price <= v
     elif op == "between":
         return v is not None and v2 is not None and v <= price <= v2
+    elif op in _CHANGE_OPERATORS:
+        if v is None:
+            return False
+        amount = (changes or {}).get((cond.change_window or "1d", cond.change_unit or "price"))
+        if amount is None:
+            return False
+        if op == "change_gt":
+            return amount > v
+        if op == "change_lt":
+            return amount < v
+        return abs(amount) > abs(v)
     return False
 
 

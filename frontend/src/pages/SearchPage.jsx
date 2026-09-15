@@ -20,6 +20,67 @@ function SeverityBadge({ severity }) {
   )
 }
 
+// --- 市場警示 helpers ---
+const WINDOW_LABELS = { '1d': '單日', '1w': '單週', '1mo': '單月' }
+const UNIT_SUFFIX = { price: '', pct: '%', bp: 'bp' }
+
+function formatChange(value, unit) {
+  if (value === null || value === undefined) return ''
+  const digits = unit === 'bp' ? 1 : 2
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}${UNIT_SUFFIX[unit] || ''}`
+}
+
+// 一列市場數據警示（與新聞列並排在同一份清單裡，但形狀不同：沒有連結、有數值）
+function SignalRow({ signal, onDelete }) {
+  const up = (signal.change_value ?? 0) >= 0
+  return (
+    <div className="group flex items-start gap-3 p-3 rounded-lg bg-dark-900 hover:bg-dark-800/60 transition-colors">
+      <span className="shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-medium bg-amber-500/15 text-amber-400 border border-amber-500/25">
+        {signal.add_source === 'bound' ? '綁定' : '市場'}
+      </span>
+
+      <SeverityBadge severity={signal.severity} />
+
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-gray-200 line-clamp-2">{signal.title}</p>
+        {signal.message && (
+          <p className="text-xs text-dark-400 mt-0.5 line-clamp-2">{signal.message}</p>
+        )}
+        <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-dark-500">
+          {signal.symbol && <span className="font-mono">{signal.symbol}</span>}
+          {signal.change_value !== null && signal.change_value !== undefined && (
+            <span className={up ? 'text-red-400' : 'text-green-400'}>
+              {WINDOW_LABELS[signal.change_window] || signal.change_window || ''}
+              {' '}{formatChange(signal.change_value, signal.change_unit)}
+            </span>
+          )}
+          {signal.matched_keyword && (
+            <span className="px-1.5 py-0.5 rounded bg-primary-600/15 text-primary-400 border border-primary-500/25">
+              {signal.matched_keyword}
+            </span>
+          )}
+          {signal.triggered_at && (
+            <span>{new Date(signal.triggered_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={() => onDelete(signal.id)}
+          className="p-1.5 text-dark-500 hover:text-red-400 rounded hover:bg-dark-700 transition-colors"
+          title="移除"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Parse "(A OR B) (C OR D)" → [[A,B],[C,D]]; simple keyword → null
 function parseGroupedKeyword(kw) {
   if (!kw.includes('(')) return null
@@ -230,6 +291,11 @@ function NewGroupedBuilder({ onAdd, onClose }) {
 }
 
 // --- TopicModal: create / edit topic ---
+const MARKET_CAT_LABELS = {
+  equity: '股市', bond: '債市', currency: '匯市',
+  commodity: '原物料', crypto: '加密貨幣', volatility: '波動率',
+}
+
 function TopicModal({ topic, onClose, onSave }) {
   const [name, setName] = useState(topic?.name || '')
   const [simpleKws, setSimpleKws] = useState(() => (topic?.keywords || []).filter(k => !k.includes('(')))
@@ -239,6 +305,18 @@ function TopicModal({ topic, onClose, onSave }) {
   const [kw, setKw] = useState('')
   const [showBuilder, setShowBuilder] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [boundSymbols, setBoundSymbols] = useState(() => topic?.bound_symbols || [])
+  const [marketSymbols, setMarketSymbols] = useState([])
+
+  useEffect(() => {
+    topicsAPI.getMarketSymbols()
+      .then(({ data }) => setMarketSymbols(Array.isArray(data) ? data : []))
+      .catch(() => {})
+  }, [])
+
+  const toggleSymbol = (sym) => {
+    setBoundSymbols(prev => prev.includes(sym) ? prev.filter(x => x !== sym) : [...prev, sym])
+  }
 
   const addKeyword = () => {
     const v = kw.trim()
@@ -255,7 +333,7 @@ function TopicModal({ topic, onClose, onSave }) {
       ...groupedEntries.map(e => serializeGroups(e.groups)).filter(Boolean),
     ]
     try {
-      await onSave({ name: name.trim(), keywords: allKeywords })
+      await onSave({ name: name.trim(), keywords: allKeywords, bound_symbols: boundSymbols })
       onClose()
     } catch {
       toast.error('儲存失敗')
@@ -279,6 +357,12 @@ function TopicModal({ topic, onClose, onSave }) {
               autoFocus
             />
           </div>
+
+          <p className="text-[11px] leading-relaxed text-dark-500 bg-dark-900/60 border border-dark-700 rounded-lg px-3 py-2">
+            主題關鍵字只用來<span className="text-gray-300">分類</span>——新聞由雷達以「全域關鍵字 + 來源關鍵字」抓進來後，
+            才在這裡歸類。若某個詞完全沒被抓進來，請把它加進
+            <span className="text-primary-400">「系統設定 → 雷達關鍵字」</span>。
+          </p>
 
           {/* Simple keywords */}
           <div>
@@ -338,6 +422,50 @@ function TopicModal({ topic, onClose, onSave }) {
             </div>
           </div>
 
+          {/* 綁定市場指標 */}
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">綁定市場指標</label>
+            <p className="text-[11px] text-dark-600 mb-2">
+              勾選的指標一旦觸發警示，不論關鍵字有沒有命中都會收進此主題（補自動比對的漏）。
+            </p>
+            {marketSymbols.length === 0 ? (
+              <span className="text-xs text-dark-600">載入中或尚無指標</span>
+            ) : (
+              <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                {Object.entries(
+                  marketSymbols.reduce((acc, m) => {
+                    (acc[m.category || 'other'] ||= []).push(m)
+                    return acc
+                  }, {})
+                ).map(([cat, items]) => (
+                  <div key={cat}>
+                    <div className="text-[10px] text-dark-500 mb-1">{MARKET_CAT_LABELS[cat] || cat}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {items.map(m => {
+                        const on = boundSymbols.includes(m.symbol)
+                        return (
+                          <button
+                            key={m.symbol}
+                            type="button"
+                            onClick={() => toggleSymbol(m.symbol)}
+                            title={m.description || m.symbol}
+                            className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
+                              on
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : 'bg-dark-800 text-dark-400 border-dark-600 hover:border-dark-500'
+                            }`}
+                          >
+                            {m.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2 pt-2">
             <button type="submit" disabled={saving || !name.trim()} className="btn-primary flex-1">
               {saving ? '儲存中...' : '儲存'}
@@ -368,11 +496,14 @@ export default function SearchPage() {
   const [severityKws, setSeverityKws] = useState({ critical: [], high: [] })
   const [activePicker, setActivePicker] = useState(null)
 
+  const [rematching, setRematching] = useState(false)
+
   // Filter & sort
   const [filterSeverity, setFilterSeverity] = useState('all')
   const [filterSource, setFilterSource] = useState('all')
   const [filterKeyword, setFilterKeyword] = useState('')
   const [sortOrder, setSortOrder] = useState('desc')
+  const [contentType, setContentType] = useState('all')  // 'all' | 'news' | 'market'
 
   const loadTopics = useCallback(async () => {
     try {
@@ -446,6 +577,7 @@ export default function SearchPage() {
     setFilterSource('all')
     setFilterKeyword('')
     setSortOrder('desc')
+    setContentType('all')
     loadArticles(id)
   }
 
@@ -500,6 +632,43 @@ export default function SearchPage() {
     setSearching(false)
   }
 
+  const handleRematch = async () => {
+    if (!selectedId) return
+    if (!confirm('以既有的新聞與市場警示重跑此主題的關鍵字比對（回溯 7 天）？')) return
+    setRematching(true)
+    try {
+      const { data } = await topicsAPI.rematch(selectedId, { days: 7, include_signals: true })
+      if (data.error) {
+        toast.error(data.error)
+      } else {
+        const total = (data.articles || 0) + (data.signals || 0)
+        toast.success(total > 0
+          ? `回溯比對完成：新增 ${data.articles} 篇新聞、${data.signals} 則市場警示`
+          : '回溯比對完成：沒有新的符合項目')
+        if (total > 0) {
+          await loadArticles(selectedId)
+          await loadTopics()
+        }
+      }
+    } catch {
+      toast.error('回溯比對失敗')
+    }
+    setRematching(false)
+  }
+
+  const handleDeleteSignal = async (signalId) => {
+    try {
+      await topicsAPI.deleteSignal(selectedId, signalId)
+      setTopicData(prev => ({
+        ...prev,
+        signals: prev.signals.filter(sg => sg.id !== signalId),
+        stats: { ...prev.stats, signals: Math.max(0, (prev.stats?.signals || 1) - 1) },
+      }))
+    } catch {
+      toast.error('刪除失敗')
+    }
+  }
+
   const handleDeleteArticle = async (articleId) => {
     try {
       await topicsAPI.deleteArticle(selectedId, articleId)
@@ -543,6 +712,28 @@ export default function SearchPage() {
     const db = new Date(b.published_at || b.added_at || 0)
     return sortOrder === 'desc' ? db - da : da - db
   })
+  if (contentType === 'market') displayArticles = []
+
+  // --- 市場警示：套用同一組風險 / 關鍵字 / 排序條件（來源 pills 只作用於新聞）---
+  let displaySignals = contentType === 'news' ? [] : (topicData?.signals || [])
+  if (filterSeverity !== 'all') {
+    displaySignals = displaySignals.filter(sg =>
+      sg.severity === filterSeverity || (filterSeverity === 'high' && sg.severity === 'medium')
+    )
+  }
+  if (filterKeyword) {
+    const kw = filterKeyword.toLowerCase()
+    displaySignals = displaySignals.filter(sg =>
+      sg.title?.toLowerCase().includes(kw) ||
+      sg.name?.toLowerCase().includes(kw) ||
+      sg.symbol?.toLowerCase().includes(kw)
+    )
+  }
+  displaySignals = [...displaySignals].sort((a, b) => {
+    const da = new Date(a.triggered_at || a.added_at || 0)
+    const db = new Date(b.triggered_at || b.added_at || 0)
+    return sortOrder === 'desc' ? db - da : da - db
+  })
 
   const handleToggleSelectAll = () => {
     const allUrls = displayArticles.map(a => a.source_url).filter(Boolean)
@@ -564,7 +755,14 @@ export default function SearchPage() {
 
   const selectedTopic = topics.find(t => t.id === selectedId)
 
-  const hasFilter = filterSeverity !== 'all' || filterSource !== 'all' || filterKeyword || sortOrder !== 'desc'
+  const hasFilter = filterSeverity !== 'all' || filterSource !== 'all' || filterKeyword
+    || sortOrder !== 'desc' || contentType !== 'all'
+  const resetFilters = () => {
+    setFilterSeverity('all'); setFilterSource('all'); setFilterKeyword('')
+    setSortOrder('desc'); setContentType('all')
+  }
+  const totalItems = (topicData?.articles?.length || 0) + (topicData?.signals?.length || 0)
+  const shownItems = displayArticles.length + displaySignals.length
 
   return (
     <div className="flex flex-col md:flex-row gap-3 md:gap-4 h-auto md:h-[calc(100vh-8rem)]">
@@ -605,6 +803,9 @@ export default function SearchPage() {
                   </div>
                   <div className="flex items-center gap-2 mt-0.5 pl-3.5">
                     <span className="text-xs text-dark-400">{topic.article_count} 篇</span>
+                    {topic.signal_count > 0 && (
+                      <span className="text-xs text-amber-400">{topic.signal_count} 警示</span>
+                    )}
                   </div>
                 </div>
                 <div className={`flex items-center gap-1 shrink-0 transition-opacity ${selectedId === topic.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
@@ -823,6 +1024,27 @@ export default function SearchPage() {
                     </div>
                   )}
                   <button
+                    onClick={handleRematch}
+                    disabled={rematching || !(selectedTopic.keywords?.length || selectedTopic.bound_symbols?.length)}
+                    className="btn-secondary text-sm py-1.5 px-3 flex items-center gap-1.5 whitespace-nowrap"
+                    title="拿既有的新聞與市場警示重跑此主題的關鍵字比對（回溯 7 天）"
+                  >
+                    {rematching ? (
+                      <>
+                        <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-primary-400" />
+                        比對中...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                            d="M16.023 9.348h4.992V4.356m-4.992 4.992l3.181-3.183a8.25 8.25 0 00-13.803 3.7M4.031 9.865v4.992m0 0h4.99m-4.99 0l3.181 3.182a8.25 8.25 0 0013.803-3.7" />
+                        </svg>
+                        回溯比對
+                      </>
+                    )}
+                  </button>
+                  <button
                     onClick={handleSearch}
                     disabled={searching || !selectedTopic.keywords?.length}
                     className="btn-primary text-sm py-1.5 px-4 flex items-center gap-1.5 whitespace-nowrap"
@@ -849,15 +1071,17 @@ export default function SearchPage() {
 
             {/* Stats bar */}
             {topicData?.stats && (
-              <div className="flex items-center gap-3 px-1 text-xs text-dark-400">
+              <div className="flex flex-wrap items-center gap-3 px-1 text-xs text-dark-400">
                 <span>共 <span className="text-gray-300 font-medium">{topicData.stats.total}</span> 篇</span>
-                {displayArticles.length !== topicData.stats.total && (
-                  <span className="text-primary-400">（篩選後 {displayArticles.length} 篇）</span>
+                {shownItems !== totalItems && (
+                  <span className="text-primary-400">（篩選後 {shownItems} 項）</span>
                 )}
                 <span className="text-dark-700">|</span>
                 <span>雷達自動匯入：<span className="text-green-400 font-medium">{topicData.stats.radar}</span></span>
                 <span className="text-dark-700">|</span>
                 <span>手動搜尋：<span className="text-blue-400 font-medium">{topicData.stats.manual}</span></span>
+                <span className="text-dark-700">|</span>
+                <span>市場警示：<span className="text-amber-400 font-medium">{topicData.stats.signals || 0}</span></span>
 
                 <div className="flex-1" />
 
@@ -896,8 +1120,31 @@ export default function SearchPage() {
             )}
 
             {/* Filter & sort bar */}
-            {topicData && topicData.articles.length > 0 && (
+            {topicData && totalItems > 0 && (
               <div className="flex flex-wrap items-center gap-2 px-1">
+                {/* Content type pills */}
+                <div className="flex items-center gap-1">
+                  {[
+                    { v: 'all',    label: '全部' },
+                    { v: 'news',   label: '新聞' },
+                    { v: 'market', label: '市場警示', cls: 'text-amber-400' },
+                  ].map(({ v, label, cls }) => (
+                    <button
+                      key={v}
+                      onClick={() => setContentType(v)}
+                      className={`text-xs px-2.5 py-0.5 rounded-full border transition-colors ${
+                        contentType === v
+                          ? 'bg-primary-600/30 text-primary-400 border-primary-500/50'
+                          : `bg-dark-800 border-dark-600 ${cls || 'text-dark-400'} hover:border-dark-500`
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="text-dark-700">|</span>
+
                 {/* Severity pills */}
                 <div className="flex items-center gap-1">
                   {[
@@ -920,10 +1167,10 @@ export default function SearchPage() {
                   ))}
                 </div>
 
-                <span className="text-dark-700">|</span>
+                {contentType !== 'market' && <span className="text-dark-700">|</span>}
 
-                {/* Source filter */}
-                <div className="flex items-center gap-1">
+                {/* Source filter（只作用於新聞） */}
+                <div className={`items-center gap-1 ${contentType === 'market' ? 'hidden' : 'flex'}`}>
                   {[
                     { v: 'all',    label: '全部來源' },
                     { v: 'radar',  label: '雷達', cls: 'text-green-400' },
@@ -973,7 +1220,7 @@ export default function SearchPage() {
                 {/* Reset filters */}
                 {hasFilter && (
                   <button
-                    onClick={() => { setFilterSeverity('all'); setFilterSource('all'); setFilterKeyword(''); setSortOrder('desc') }}
+                    onClick={resetFilters}
                     className="text-xs px-2 py-1 rounded text-dark-500 hover:text-red-400 transition-colors"
                     title="清除篩選"
                   >
@@ -989,27 +1236,43 @@ export default function SearchPage() {
                 <div className="flex items-center justify-center py-12">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500" />
                 </div>
-              ) : !topicData || topicData.articles.length === 0 ? (
+              ) : !topicData || totalItems === 0 ? (
                 <div className="text-center py-12 text-dark-500">
                   <svg className="w-10 h-10 mx-auto mb-3 text-dark-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                       d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                   </svg>
-                  <p className="text-sm">尚無文章</p>
-                  <p className="text-xs mt-1">等待雷達自動掃描，或點擊「搜尋並匯入」手動獲取</p>
+                  <p className="text-sm">尚無內容</p>
+                  <p className="text-xs mt-1">等待雷達自動掃描歸類，或點「回溯比對」拿既有資料補齊</p>
                 </div>
-              ) : displayArticles.length === 0 ? (
+              ) : shownItems === 0 ? (
                 <div className="text-center py-12 text-dark-500">
                   <p className="text-sm">篩選條件下無結果</p>
-                  <button
-                    onClick={() => { setFilterSeverity('all'); setFilterSource('all'); setFilterKeyword(''); setSortOrder('desc') }}
-                    className="text-xs text-primary-400 mt-2 hover:underline"
-                  >
+                  <button onClick={resetFilters} className="text-xs text-primary-400 mt-2 hover:underline">
                     清除篩選
                   </button>
                 </div>
               ) : (
                 <div className="space-y-1.5">
+                  {displaySignals.length > 0 && (
+                    <>
+                      <div className="flex items-center gap-2 px-1 pt-0.5 pb-1">
+                        <span className="text-[11px] font-medium text-amber-400">市場數據警示</span>
+                        <span className="text-[11px] text-dark-600">{displaySignals.length}</span>
+                        <div className="flex-1 h-px bg-dark-700" />
+                      </div>
+                      {displaySignals.map(sg => (
+                        <SignalRow key={`sig-${sg.id}`} signal={sg} onDelete={handleDeleteSignal} />
+                      ))}
+                      {displayArticles.length > 0 && (
+                        <div className="flex items-center gap-2 px-1 pt-3 pb-1">
+                          <span className="text-[11px] font-medium text-dark-400">新聞</span>
+                          <span className="text-[11px] text-dark-600">{displayArticles.length}</span>
+                          <div className="flex-1 h-px bg-dark-700" />
+                        </div>
+                      )}
+                    </>
+                  )}
                   {displayArticles.map(article => (
                     <div
                       key={article.id}

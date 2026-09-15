@@ -1,5 +1,6 @@
 """Market data service using Yahoo Finance and TWSE API."""
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -49,18 +50,18 @@ async def get_market_quotes(symbols: list[str]) -> list[dict]:
     return results
 
 
-async def get_market_history(symbol: str, period: str = "5d", interval: str = "1h") -> list[dict]:
-    """Fetch historical market data for charting."""
+def get_history_sync(symbol: str, period: str = "5d", interval: str = "1h") -> list[dict]:
+    """Blocking history fetch — call via asyncio.to_thread from async contexts."""
     try:
         ticker = yf.Ticker(symbol)
         hist = ticker.history(period=period, interval=interval)
         return [
             {
                 "time": idx.isoformat(),
-                "open": round(row["Open"], 2),
-                "high": round(row["High"], 2),
-                "low": round(row["Low"], 2),
-                "close": round(row["Close"], 2),
+                "open": round(row["Open"], 4),
+                "high": round(row["High"], 4),
+                "low": round(row["Low"], 4),
+                "close": round(row["Close"], 4),
                 "volume": int(row["Volume"]),
             }
             for idx, row in hist.iterrows()
@@ -68,6 +69,15 @@ async def get_market_history(symbol: str, period: str = "5d", interval: str = "1
     except Exception as e:
         logger.error(f"yfinance history error ({symbol}): {e}")
         return []
+
+
+async def get_market_history(symbol: str, period: str = "5d", interval: str = "1h") -> list[dict]:
+    """Fetch historical market data for charting.
+
+    yfinance 是同步阻塞的；丟到 thread 避免卡住 event loop
+    （排程器同一個 loop 上還有 radar_scan，阻塞會造成 APScheduler misfire）。
+    """
+    return await asyncio.to_thread(get_history_sync, symbol, period, interval)
 
 
 async def get_twse_index() -> dict | None:

@@ -2,12 +2,33 @@ import { useEffect, useState } from 'react'
 import { radarAPI } from '../../services/api'
 import { toast } from 'react-hot-toast'
 
-const OPERATORS = [
+// 數值型：比當下價格；區間型：比 change_window 內的變化量
+const LEVEL_OPERATORS = [
   { value: 'gt', label: '>' },
   { value: 'lt', label: '<' },
   { value: 'gte', label: '>=' },
   { value: 'lte', label: '<=' },
   { value: 'between', label: '介於' },
+]
+
+const CHANGE_OPERATORS = [
+  { value: 'change_gt', label: '上升超過' },
+  { value: 'change_lt', label: '下跌超過（負值）' },
+  { value: 'change_abs_gt', label: '漲跌幅超過' },
+]
+
+const CHANGE_OPERATOR_VALUES = CHANGE_OPERATORS.map(o => o.value)
+
+const WINDOWS = [
+  { value: '1d', label: '單日' },
+  { value: '1w', label: '單週' },
+  { value: '1mo', label: '單月' },
+]
+
+const UNITS = [
+  { value: 'bp', label: '基點 bp' },
+  { value: 'pct', label: '百分比 %' },
+  { value: 'price', label: '絕對值' },
 ]
 
 const SIGNALS = [
@@ -23,8 +44,13 @@ export default function SignalConditionModal({ item, onClose }) {
   const [form, setForm] = useState(defaultForm())
 
   function defaultForm() {
-    return { name: '', operator: 'gt', value: '', value2: '', signal: 'negative', message: '', priority: 0 }
+    return {
+      name: '', operator: 'gt', value: '', value2: '', signal: 'negative',
+      message: '', priority: 0, change_window: '1w', change_unit: 'bp',
+    }
   }
+
+  const isChangeMode = CHANGE_OPERATOR_VALUES.includes(form.operator)
 
   useEffect(() => {
     loadConditions()
@@ -50,6 +76,8 @@ export default function SignalConditionModal({ item, onClose }) {
       value: parseFloat(form.value),
       value2: form.operator === 'between' && form.value2 ? parseFloat(form.value2) : null,
       priority: parseInt(form.priority) || 0,
+      change_window: isChangeMode ? form.change_window : null,
+      change_unit: isChangeMode ? form.change_unit : null,
     }
     try {
       if (editingId) {
@@ -87,6 +115,8 @@ export default function SignalConditionModal({ item, onClose }) {
       signal: cond.signal,
       message: cond.message || '',
       priority: cond.priority ?? 0,
+      change_window: cond.change_window || '1w',
+      change_unit: cond.change_unit || 'bp',
     })
   }
 
@@ -129,6 +159,17 @@ export default function SignalConditionModal({ item, onClose }) {
                     <span className="text-xs text-dark-400">P:{cond.priority}</span>
                   </div>
                   <div className="text-xs text-dark-400">{cond.message}</div>
+                  {CHANGE_OPERATOR_VALUES.includes(cond.operator) && (
+                    <div className="text-[10px] text-amber-400 mt-0.5">
+                      {WINDOWS.find(w => w.value === cond.change_window)?.label || cond.change_window}
+                      {' '}
+                      {CHANGE_OPERATORS.find(o => o.value === cond.operator)?.label}
+                      {' '}
+                      {cond.value}
+                      {UNITS.find(u => u.value === cond.change_unit)?.value === 'bp' ? 'bp'
+                        : cond.change_unit === 'pct' ? '%' : ''}
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-1">
                   <button onClick={() => startEdit(cond)} className="p-1 rounded hover:bg-dark-600 text-dark-400 hover:text-white">
@@ -167,13 +208,18 @@ export default function SignalConditionModal({ item, onClose }) {
               onChange={e => setForm({ ...form, operator: e.target.value })}
               className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
             >
-              {OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+              <optgroup label="數值門檻（比當下值）">
+                {LEVEL_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+              </optgroup>
+              <optgroup label="區間變化（比一段時間的變化量）">
+                {CHANGE_OPERATORS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
+              </optgroup>
             </select>
 
             <input
               type="number"
               step="any"
-              placeholder="數值"
+              placeholder={isChangeMode ? '變化門檻' : '數值'}
               value={form.value}
               onChange={e => setForm({ ...form, value: e.target.value })}
               className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
@@ -188,6 +234,29 @@ export default function SignalConditionModal({ item, onClose }) {
                 onChange={e => setForm({ ...form, value2: e.target.value })}
                 className="col-span-2 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
               />
+            )}
+
+            {isChangeMode && (
+              <>
+                <select
+                  value={form.change_window}
+                  onChange={e => setForm({ ...form, change_window: e.target.value })}
+                  className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                >
+                  {WINDOWS.map(w => <option key={w.value} value={w.value}>{w.label}變化</option>)}
+                </select>
+                <select
+                  value={form.change_unit}
+                  onChange={e => setForm({ ...form, change_unit: e.target.value })}
+                  className="bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-sm focus:border-primary-500 focus:outline-none"
+                >
+                  {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                </select>
+                <p className="col-span-2 text-[11px] text-dark-500 leading-relaxed">
+                  例：單週 ×「上升超過」× 30 × 基點 bp → 殖利率一週上升超過 30bp 時觸發。
+                  基點僅適用殖利率類指標（^TNX 的 4.25 代表 4.25%，1bp = 0.01）。
+                </p>
+              </>
             )}
 
             <div className="flex gap-2">
